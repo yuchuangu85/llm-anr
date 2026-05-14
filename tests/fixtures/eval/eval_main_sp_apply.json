@@ -1,0 +1,24 @@
+{
+  "id": "eval-main-sp-apply",
+  "description": "Main thread blocked on QueuedWork.waitToFinish (SP apply not flushed in time).",
+  "package": {
+    "package_id": "EVAL-SP",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Waiting\n  | sysTid=100\n  | state=S schedstat=( 30000000 800000000 200 ) utm=2 stm=3 core=0 HZ=100\n  at java.lang.Object.wait(Native method)\n  at android.app.QueuedWork.waitToFinish(QueuedWork.java:170)\n  at android.app.ActivityThread.handleStopActivity(ActivityThread.java:5102)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["MAIN_SP_APPLY_WAIT"],
+    "forbiddenHintIds": ["DEADLOCK_CYCLE", "MAIN_BINDER_WAIT_REPLY"],
+    "primaryRootCauseHintId": "MAIN_SP_APPLY_WAIT"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "eval-cpu-saturated",
+  "description": "AnrManager block reports total CPU 95% with one rogue process at 80% -> SYSTEM_CPU_SATURATED.",
+  "package": {
+    "package_id": "EVAL-CPU-SAT",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "07-02 10:14:00.000 1000 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "07-02 10:14:00.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=100\n  | state=S schedstat=( 8000000 12000000 50 ) utm=0 stm=0 core=0 HZ=100\n  native: #00 pc 00012345  /system/lib64/libc.so (__epoll_pwait+8)\n  at android.os.MessageQueue.nativePollOnce(Native method)"
+      },
+      "logcat": {
+        "path": "logcat.txt",
+        "content": "07-02 10:14:00.882  1000  1674  2963 I AnrManager: CPU usage from 6404ms to 0ms ago:\n07-02 10:14:00.882  1000  1674  2963 I AnrManager:   80% 9999/badapp: 60% user + 20% kernel\n07-02 10:14:00.882  1000  1674  2963 I AnrManager: 95% TOTAL: 70% user + 25% kernel\n07-02 10:14:00.883  1000  1674  2963 I AnrManager: dumpAnrDebugInfo end: AnrDumpRecord{ Input dispatching timed out ProcessRecord{1234:com.demo/u0a99} }"
+      }
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["SYSTEM_CPU_SATURATED", "ANR_REASON_CLASSIFIED"],
+    "forbiddenHintIds": ["DEADLOCK_CYCLE"],
+    "primaryRootCauseHintId": "SYSTEM_CPU_SATURATED"
+  }
+}

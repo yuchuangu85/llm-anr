@@ -1,0 +1,37 @@
+{
+  "package_id": "NFW-01",
+  "provided_type": null,
+  "sources": {
+    "event_log": {
+      "path": "events.log",
+      "content": "04-12 10:00:01.000 am_proc_start Proc start\n04-12 10:00:03.000 wm_focus Focus moved\n04-12 10:00:05.000 am_anr ANR in com.demo: No focused window"
+    },
+    "trace": {
+      "path": "traces.txt",
+      "content": "04-12 10:00:05.100 ----- pid 100 at 2026-04-12 -----\nCmd line: com.demo\nmain tid=1 Native: waiting because no focused window"
+    },
+    "logcat": {
+      "path": "logcat.txt",
+      "content": "04-12 09:59:58.000 I System boot noise\n04-12 10:00:05.050 E InputDispatcher Application is not responding: no focused window\n04-12 10:00:10.000 I ActivityManager after anr"
+    },
+    "kernel_log": {
+      "path": "kernel.txt",
+      "content": "04-12 10:00:04.000 binder: transaction backlog\n04-12 10:00:06.000 sched: main thread stalled"
+    }
+  },
+  "expected": {
+    "status": "complete",
+    "detected_type": "no_focus_window",
+    "supported": true,
+    "fallback_mode": "none",
+    "primary_anchor_source": "event_log",
+    "required_p0_ids": [
+      "trace_core",
+      "event_am_anr",
+      "event_pre_window",
+      "logcat_anchor_window",
+      "kernel_anchor_window"
+    ],
+    "required_warning_codes": []
+  }
+}

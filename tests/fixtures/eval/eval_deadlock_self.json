@@ -1,0 +1,24 @@
+{
+  "id": "eval-deadlock-self",
+  "description": "Self-loop deadlock: thread waits on a monitor it itself already holds (reentrant bug).",
+  "package": {
+    "package_id": "EVAL-DL-SELF",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"oops\" prio=5 tid=7 Blocked\n  | sysTid=7\n  - waiting to lock <0xC0DE> (a Foo) held by thread 7\n  - locked <0xC0DE> (a Foo)\n  at com.demo.Oops.run(Oops.java:1)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["DEADLOCK_SELF"],
+    "forbiddenHintIds": ["DEADLOCK_CYCLE", "DEADLOCK_LIKELY"],
+    "primaryRootCauseHintId": "DEADLOCK_SELF"
+  }
+}

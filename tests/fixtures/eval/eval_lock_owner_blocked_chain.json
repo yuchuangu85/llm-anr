@@ -1,0 +1,24 @@
+{
+  "id": "eval-lock-chain",
+  "description": "Cascading lock chain main->A->B->C with C still doing work (no cycle).",
+  "package": {
+    "package_id": "EVAL-LOB-CHAIN",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Blocked\n  | sysTid=100\n  - waiting to lock <0x1111> (a L1) held by thread 2\n\"workerA\" prio=5 tid=2 Blocked\n  | sysTid=102\n  - waiting to lock <0x2222> (a L2) held by thread 3\n  - locked <0x1111> (a L1)\n\"workerB\" prio=5 tid=3 Blocked\n  | sysTid=103\n  - waiting to lock <0x3333> (a L3) held by thread 4\n  - locked <0x2222> (a L2)\n\"workerC\" prio=5 tid=4 Native\n  | sysTid=104\n  - locked <0x3333> (a L3)\n  native: #00 pc 0  /system/lib/libc.so (read+0)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["LOCK_OWNER_BLOCKED"],
+    "forbiddenHintIds": ["DEADLOCK_CYCLE", "NATIVE_POLL_IDLE_LIKELY"],
+    "primaryRootCauseHintId": "LOCK_OWNER_BLOCKED"
+  }
+}

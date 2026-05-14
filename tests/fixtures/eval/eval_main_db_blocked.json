@@ -1,0 +1,24 @@
+{
+  "id": "eval-main-db-blocked",
+  "description": "Main thread executing a SQLiteDatabase update (sync DB write on UI).",
+  "package": {
+    "package_id": "EVAL-DB",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=100\n  | state=S schedstat=( 600000000 100000000 200 ) utm=40 stm=20 core=0 HZ=100\n  at android.database.sqlite.SQLiteConnection.executeForLong(SQLiteConnection.java:600)\n  at android.database.sqlite.SQLiteDatabase.update(SQLiteDatabase.java:1234)\n  at com.demo.Db.save(Db.java:25)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["MAIN_DB_BLOCKED"],
+    "forbiddenHintIds": ["NATIVE_POLL_IDLE_LIKELY", "DEADLOCK_CYCLE"],
+    "primaryRootCauseHintId": "MAIN_DB_BLOCKED"
+  }
+}

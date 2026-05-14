@@ -1,0 +1,24 @@
+{
+  "id": "eval-lock-owner-sleeping",
+  "description": "Owner of a contended monitor is sleeping (typical: SP commit + Thread.sleep).",
+  "package": {
+    "package_id": "EVAL-LOS",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Blocked\n  | sysTid=100\n  - waiting to lock <0xDEAD> (a Foo) held by thread 9\n\"sleepy\" prio=5 tid=9 Sleeping\n  | sysTid=109\n  - locked <0xDEAD> (a Foo)\n  - sleeping on <0xBEEF>\n  at java.lang.Thread.sleep(Native method)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["LOCK_OWNER_SLEEPING"],
+    "forbiddenHintIds": ["DEADLOCK_CYCLE"],
+    "primaryRootCauseHintId": "LOCK_OWNER_SLEEPING"
+  }
+}

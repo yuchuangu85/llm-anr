@@ -1,0 +1,34 @@
+{
+  "package_id": "MISS-KERNEL-01",
+  "provided_type": "input_dispatching_timeout",
+  "sources": {
+    "event_log": {
+      "path": "events.log",
+      "content": "04-12 15:00:05.000 am_anr ANR in com.demo: Input dispatching timed out"
+    },
+    "trace": {
+      "path": "traces.txt",
+      "content": "04-12 15:00:05.100 main tid=1 input dispatching timeout"
+    },
+    "logcat": {
+      "path": "logcat.txt",
+      "content": "04-12 15:00:05.050 E InputDispatcher Input dispatching timed out"
+    }
+  },
+  "expected": {
+    "status": "partial",
+    "detected_type": "input_dispatching_timeout",
+    "supported": true,
+    "fallback_mode": "none",
+    "primary_anchor_source": "event_log",
+    "required_p0_ids": [
+      "trace_core",
+      "event_am_anr",
+      "event_pre_window",
+      "logcat_anchor_window"
+    ],
+    "required_warning_codes": [
+      "missing-source"
+    ]
+  }
+}

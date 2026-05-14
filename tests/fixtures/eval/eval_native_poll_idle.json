@@ -1,0 +1,24 @@
+{
+  "id": "eval-native-poll-idle",
+  "description": "Main parked in nativePollOnce with both runNs and waitNs tiny -> genuinely idle (trace is scapegoat).",
+  "package": {
+    "package_id": "EVAL-NPI",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,no focused window]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=100 nice=0\n  | state=S schedstat=( 8000000 12000000 50 ) utm=0 stm=0 core=0 HZ=100\n  native: #00 pc 00012345  /system/lib64/libc.so (__epoll_pwait+8)\n  at android.os.MessageQueue.nativePollOnce(Native method)\n  at android.os.Looper.loopOnce(Looper.java:174)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["NATIVE_POLL_IDLE_LIKELY"],
+    "forbiddenHintIds": ["NATIVE_POLL_BUT_BUSY", "DEADLOCK_CYCLE"],
+    "primaryRootCauseHintId": "NATIVE_POLL_IDLE_LIKELY"
+  }
+}

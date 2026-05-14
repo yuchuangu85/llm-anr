@@ -1,0 +1,37 @@
+{
+  "package_id": "IDT-01",
+  "provided_type": null,
+  "sources": {
+    "event_log": {
+      "path": "events.log",
+      "content": "04-12 11:00:00.000 am_proc_start Proc start\n04-12 11:00:03.000 am_anr ANR in com.demo: Input dispatching timed out"
+    },
+    "trace": {
+      "path": "traces.txt",
+      "content": "04-12 11:00:03.100 ----- pid 110 at 2026-04-12 -----\nmain tid=1 Blocked in input dispatching timeout"
+    },
+    "logcat": {
+      "path": "logcat.txt",
+      "content": "04-12 11:00:02.000 I random noise\n04-12 11:00:03.050 E InputDispatcher Input dispatching timed out (Waiting because the touched window has not finished processing)"
+    },
+    "kernel_log": {
+      "path": "kernel.txt",
+      "content": "04-12 11:00:02.500 sched: queue pressure\n04-12 11:00:03.500 binder: input thread blocked"
+    }
+  },
+  "expected": {
+    "status": "complete",
+    "detected_type": "input_dispatching_timeout",
+    "supported": true,
+    "fallback_mode": "none",
+    "primary_anchor_source": "event_log",
+    "required_p0_ids": [
+      "trace_core",
+      "event_am_anr",
+      "event_pre_window",
+      "logcat_anchor_window",
+      "kernel_anchor_window"
+    ],
+    "required_warning_codes": []
+  }
+}

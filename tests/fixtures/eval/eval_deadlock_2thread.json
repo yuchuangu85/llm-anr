@@ -1,0 +1,27 @@
+{
+  "id": "eval-deadlock-2thread",
+  "description": "Classic two-thread Java monitor deadlock (T1 holds A waits B; T2 holds B waits A).",
+  "package": {
+    "package_id": "EVAL-DL-2T",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 1234 at 2026-04-12 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Blocked\n  | sysTid=1234\n  - waiting to lock <0xAAAA> (a com.demo.LockB) held by thread 2\n  - locked <0xBBBB> (a com.demo.LockA)\n  at com.demo.Main.run(Main.java:1)\n\"worker\" prio=5 tid=2 Blocked\n  | sysTid=1235\n  - waiting to lock <0xBBBB> (a com.demo.LockA) held by thread 1\n  - locked <0xAAAA> (a com.demo.LockB)\n  at com.demo.Worker.run(Worker.java:1)"
+      },
+      "logcat": {
+        "path": "logcat.txt",
+        "content": "04-12 10:00:05.050 E InputDispatcher Application is not responding"
+      }
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["DEADLOCK_CYCLE"],
+    "forbiddenHintIds": ["NATIVE_POLL_IDLE_LIKELY", "DEADLOCK_LIKELY", "DEADLOCK_SELF"],
+    "primaryRootCauseHintId": "DEADLOCK_CYCLE"
+  }
+}

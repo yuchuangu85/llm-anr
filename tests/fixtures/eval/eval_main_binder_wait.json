@@ -1,0 +1,24 @@
+{
+  "id": "eval-main-binder-wait",
+  "description": "Main thread waiting on a binder reply (cross-process call hung).",
+  "package": {
+    "package_id": "EVAL-MBW",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=100\n  | state=S schedstat=( 50000000 800000000 200 ) utm=2 stm=3 core=0 HZ=100\n  native: #00 pc 0  /system/lib/libbinder.so (android::IPCThreadState::waitForResponse+8)\n  at android.os.BinderProxy.transactNative(Native method)\n  at android.os.BinderProxy.transact(BinderProxy.java:550)\n  at com.demo.Foo.callIPC(Foo.java:30)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["MAIN_BINDER_WAIT_REPLY"],
+    "forbiddenHintIds": ["NATIVE_POLL_IDLE_LIKELY", "DEADLOCK_CYCLE", "MAIN_SP_APPLY_WAIT"],
+    "primaryRootCauseHintId": "MAIN_BINDER_WAIT_REPLY"
+  }
+}

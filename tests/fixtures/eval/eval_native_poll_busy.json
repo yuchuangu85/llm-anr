@@ -1,0 +1,24 @@
+{
+  "id": "eval-native-poll-busy",
+  "description": "Main parked in nativePollOnce but schedstat shows ~500ms run time -> looper has been busy.",
+  "package": {
+    "package_id": "EVAL-NPB",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=100\n  | state=R schedstat=( 500000000 10000000 100 ) utm=50 stm=20 core=0 HZ=100\n  native: #00 pc 00012345  /system/lib64/libc.so (__epoll_pwait+8)\n  at android.os.MessageQueue.nativePollOnce(Native method)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["NATIVE_POLL_BUT_BUSY"],
+    "forbiddenHintIds": ["NATIVE_POLL_IDLE_LIKELY", "DEADLOCK_CYCLE"],
+    "primaryRootCauseHintId": "NATIVE_POLL_BUT_BUSY"
+  }
+}

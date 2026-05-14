@@ -1,0 +1,24 @@
+{
+  "id": "eval-main-render-fence",
+  "description": "Main thread inside HardwareRenderer.nativeSyncAndDrawFrame waiting on render thread / GPU fence.",
+  "package": {
+    "package_id": "EVAL-RENDER",
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1234 1234 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=100\n  | state=S schedstat=( 100000000 1500000000 200 ) utm=5 stm=8 core=0 HZ=100\n  at android.graphics.HardwareRenderer.nativeSyncAndDrawFrame(Native method)\n  at android.view.ViewRootImpl.performDraw(ViewRootImpl.java:5050)\n  at android.view.ViewRootImpl.draw(ViewRootImpl.java:4900)"
+      },
+      "logcat": {"path": "logcat.txt", "content": ""}
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["MAIN_RENDER_WAIT_FENCE"],
+    "forbiddenHintIds": ["NATIVE_POLL_IDLE_LIKELY", "DEADLOCK_CYCLE"],
+    "primaryRootCauseHintId": "MAIN_RENDER_WAIT_FENCE"
+  }
+}
