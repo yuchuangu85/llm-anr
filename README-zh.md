@@ -14,6 +14,21 @@
 - 保守分析流水线：normalize → analyze → hypothesize → root-cause → remediate → deliver。
 - AI-ready `anr_analysis.md`：固定四段专项分析槽位，便于人工/LLM 按步骤填写。
 
+## 通过 AI Agent 交互式使用
+
+cd 到 agent-anr 目录下，启动你的 AI coding agent（Claude Code / Codex CLI / Hermes / 等），然后输入自然语言指令：
+
+```text
+分析 <log目录路径> 目录下包名为 com.example.app 的 ANR 原因
+```
+
+Agent 会自动完成以下步骤：
+
+1. 运行 `python3 scripts/anr_to_ai.py <路径> --package com.example.app` 生成 AI 分析上下文
+2. 读取并按四阶段分析所有证据（Trace → EventLog → Logcat/AnrManager → Final ANR）
+3. 将综合分析写回 `anr_ai_context/<anr-id>/anr_analysis.md`
+4. 输出最终结构化报告：时间线、直接阻塞点、候选根因链、证据质量评估、修复建议
+
 ## 快速开始：生成 AI 分析上下文
 
 推荐入口：
@@ -233,17 +248,4 @@ python3 scripts/anr_to_ai.py bugreport.zip
 python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json > delivery.md
 ```
 
-### 通过 AI Agent 交互式使用
 
-cd 到 agent-anr 目录下，启动你的 AI coding agent（Claude Code / Codex CLI / Hermes / 等），然后输入自然语言指令：
-
-```text
-分析 <log目录路径> 目录下包名为 com.example.app 的 ANR 原因
-```
-
-Agent 会自动完成以下步骤：
-
-1. 运行 `python3 scripts/anr_to_ai.py <路径> --package com.example.app` 生成 AI 分析上下文
-2. 读取并按四阶段分析所有证据（Trace → EventLog → Logcat/AnrManager → Final ANR）
-3. 将综合分析写回 `anr_ai_context/<anr-id>/anr_analysis.md`
-4. 输出最终结构化报告：时间线、直接阻塞点、候选根因链、证据质量评估、修复建议

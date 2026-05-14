@@ -13,6 +13,21 @@
 - Conservative analysis pipeline: normalize → analyze → hypothesize → root-cause → remediate → deliver.
 - AI-ready `anr_analysis.md`: four fixed-phase analysis slots for structured human/LLM fill-in.
 
+## Interactive AI Agent usage
+
+cd into the agent-anr directory, launch your AI coding agent (Claude Code / Codex CLI / Hermes / etc.), then type a natural language command:
+
+```text
+Analyze the ANR cause for package com.example.app in <log_directory_path>
+```
+
+The agent will automatically:
+
+1. Run `python3 scripts/anr_to_ai.py <path> --package com.example.app` to generate the AI context
+2. Read and analyze the evidence across all four phases (Trace → EventLog → Logcat/AnrManager → Final ANR)
+3. Write the comprehensive synthesis back into `anr_ai_context/<anr-id>/anr_analysis.md`
+4. Output a final structured report with timeline, direct blocking point, candidate root-cause chains, evidence quality assessment, and remediation suggestions
+
 ## Quick start: generating AI analysis context
 
 Recommended entrypoint:
@@ -232,17 +247,4 @@ Open `anr_ai_context/index.json`, then analyze each `<anr-id>/anr_analysis.md` i
 python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json > delivery.md
 ```
 
-### Interactive AI Agent usage
 
-cd into the agent-anr directory, launch your AI coding agent (Claude Code / Codex CLI / Hermes / etc.), then type a natural language command:
-
-```text
-Analyze the ANR cause for package com.example.app in <log_directory_path>
-```
-
-The agent will automatically:
-
-1. Run `python3 scripts/anr_to_ai.py <path> --package com.example.app` to generate the AI context
-2. Read and analyze the evidence across all four phases (Trace → EventLog → Logcat/AnrManager → Final ANR)
-3. Write the comprehensive synthesis back into `anr_ai_context/<anr-id>/anr_analysis.md`
-4. Output a final structured report with timeline, direct blocking point, candidate root-cause chains, evidence quality assessment, and remediation suggestions
