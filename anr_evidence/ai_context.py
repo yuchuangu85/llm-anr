@@ -132,11 +132,16 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
         group_dir = out_dir / group["id"]
         group_dir.mkdir(parents=True, exist_ok=True)
         analysis_path = group_dir / "anr_analysis.md"
+        logcat_path = group_dir / "logcat.txt"
+        logcat_lines = group.get("logcat", {}).get("lines", [])
+        logcat_path.write_text(("\n".join(logcat_lines) + "\n") if logcat_lines else "", encoding="utf-8")
+        group_for_render = _with_logcat_artifact_reference(group, logcat_path.name)
         artifact_paths = {
             "analysis": str(analysis_path),
+            "logcat": str(logcat_path),
         }
         existing = _read_existing_analyses(analysis_path) if analysis_path.exists() else {}
-        evidence_md = _render_cache_markdown(package, [group], result.options, render_strategy, include_analysis_slots=True)
+        evidence_md = _render_cache_markdown(package, [group_for_render], result.options, render_strategy, include_analysis_slots=True)
         anr_analysis_md = _render_ai_prompt(evidence_md, [group], render_strategy, evidence_analysis_md=evidence_md)
         if existing:
             anr_analysis_md = _merge_analyses(anr_analysis_md, existing)
@@ -198,6 +203,16 @@ def _group_warning_count(group: dict[str, Any]) -> int:
         len(group.get(section, {}).get("warnings", []))
         for section in ("trace", "eventLog", "logcat", "anrManager", "meminfo")
     )
+
+
+def _with_logcat_artifact_reference(group: dict[str, Any], filename: str) -> dict[str, Any]:
+    """Return a shallow render copy that points Markdown to external logcat evidence."""
+
+    rendered = dict(group)
+    logcat = dict(group.get("logcat", {}))
+    logcat["artifactFilename"] = filename
+    rendered["logcat"] = logcat
+    return rendered
 
 
 def _resolve_options(options: AiContextOptions, strategy: AnrTypeStrategy) -> AiContextOptions:
@@ -872,12 +887,22 @@ def _render_cache_markdown(
                     "输出 Anchor/am_anr、pre-ANR sequence、state-machine interpretation、EventLog-only conclusion、gaps、confidence。",
                 ],
             )
-        _append_section(
-            lines,
-            "Logcat 系统日志",
-            group["logcat"].get("lines", []),
-            group["logcat"].get("warnings", []),
-        )
+        logcat_artifact = group["logcat"].get("artifactFilename")
+        if include_analysis_slots and logcat_artifact:
+            _append_logcat_artifact_reference(
+                lines,
+                logcat_artifact,
+                group["logcat"].get("lines", []),
+                group["logcat"].get("warnings", []),
+                group["logcat"].get("metadata", {}),
+            )
+        else:
+            _append_section(
+                lines,
+                "Logcat 系统日志",
+                group["logcat"].get("lines", []),
+                group["logcat"].get("warnings", []),
+            )
         anrmanager = group.get("anrManager")
         if anrmanager and anrmanager.get("lines"):
             _append_anrmanager_summary(lines, anrmanager.get("summary"))
@@ -891,7 +916,7 @@ def _render_cache_markdown(
                 "logcat-anrmanager",
                 "anr-logcat-analysis",
                 [
-                    "分析 Logcat 中的 AnrManager 原始行、AnrManager 摘要 与 Meminfo 目标/高负载跟进。",
+                    "先读取同目录 `logcat.txt` 中的过滤后 Logcat，再结合 AnrManager 摘要 与 Meminfo 目标/高负载跟进。",
                     "输出 trigger line、dump lifecycle、window/focus/surface sequence、load/PSI/meminfo、Logcat-only conclusion、gaps、confidence。",
                 ],
             )
@@ -916,6 +941,33 @@ def _render_cache_markdown(
                 ],
             )
     return "\n".join(lines).rstrip()
+
+
+def _append_logcat_artifact_reference(
+    lines: list[str],
+    filename: str,
+    content_lines: list[str],
+    warnings: list[dict[str, str]],
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Render a compact pointer to the external filtered logcat artifact."""
+
+    lines.extend(["### Logcat 系统日志"])
+    if warnings:
+        lines.append(f"- Warnings: `{'; '.join(w['code'] for w in warnings)}`")
+    lines.append(f"- 过滤后的 Logcat 已单独保存为：`{filename}`")
+    lines.append(f"- Retained lines: `{len(content_lines)}`")
+    if metadata:
+        pre_count = metadata.get("anrManagerPreContextRetainedLineCount")
+        pre_anchor = metadata.get("anrManagerPreContextAnchor")
+        if pre_count is not None:
+            lines.append(f"- AnrManager pre-context retained lines: `{pre_count}`")
+        if pre_anchor:
+            lines.append(f"- AnrManager pre-context anchor: `{pre_anchor}`")
+    lines.extend([
+        "- 分析本段时请读取同目录下该文件；`anr_analysis.md` 不再内联大段 logcat 文本。",
+        "",
+    ])
 
 
 def _render_inline_analysis_markdown(package: dict[str, Any], groups: list[dict[str, Any]], options: AiContextOptions, strategy: AnrTypeStrategy) -> str:
@@ -1261,6 +1313,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "- 不要求上下文行都包含目标包名；要解释 next app、system_server 或其它进程事件如何影响 ANR。",
         "",
         "### Logcat 与 AnrManager 分析要求",
+        "- 若 `### Logcat 系统日志` 只给出 `logcat.txt` 文件名，必须先读取同目录下该文件，再分析 InputDispatcher、WindowManager、ActivityManager、AnrManager 的关键行。",
         "- 分析 InputDispatcher、WindowManager、ActivityManager、AnrManager 的关键行，尤其真实触发点和 dump/kill/restart 流程。",
         "- 对窗口/focus/surface/transition 事件写清顺序：focus from/to、relayout、surface show/hide、finishDrawing/reportDrawFinished、window death。",
         "- 分析 AnrManager CPU/PSI/Load/trace dump 字段；必须按“Total整体负载/IO → 目标包 Top 负载 → 高负载进程内存证据（meminfo/PSI/GC/LMK/OOM）→ 外部进程压力”顺序归因；若目标包 CPU `>85%`，必须写成应用自身负载过高，并结合目标包内存提示判断是否大概率内存泄漏/内存膨胀；若缺失或只有部分 block，也要写明缺口。",

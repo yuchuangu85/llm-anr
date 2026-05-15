@@ -103,6 +103,12 @@ class AiContextTests(unittest.TestCase):
             second_dir = Path(tmpdir, 'anr-20260412-100105-000')
             first_analysis = (first_dir / 'anr_analysis.md').read_text(encoding='utf-8')
             second_analysis = (second_dir / 'anr_analysis.md').read_text(encoding='utf-8')
+            first_logcat_path = first_dir / 'logcat.txt'
+            second_logcat_path = second_dir / 'logcat.txt'
+            first_logcat = first_logcat_path.read_text(encoding='utf-8')
+            second_logcat = second_logcat_path.read_text(encoding='utf-8')
+            first_logcat_exists = first_logcat_path.exists()
+            second_logcat_exists = second_logcat_path.exists()
             first_dir_exists = first_dir.is_dir()
             second_dir_exists = second_dir.is_dir()
             top_cache_exists = Path(tmpdir, 'cache.md').exists()
@@ -117,8 +123,15 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(index_json['groups'][0]['analysisSlots']['trace'], 'pending')
         self.assertFalse(index_json['groups'][0]['analysisComplete'])
         self.assertEqual(summary['groups'][0]['artifactPaths']['analysis'], str(first_dir / 'anr_analysis.md'))
+        self.assertEqual(summary['groups'][0]['artifactPaths']['logcat'], str(first_dir / 'logcat.txt'))
         self.assertTrue(first_dir_exists)
         self.assertTrue(second_dir_exists)
+        self.assertTrue(first_logcat_exists)
+        self.assertTrue(second_logcat_exists)
+        self.assertIn('04-12 10:00:05.050 E InputDispatcher no focused window for com.demo', first_logcat)
+        self.assertIn('04-12 10:01:05.050 E InputDispatcher Input dispatching timed out for com.demo', second_logcat)
+        self.assertNotIn('04-12 10:00:05.050 E InputDispatcher no focused window for com.demo', first_analysis)
+        self.assertIn('过滤后的 Logcat 已单独保存为：`logcat.txt`', first_analysis)
         self.assertIn('## anr-20260412-100005-000', first_analysis)
         self.assertNotIn('## anr-20260412-100105-000', first_analysis)
         self.assertIn('## anr-20260412-100105-000', second_analysis)
@@ -477,13 +490,17 @@ class AiContextTests(unittest.TestCase):
             group_dir = out / 'anr-20260412-110003-000'
             self.assertTrue((out / 'index.json').exists())
             self.assertTrue((group_dir / 'anr_analysis.md').exists())
+            self.assertTrue((group_dir / 'logcat.txt').exists())
             self.assertFalse((group_dir / 'cache.md').exists())
             self.assertFalse((group_dir / 'ai_prompt.md').exists())
             self.assertFalse((group_dir / 'analysis.md').exists())
             self.assertFalse((group_dir / 'summary.json').exists())
             self.assertFalse((out / 'cache.md').exists())
             self.assertIn('"groupCount": 1', completed.stdout)
-            self.assertIn('Input dispatching timed out', (group_dir / 'anr_analysis.md').read_text(encoding='utf-8'))
+            analysis_text = (group_dir / 'anr_analysis.md').read_text(encoding='utf-8')
+            self.assertIn('Input dispatching timed out', analysis_text)
+            self.assertIn('logcat.txt', analysis_text)
+            self.assertIn('04-12 11:00:03.050 E InputDispatcher Input dispatching timed out', (group_dir / 'logcat.txt').read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':
