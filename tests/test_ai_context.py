@@ -216,10 +216,21 @@ class AiContextTests(unittest.TestCase):
 
         result = build_ai_context(package, AiContextOptions(package_name='com.demo'))
 
-        self.assertEqual(result.groups[0]['id'], 'anr-unanchored')
+        self.assertEqual(result.groups[0]['id'], 'anr-unanchored-20260412-100005-100')
         self.assertIsNone(result.groups[0]['anchor'])
+        self.assertEqual(result.groups[0]['inferredAnrTime'], '04-12 10:00:05.100')
+        self.assertEqual(result.groups[0]['inferredAnrTimeSource'], 'trace')
         self.assertFalse(result.groups[0]['fallbackUsed'])
         self.assertEqual(result.groups[0]['eventLog']['warnings'][0]['code'], 'target-am-anr-not-found')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = build_ai_context_artifacts(package, AiContextOptions(out_dir=tmpdir, package_name='com.demo'))
+            self.assertEqual(summary['groups'][0]['id'], 'anr-unanchored-20260412-100005-100')
+            analysis_path = Path(tmpdir) / 'anr-unanchored-20260412-100005-100' / 'anr_analysis.md'
+            self.assertTrue(analysis_path.exists())
+            analysis = analysis_path.read_text(encoding='utf-8')
+            self.assertIn('## anr-unanchored-20260412-100005-100', analysis)
+            self.assertIn('Inferred ANR time: `04-12 10:00:05.100`', analysis)
 
     def test_no_package_filter_infers_package_from_eventlog_anchor_for_logcat(self) -> None:
         package = {

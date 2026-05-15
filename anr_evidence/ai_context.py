@@ -224,14 +224,17 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         anchors = _fallback_anchors(sources, options.package_name, strategy)
     if not anchors:
         trace = _trace_context(sources.get("trace"), None)
+        inferred_anr_dt = _trace_selected_timestamp(trace)
         warning = (
             {"code": "target-am-anr-not-found", "message": f"No EventLog am_anr line matched package `{options.package_name}`."}
             if options.package_name
             else {"code": "missing-anchor", "message": "No ANR anchor was found."}
         )
         group = {
-            "id": "anr-unanchored",
+            "id": _unanchored_group_id(inferred_anr_dt),
             "anchor": None,
+            "inferredAnrTime": timestamp_to_raw(inferred_anr_dt) if inferred_anr_dt else None,
+            "inferredAnrTimeSource": "trace" if inferred_anr_dt else None,
             "fallbackUsed": fallback_used,
             "strategy": _strategy_summary(strategy),
             "trace": trace,
@@ -819,7 +822,7 @@ def _render_cache_markdown(
     ]
     for group in groups:
         anchor = group.get("anchor")
-        title = group["id"] if anchor else "anr-unanchored"
+        title = group["id"]
         lines.extend([f"## {title}", ""])
         if anchor:
             lines.extend([
@@ -832,7 +835,13 @@ def _render_cache_markdown(
                 "",
             ])
         else:
-            lines.extend(["### 锚点", "- 未找到带时间戳的 ANR 锚点。", ""])
+            lines.extend(["### 锚点", "- 未找到匹配的 EventLog `am_anr` 锚点。"])
+            if group.get("inferredAnrTime"):
+                lines.extend([
+                    f"- Inferred ANR time: `{group['inferredAnrTime']}` (source: `{group.get('inferredAnrTimeSource', 'unknown')}`)",
+                    "- Folder id uses this inferred ANR time to avoid a timeless `anr-unanchored` directory.",
+                ])
+            lines.append("")
         _append_deadlock_section(lines, group["trace"].get("lockGraph"), group["trace"].get("deadlockHints", []))
         _append_trace_hints_section(lines, group["trace"].get("traceHints", []), group["trace"].get("deadlockHints", []))
         annotated_trace_lines = _inject_hint_markers(
@@ -1349,3 +1358,17 @@ def _strategy_summary(strategy: AnrTypeStrategy) -> dict[str, Any]:
 
 def _group_id(timestamp: datetime) -> str:
     return f"anr-{timestamp.strftime('%Y%m%d-%H%M%S-%f')[:-3]}"
+
+
+def _unanchored_group_id(timestamp: datetime | None) -> str:
+    if timestamp is None:
+        return "anr-unanchored"
+    return f"anr-unanchored-{timestamp.strftime('%Y%m%d-%H%M%S-%f')[:-3]}"
+
+
+def _trace_selected_timestamp(trace: dict[str, Any]) -> datetime | None:
+    metadata = trace.get("metadata") or {}
+    selected = metadata.get("selectedSectionTimestamp")
+    if not selected:
+        return None
+    return parse_log_timestamp(selected)

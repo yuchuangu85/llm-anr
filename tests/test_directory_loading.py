@@ -102,6 +102,28 @@ class DirectoryLoadingTests(unittest.TestCase):
             run.assert_called_once()
             self.assertEqual(run.call_args.args[0], ["/usr/bin/rg", "-n", "--fixed-strings", "am_anr", str(root)])
 
+    def test_command_anchor_uses_earliest_matching_package_am_anr(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("anr_evidence.loaders.core.shutil.which") as which,
+            patch("anr_evidence.loaders.core.subprocess.run") as run,
+        ):
+            root = Path(tmpdir)
+            which.side_effect = lambda name: "/usr/bin/rg" if name == "rg" else None
+            run.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=(
+                    "later/events.txt:9:04-22 19:08:39.106 am_anr ANR in com.demo\n"
+                    "first/events.txt:2:04-22 02:34:34.522 am_anr ANR in com.demo\n"
+                    "other/events.txt:1:04-22 01:00:00.000 am_anr ANR in com.other\n"
+                ),
+            )
+
+            timestamp = find_event_anr_timestamp_by_command(root, "com.demo")
+
+            self.assertEqual(timestamp, datetime(2026, 4, 22, 2, 34, 34, 522000))
+
     def test_command_anchor_falls_back_to_grep(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
