@@ -80,14 +80,14 @@ class MeminfoFilterTests(unittest.TestCase):
         self.assertIn("com.other.hog", "\n".join(result.lines))
         self.assertIn("com.demo", "\n".join(result.lines))
 
-    def test_meminfo_filter_selects_snapshot_nearest_anchor(self) -> None:
+    def test_meminfo_filter_selects_latest_snapshot_before_anchor(self) -> None:
         source = {"path": "System_log/meminfo.txt", "content": _meminfo_sample(), "readable": True}
 
         result = filter_meminfo_source(
             source,
             SourceFilterContext(
                 package_name="com.demo",
-                anchor_dt=datetime.strptime("2026-05-03 10:00:50", "%Y-%m-%d %H:%M:%S"),
+                anchor_dt=datetime.strptime("2026-05-03 10:01:40", "%Y-%m-%d %H:%M:%S"),
             ),
             MeminfoFilterOptions(package_name="com.demo", high_processes=("com.other.hog",), top_n=1),
         )
@@ -97,6 +97,40 @@ class MeminfoFilterTests(unittest.TestCase):
         nearest = [h for h in target_history if h.get("timestamp") == "2026-05-03 10:00:50"]
         self.assertTrue(len(nearest) > 0)
         self.assertIn("2026-05-03 10:00:50", "\n".join(result.lines))
+        self.assertNotIn("2026-05-03 10:01:50", "\n".join(result.lines))
+        self.assertEqual(result.metadata["selectionPolicy"], "latest-before-anchor")
+
+    def test_meminfo_filter_ignores_closer_snapshot_after_anchor(self) -> None:
+        source = {"path": "System_log/meminfo.txt", "content": _meminfo_sample(), "readable": True}
+
+        result = filter_meminfo_source(
+            source,
+            SourceFilterContext(
+                package_name="com.demo",
+                anchor_dt=datetime.strptime("2026-05-03 10:01:49", "%Y-%m-%d %H:%M:%S"),
+            ),
+            MeminfoFilterOptions(package_name="com.demo", high_processes=("com.other.hog",), top_n=1),
+        )
+
+        self.assertEqual(result.metadata["selectedTimestamp"], "2026-05-03 10:00:50")
+        self.assertIn("2026-05-03 10:00:50", "\n".join(result.lines))
+        self.assertNotIn("2026-05-03 10:01:50", "\n".join(result.lines))
+
+    def test_meminfo_filter_reports_when_no_snapshot_before_anchor(self) -> None:
+        source = {"path": "System_log/meminfo.txt", "content": _meminfo_sample(), "readable": True}
+
+        result = filter_meminfo_source(
+            source,
+            SourceFilterContext(
+                package_name="com.demo",
+                anchor_dt=datetime.strptime("2026-05-03 10:00:50", "%Y-%m-%d %H:%M:%S"),
+            ),
+            MeminfoFilterOptions(package_name="com.demo", top_n=1),
+        )
+
+        self.assertIsNone(result.metadata["selectedTimestamp"])
+        self.assertEqual(result.metadata["selectedCount"], 0)
+        self.assertEqual(result.warnings[0]["code"], "missing-meminfo-before-anchor")
 
     def test_meminfo_cli_loads_system_log_meminfo(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

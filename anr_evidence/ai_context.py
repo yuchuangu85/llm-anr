@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .am_anr import package_name_from_am_anr_line
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .constants import TIME_ANCHOR_PRECEDENCE
@@ -218,19 +219,24 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
     events: list[dict[str, Any]] = []
     anchors = _event_anchors(sources.get("event_log", {}).get("content", ""), options.package_name)
     fallback_used = False
-    if not anchors:
+    if not anchors and not options.package_name:
         fallback_used = True
         anchors = _fallback_anchors(sources, options.package_name, strategy)
     if not anchors:
         trace = _trace_context(sources.get("trace"), None)
+        warning = (
+            {"code": "target-am-anr-not-found", "message": f"No EventLog am_anr line matched package `{options.package_name}`."}
+            if options.package_name
+            else {"code": "missing-anchor", "message": "No ANR anchor was found."}
+        )
         group = {
             "id": "anr-unanchored",
             "anchor": None,
-            "fallbackUsed": True,
+            "fallbackUsed": fallback_used,
             "strategy": _strategy_summary(strategy),
             "trace": trace,
-            "eventLog": {"lines": [], "warnings": [{"code": "missing-anchor", "message": "No ANR anchor was found."}]},
-            "logcat": {"lines": [], "warnings": [{"code": "missing-anchor", "message": "No ANR anchor was found."}]},
+            "eventLog": {"lines": [], "warnings": [warning]},
+            "logcat": {"lines": [], "warnings": [warning]},
             "completeness": _completeness(sources, trace.get("lines", []), [], None),
         }
         events.extend(_group_step_events(group))
@@ -241,6 +247,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
     groups = []
     for anchor in anchors:
         anchor_dt = anchor["timestamp"]
+        effective_package_name = options.package_name or anchor.get("packageName")
         event_lines, event_warnings = _event_window(sources.get("event_log", {}).get("content", ""), anchor, options, strategy)
         trace = _trace_context(sources.get("trace"), anchor_dt)
         logcat_result = filter_timestamp_window(
@@ -251,17 +258,17 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 before_seconds=options.logcat_before_seconds,
                 after_seconds=options.logcat_after_seconds,
                 include_patterns=strategy.logcat_patterns,
-                package_name=options.package_name,
+                package_name=effective_package_name,
             ),
             fallback_label="logcat-ai-context",
         )
 
         # Extract the AnrManager diagnostic block (memory pressure, CPU usage,
-        # AnrDumpRecord, addErrorToDropBox) for the target package.
+        # AnrDumpRecord, addErrorToDropBox) for the target or inferred package.
         anrmanager_result = filter_logcat_anrmanager_block(
             sources.get("logcat", {}),
-            SourceFilterContext(anchor_dt=anchor_dt, package_name=options.package_name),
-            SourceFilterOptions(package_name=options.package_name),
+            SourceFilterContext(anchor_dt=anchor_dt, package_name=effective_package_name),
+            SourceFilterOptions(package_name=effective_package_name),
         )
         # Merge raw logcat context immediately preceding the selected
         # AnrManager dump, then the AnrManager block, then the generic
@@ -279,9 +286,9 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         anrmanager_summary = parse_anrmanager_block(anrmanager_lines) if anrmanager_lines else None
         meminfo_result = filter_meminfo_source(
             sources.get("meminfo", {}),
-            SourceFilterContext(anchor_dt=anchor_dt, package_name=options.package_name),
+            SourceFilterContext(anchor_dt=anchor_dt, package_name=effective_package_name),
             MeminfoFilterOptions(
-                package_name=options.package_name,
+                package_name=effective_package_name,
                 high_processes=_top_process_names_from_anrmanager(anrmanager_summary),
                 high_pids=_top_pids_from_anrmanager(anrmanager_summary),
                 top_n=5,
@@ -319,6 +326,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 "sourceKind": anchor["sourceKind"],
                 "timestamp": timestamp_to_raw(anchor_dt),
                 "line": anchor["line"],
+                "packageName": effective_package_name,
             },
             "fallbackUsed": fallback_used or anchor.get("fallback", False),
             "strategy": _strategy_summary(strategy),
@@ -456,12 +464,14 @@ def _event_anchors(content: str, package_name: str | None) -> list[dict[str, Any
         ts = parse_log_timestamp(line)
         if ts is None:
             continue
+        inferred_package_name = package_name_from_am_anr_line(line)
         anchors.append({
             "sourceKind": "event_log",
             "timestamp": ts,
             "line": line.strip(),
             "lineIndex": index,
             "dedupeKey": _anchor_dedupe_key(line),
+            "packageName": package_name or inferred_package_name,
         })
     return anchors
 
@@ -1196,7 +1206,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "  - `MAIN_RENDER_WAIT_FENCE` = 主线程在 ThreadedRenderer 同步 GPU 帧 / 等 fence。",
         "  - 一条主线程可同时命中多个 MAIN_* hint，没有互斥要求；按 confidence 优先级综合。",
         "- 若分组下有 `### AnrManager Summary` 小节，里面的 `Reason` / `CPU TOTAL` / `Top CPU processes` / `PSI memory.some` 是 AOSP 端权威字段，比从 trace 自由推断更可靠：",
-        "  - AnrManager 负载归因顺序必须是：先看 `CPU TOTAL`/`iowait` 判断整体 CPU 或 IO 是否高；再看 `Top CPU processes` 判断目标包是否高负载；若目标包高负载，必须联动 meminfo/PSI/GC/LMK/OOM 证据判断是否应用内存泄漏、内存抖动或 OOM 放大；若其它进程高负载，则同样检查该进程内存/IO 证据，并把它归为外部系统压力或跨进程影响候选。",
+        "  - AnrManager 负载归因顺序必须是：先看 `CPU TOTAL`/`iowait` 判断整体 CPU 或 IO 是否高；再看 `Top CPU processes` 判断目标包是否高负载。若目标包 CPU `>85%`（例如 114%），即使 TOTAL 未到 90%，也要明确标记为**应用自身负载过高**；必须联动目标包 meminfo/ANR metadata/PSI/GC/LMK/OOM 证据，若 PSS/RSS/Anon RSS 偏高或 trace 出现 GC 等待，应把它归为应用负载问题，**大概率为内存泄漏或内存膨胀导致的 GC/分配抖动**（仍需 heap/GC 证据最终确认）。若其它进程高负载，则同样检查该进程内存/IO 证据，并把它归为外部系统压力或跨进程影响候选。",
         "  - 没有目标包/其它高负载进程的内存证据时，不能直接下“内存泄漏”或“OOM”结论，只能标记为待确认缺口。",
         "  - `[ANR_REASON_CLASSIFIED]` 的 `anrType` 字段是 AOSP 给出的 ANR 类型，应作为分析分支判定的首选依据。",
         "  - `[SYSTEM_CPU_SATURATED / strong / warning]` 出现时，主线程「卡」更可能是被调度饿死，而非应用代码问题。",
@@ -1244,7 +1254,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "### Logcat 与 AnrManager 分析要求",
         "- 分析 InputDispatcher、WindowManager、ActivityManager、AnrManager 的关键行，尤其真实触发点和 dump/kill/restart 流程。",
         "- 对窗口/focus/surface/transition 事件写清顺序：focus from/to、relayout、surface show/hide、finishDrawing/reportDrawFinished、window death。",
-        "- 分析 AnrManager CPU/PSI/Load/trace dump 字段；必须按“Total整体负载/IO → 目标包 Top 负载 → 高负载进程内存证据（meminfo/PSI/GC/LMK/OOM）→ 外部进程压力”顺序归因；若缺失或只有部分 block，也要写明缺口。",
+        "- 分析 AnrManager CPU/PSI/Load/trace dump 字段；必须按“Total整体负载/IO → 目标包 Top 负载 → 高负载进程内存证据（meminfo/PSI/GC/LMK/OOM）→ 外部进程压力”顺序归因；若目标包 CPU `>85%`，必须写成应用自身负载过高，并结合目标包内存提示判断是否大概率内存泄漏/内存膨胀；若缺失或只有部分 block，也要写明缺口。",
         "- 若 cache 中存在 `### Meminfo 目标/高负载跟进`，必须在 AnrManager 负载分析之后引用该节，验证目标包和 AnrManager Top 高负载进程的 PSS/RSS/系统内存状态。",
         "- 区分 ANR 触发前证据、dump 期间证据、ANR 后恢复/重启证据，避免把后置日志当根因。",
         "",

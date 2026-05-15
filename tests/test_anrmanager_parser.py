@@ -98,7 +98,44 @@ class AnrManagerParserTests(unittest.TestCase):
         self.assertEqual(summary["cpuTopProcesses"][0]["processName"], "com.android.launcher")
         self.assertEqual(summary["cpuTopProcesses"][0]["totalPct"], 93.0)
         self.assertIsNotNone(_hint(summary, "SYSTEM_SERVER_CPU_HIGH"))
-        self.assertIsNotNone(_hint(summary, "ANR_PROCESS_CPU_HIGH"))
+        app_hint = _hint(summary, "ANR_PROCESS_CPU_HIGH")
+        self.assertIsNotNone(app_hint)
+        self.assertEqual(app_hint["thresholdPct"], 85)
+        self.assertTrue(app_hint["requiresMemoryCorrelation"])
+        self.assertEqual(app_hint["suspectedIssue"], "app_load_high_possible_memory_leak")
+        self.assertIn("应用自身负载过高", app_hint["message"])
+        self.assertIn("内存泄漏", app_hint["message"])
+
+    def test_target_cpu_over_85_in_two_pid_threadtime_marks_app_load_high(self) -> None:
+        lines = [
+            "04-22 02:34:38.785  1485  7148 I AnrManager: ANR in com.tcl.android.launcher (com.tcl.android.launcher/.uioverrides.TclQuickstepLauncher), time=17659496",
+            "04-22 02:34:38.785  1485  7148 I AnrManager: Reason: Input dispatching timed out (Application does not have a focused window).",
+            "04-22 02:34:38.785  1485  7148 I AnrManager:   114% 6039/com.tcl.android.launcher: 92% user + 22% kernel / faults: 17606 minor 15 major",
+            "04-22 02:34:38.785  1485  7148 I AnrManager: 72% TOTAL: 43% user + 26% kernel + 0% iowait",
+        ]
+
+        summary = parse_anrmanager_block(lines)
+
+        self.assertEqual(summary["anrPackage"], "com.tcl.android.launcher")
+        self.assertEqual(summary["cpuTotal"]["totalPct"], 72.0)
+        self.assertIsNone(_hint(summary, "SYSTEM_CPU_SATURATED"))
+        app_hint = _hint(summary, "ANR_PROCESS_CPU_HIGH")
+        self.assertIsNotNone(app_hint)
+        self.assertEqual(app_hint["process"]["totalPct"], 114.0)
+        self.assertEqual(app_hint["process"]["processName"], "com.tcl.android.launcher")
+        self.assertIn("CPU=114.0% (>85%)", app_hint["message"])
+        self.assertIn("大概率为内存泄漏或内存膨胀", app_hint["message"])
+
+    def test_target_cpu_at_or_below_85_does_not_emit_app_overload_hint(self) -> None:
+        lines = [
+            "04-22 02:34:38.785  1485  7148 I AnrManager: ANR in com.demo",
+            "04-22 02:34:38.785  1485  7148 I AnrManager:   85% 6039/com.demo: 60% user + 25% kernel",
+            "04-22 02:34:38.785  1485  7148 I AnrManager: 70% TOTAL: 43% user + 26% kernel",
+        ]
+
+        summary = parse_anrmanager_block(lines)
+
+        self.assertIsNone(_hint(summary, "ANR_PROCESS_CPU_HIGH"))
 
     def test_cpu_saturation_hint(self) -> None:
         lines = [

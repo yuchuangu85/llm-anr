@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..am_anr import package_name_from_am_anr_line
 from ..constants import OPTIONAL_SOURCE_KINDS, SOURCE_KINDS
 from ..log_filter import parse_log_timestamp
 from ..sources.shared import select_preceding_entries_for_anchor
@@ -70,20 +71,24 @@ def trace_anr_timestamp_from_entry_list(entries: list[dict[str, Any]]) -> dateti
 
 
 def _event_anr_timestamp_from_entries(entries: list[dict[str, Any]], package_name: str | None) -> datetime | None:
-    """Return the first EventLog ``am_anr`` timestamp for *package_name*.
+    """Return the first EventLog ``am_anr`` timestamp.
 
-    When the caller provides a target package, the EventLog anchor is the most
-    precise way to select matching sharded event/logcat files and the
-    corresponding trace.  This avoids choosing an unrelated earlier trace in
-    multi-ANR Monkey result directories.
+    When the caller provides a target package, only package-matching ``am_anr``
+    lines are considered.  Without a package filter, the first timestamped
+    ``am_anr`` line with an identifiable package/process becomes the EventLog
+    anchor so archives and command-less environments use the same
+    pre-``anr_ai_context`` anchoring semantics as the fg/rg/grep fast path.
     """
 
-    if not package_name:
-        return None
     for entry in entries:
         for line in entry.get("content", "").splitlines():
             lowered = line.lower()
-            if "am_anr" not in lowered or package_name not in line:
+            if "am_anr" not in lowered:
+                continue
+            if package_name:
+                if package_name not in line:
+                    continue
+            elif package_name_from_am_anr_line(line) is None:
                 continue
             timestamp = parse_log_timestamp(line)
             if timestamp is not None:

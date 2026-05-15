@@ -145,6 +145,9 @@ class AiContextTests(unittest.TestCase):
         self.assertIn('`## 综合分析结论`', first_analysis)
         self.assertIn('不得只在聊天回复中输出', first_analysis)
         self.assertIn('先看 `CPU TOTAL`/`iowait` 判断整体 CPU 或 IO 是否高', first_analysis)
+        self.assertIn('目标包 CPU `>85%`', first_analysis)
+        self.assertIn('应用自身负载过高', first_analysis)
+        self.assertIn('大概率为内存泄漏或内存膨胀', first_analysis)
         self.assertIn('Total整体负载/IO → 目标包 Top 负载 → 高负载进程内存证据', first_analysis)
         self.assertIn('### Meminfo 目标/高负载跟进', first_analysis)
         self.assertIn('## Trace 证据分析', first_analysis)
@@ -191,6 +194,63 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(regenerated['groups'][0]['analysisSlots']['final-anr'], 'filled')
         self.assertEqual(regenerated['groups'][0]['analysisSlots']['trace'], 'pending')
         self.assertFalse(regenerated['groups'][0]['analysisComplete'])
+
+    def test_package_filter_requires_matching_eventlog_am_anr(self) -> None:
+        package = {
+            'package_id': 'AICTX-PKG-MISS',
+            'sources': {
+                'event_log': {
+                    'path': 'events.log',
+                    'content': '04-12 10:00:05.000 am_anr ANR in com.other: Input dispatching timed out',
+                },
+                'trace': {
+                    'path': 'traces.txt',
+                    'content': '04-12 10:00:05.100 Cmd line: com.demo\nmain tid=1 input dispatching timeout',
+                },
+                'logcat': {
+                    'path': 'logcat.txt',
+                    'content': '04-12 10:00:05.050 E InputDispatcher timeout for com.demo',
+                },
+            },
+        }
+
+        result = build_ai_context(package, AiContextOptions(package_name='com.demo'))
+
+        self.assertEqual(result.groups[0]['id'], 'anr-unanchored')
+        self.assertIsNone(result.groups[0]['anchor'])
+        self.assertFalse(result.groups[0]['fallbackUsed'])
+        self.assertEqual(result.groups[0]['eventLog']['warnings'][0]['code'], 'target-am-anr-not-found')
+
+    def test_no_package_filter_infers_package_from_eventlog_anchor_for_logcat(self) -> None:
+        package = {
+            'package_id': 'AICTX-PKG-INFER',
+            'sources': {
+                'event_log': {
+                    'path': 'events.log',
+                    'content': '04-12 10:00:05.000 I am_anr: [0,100,com.demo,1,Input dispatching timed out]',
+                },
+                'trace': {
+                    'path': 'traces.txt',
+                    'content': '04-12 10:00:05.100 Cmd line: com.demo\nmain tid=1 input dispatching timeout',
+                },
+                'logcat': {
+                    'path': 'logcat.txt',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.001 I/AnrManager( 1377): ANR in com.other',
+                        '04-12 10:00:05.002 I/AnrManager( 1377): dumpAnrDebugInfo end: ProcessRecord{200:com.other/u0a2}',
+                        '04-12 10:00:05.003 I/AnrManager( 1377): ANR in com.demo',
+                        '04-12 10:00:05.004 I/AnrManager( 1377): dumpAnrDebugInfo end: ProcessRecord{100:com.demo/u0a1}',
+                    ]),
+                },
+            },
+        }
+
+        result = build_ai_context(package, AiContextOptions())
+        group = result.groups[0]
+
+        self.assertEqual(group['anchor']['packageName'], 'com.demo')
+        self.assertIn('com.demo', group['anrManager']['anchor'])
+        self.assertEqual(group['anrManager']['warnings'], [])
 
     def test_trace_structured_metadata_exposes_full_manual_reading_fields(self) -> None:
         package = {

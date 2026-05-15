@@ -18,6 +18,67 @@ ENV = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
 
 
 class DirectoryLoadingTests(unittest.TestCase):
+
+    def test_command_anchor_prefers_fg_when_available(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("anr_evidence.loaders.core.shutil.which") as which,
+            patch("anr_evidence.loaders.core.subprocess.run") as run,
+        ):
+            root = Path(tmpdir)
+            which.side_effect = lambda name: "/usr/bin/fg" if name == "fg" else None
+            run.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="events.txt:7:05-03 10:00:57.460 am_anr ANR in com.demo\n",
+            )
+
+            timestamp = find_event_anr_timestamp_by_command(root, "com.demo")
+
+            self.assertEqual(timestamp, datetime(2026, 5, 3, 10, 0, 57, 460000))
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/fg", "-n", "--fixed-strings", "am_anr", str(root)])
+
+    def test_command_anchor_without_package_uses_first_timestamped_am_anr(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("anr_evidence.loaders.core.shutil.which") as which,
+            patch("anr_evidence.loaders.core.subprocess.run") as run,
+        ):
+            root = Path(tmpdir)
+            which.side_effect = lambda name: "/usr/bin/rg" if name == "rg" else None
+            run.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=(
+                    "events.txt:1:noise without timestamp am_anr\n"
+                    "events.txt:2:05-03 10:00:57.460 am_anr ANR in com.demo\n"
+                    "events.txt:3:05-03 10:01:57.460 am_anr ANR in com.other\n"
+                ),
+            )
+
+            timestamp = find_event_anr_timestamp_by_command(root, None)
+
+            self.assertEqual(timestamp, datetime(2026, 5, 3, 10, 0, 57, 460000))
+
+    def test_command_anchor_falls_through_when_preferred_command_fails(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("anr_evidence.loaders.core.shutil.which") as which,
+            patch("anr_evidence.loaders.core.subprocess.run") as run,
+        ):
+            root = Path(tmpdir)
+            which.side_effect = lambda name: {"fg": "/usr/bin/fg", "rg": "/usr/bin/rg"}.get(name)
+            run.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=2, stdout=""),
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="events.txt:2:05-03 10:00:57.460 am_anr ANR in com.demo\n"),
+            ]
+
+            timestamp = find_event_anr_timestamp_by_command(root, "com.demo")
+
+            self.assertEqual(timestamp, datetime(2026, 5, 3, 10, 0, 57, 460000))
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0][0], "/usr/bin/fg")
+            self.assertEqual(run.call_args_list[1].args[0][0], "/usr/bin/rg")
     def test_command_anchor_prefers_rg_when_available(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmpdir,
@@ -199,6 +260,33 @@ class DirectoryLoadingTests(unittest.TestCase):
             self.assertEqual(package['sources']['trace']['path'], 'System_log/anr/anr_2026-04-06-08-41-06-491')
             self.assertIn('com.demo', package['sources']['trace']['content'])
             self.assertNotIn('com.old', package['sources']['trace']['content'])
+
+    def test_directory_without_package_uses_am_anr_time_to_select_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / 'multi-trace-no-package'
+            (root / 'events').mkdir(parents=True)
+            (root / 'data/anr').mkdir(parents=True)
+
+            (root / 'events/events.txt').write_text(
+                '04-12 10:01:00.000 am_anr ANR in com.demo: Input dispatching timed out\n',
+                encoding='utf-8',
+            )
+            (root / 'data/anr/anr_2026-04-12-10-00-00-000').write_text(
+                '----- pid 100 at 2026-04-12 10:00:00.000000000+0800 -----\n'
+                'Cmd line: com.old\nmain tid=1 old ANR\n',
+                encoding='utf-8',
+            )
+            (root / 'data/anr/anr_2026-04-12-10-01-00-100').write_text(
+                '----- pid 101 at 2026-04-12 10:01:00.100000000+0800 -----\n'
+                'Cmd line: com.demo\nmain tid=1 target ANR\n',
+                encoding='utf-8',
+            )
+
+            package = load_package_from_directory(root)
+
+            self.assertEqual(package['sources']['trace']['path'], 'data/anr/anr_2026-04-12-10-01-00-100')
+            self.assertIn('target ANR', package['sources']['trace']['content'])
+            self.assertNotIn('old ANR', package['sources']['trace']['content'])
 
     def test_cli_deliver_accepts_directory_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

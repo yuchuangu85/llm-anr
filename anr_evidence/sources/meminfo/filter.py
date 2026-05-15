@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 from typing import Any
 
@@ -59,12 +59,15 @@ def filter_meminfo_source(
 ) -> SourceFilterResult:
     """Filter target-package and high-memory process evidence from meminfo.txt.
 
-    Keeps only snapshots within the configured window (±``window_before_seconds`` /
-    ``window_after_seconds`` around the ANR anchor), and renders each snapshot
-    compactly: timestamp, top-N processes by PSS/RSS, target package entries,
-    and system-level memory summary (Total/Free/Used/Lost/ZRAM/Tuning).
+    When an ANR anchor is available, keep the single snapshot whose timestamp
+    is before the anchor and closest to it.  This matches vendor
+    ``meminfo.txt`` dumps that contain repeated blocks headed by
+    ``YYYY-MM-DD HH:MM:SS`` between ``================================``
+    separators.  Without an anchor, fall back to the latest parsed snapshot.
 
-    Default window: ±5s.
+    The rendered snapshot contains timestamp, top-N processes by PSS/RSS,
+    target package entries, and system-level memory summary
+    (Total/Free/Used/Lost/ZRAM/Tuning).
     """
 
     context = context or SourceFilterContext()
@@ -80,23 +83,26 @@ def filter_meminfo_source(
     if not package_name:
         warnings.append({"code": "missing-package", "message": "No package name was provided; target package memory cannot be filtered."})
 
-    selected_snapshots = _select_snapshots_in_window(
-        snapshots, context.anchor_dt, window_before_seconds=options.window_before_seconds,
-        window_after_seconds=options.window_after_seconds,
-    )
-    if not selected_snapshots and snapshots:
-        analysis_snapshot = _select_snapshot_for_anchor(snapshots, context.anchor_dt)
+    selection_policy = "latest-before-anchor" if context.anchor_dt else "latest-available"
+    selected_snapshots: list[dict[str, Any]] = []
+    if context.anchor_dt:
+        analysis_snapshot = _select_snapshot_before_anchor(snapshots, context.anchor_dt)
         if analysis_snapshot is not None:
             selected_snapshots = [analysis_snapshot]
-    if not selected_snapshots and snapshots:
+        else:
+            warnings.append({
+                "code": "missing-meminfo-before-anchor",
+                "message": "No meminfo snapshot timestamp was earlier than the ANR anchor.",
+            })
+    elif snapshots:
         selected_snapshots = [snapshots[-1]]
 
-    latest = selected_snapshots[-1]
+    latest = selected_snapshots[-1] if selected_snapshots else {}
     high_processes = tuple(item for item in options.high_processes if item)
     high_pids = tuple(int(pid) for pid in options.high_pids)
 
     # Build target history across ALL snapshots for long-term trend context,
-    # but limit to the selected window to avoid noise (unless include_all_snapshots).
+    # but limit to the selected snapshot to avoid noise (unless include_all_snapshots).
     if options.include_all_snapshots:
         target_history = _build_target_history(snapshots, package_name) if package_name else []
     else:
@@ -117,8 +123,8 @@ def filter_meminfo_source(
         high_processes=high_processes,
         high_pids=high_pids,
     )
-    if package_name and not target_history:
-        warnings.append({"code": "target-package-not-found", "message": f"Package `{package_name}` was not found in meminfo snapshots."})
+    if package_name and selected_snapshots and not target_history:
+        warnings.append({"code": "target-package-not-found", "message": f"Package `{package_name}` was not found in selected meminfo snapshots."})
 
     evidence = [build_evidence(
         evidence_id="meminfo_target_and_high_memory",
@@ -144,6 +150,7 @@ def filter_meminfo_source(
             "latestTimestamp": latest.get("timestamp"),
             "selectedTimestamp": latest.get("timestamp"),
             "selectedSnapshotIndex": latest.get("index"),
+            "selectionPolicy": selection_policy,
             "windowBeforeSeconds": options.window_before_seconds,
             "windowAfterSeconds": options.window_after_seconds,
             "anchorTimestamp": context.anchor_dt.isoformat() if context.anchor_dt else None,
@@ -173,33 +180,9 @@ def parse_meminfo_snapshots(content: str) -> list[dict[str, Any]]:
     return [_snapshot_to_dict(snapshot) for snapshot in snapshots if snapshot.processes or snapshot.system]
 
 
-def _select_snapshots_in_window(
-    snapshots: list[dict[str, Any]],
-    anchor_dt: datetime | None,
-    *,
-    window_before_seconds: int = 5,
-    window_after_seconds: int = 5,
-) -> list[dict[str, Any]]:
-    """Return snapshots whose timestamp falls within the window around anchor_dt."""
-    if anchor_dt is None or not snapshots:
-        return []
-    start = anchor_dt - timedelta(seconds=window_before_seconds)
-    end = anchor_dt + timedelta(seconds=window_after_seconds)
-    result: list[dict[str, Any]] = []
-    for snapshot in snapshots:
-        ts_raw = snapshot.get("timestamp")
-        if not ts_raw:
-            continue
-        try:
-            ts = datetime.strptime(str(ts_raw), "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            continue
-        if start <= ts <= end:
-            result.append(snapshot)
-    return result
+def _select_snapshot_before_anchor(snapshots: list[dict[str, Any]], anchor_dt: datetime | None) -> dict[str, Any] | None:
+    """Return the latest meminfo snapshot strictly earlier than *anchor_dt*."""
 
-
-def _select_snapshot_for_anchor(snapshots: list[dict[str, Any]], anchor_dt: datetime | None) -> dict[str, Any] | None:
     if not snapshots or anchor_dt is None:
         return None
 
@@ -212,14 +195,13 @@ def _select_snapshot_for_anchor(snapshots: list[dict[str, Any]], anchor_dt: date
             ts = datetime.strptime(str(ts_raw), "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        delta = abs((ts - anchor_dt).total_seconds())
-        # Prefer snapshots at/after the ANR when equally close because meminfo
-        # collected after the dump better reflects the ANR-time memory state.
-        before_penalty = 1 if ts < anchor_dt else 0
-        scored.append((delta, before_penalty, snapshot))
+        if ts >= anchor_dt:
+            continue
+        delta = (anchor_dt - ts).total_seconds()
+        scored.append((delta, -int(snapshot.get("index", 0)), snapshot))
     if not scored:
         return None
-    scored.sort(key=lambda item: (item[0], item[1], item[2].get("index", 0)))
+    scored.sort(key=lambda item: (item[0], item[1]))
     return scored[0][2]
 
 
@@ -372,7 +354,7 @@ def _render_meminfo_lines(
     ]
 
     if not selected_snapshots:
-        lines.append("_No meminfo snapshots in the configured window._")
+        lines.append("_No meminfo snapshot earlier than the anchor was retained._")
         return lines
 
     for snapshot in selected_snapshots:

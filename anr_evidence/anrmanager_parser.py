@@ -23,7 +23,7 @@ from typing import Any
 # The payload is what we parse; we strip the leading log header.
 _LOG_PREFIX_RE = re.compile(
     r"^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+"
-    r"(?:\S+\s+\S+\s+\S+\s+[A-Z]\s+AnrManager:|[A-Z]/AnrManager\(\s*\d+\):)\s*"
+    r"(?:(?:\S+\s+){2,3}[A-Z]\s+AnrManager:|[A-Z]/AnrManager\(\s*\d+\):)\s*"
 )
 _LOAD_RE = re.compile(
     r"^Load:\s*(?P<load1>[\d.]+)\s*/\s*(?P<load5>[\d.]+)\s*/\s*(?P<load15>[\d.]+)"
@@ -274,22 +274,34 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
     if anr_package:
         anr_process = next((proc for proc in top_processes[:3] if proc.get("processName") == anr_package), None)
-        if anr_process and anr_process.get("totalPct", 0) >= 80:
+        # Target-process overload: when the ANR process itself is above 85%,
+        # even a non-saturated TOTAL line should be treated as an app-side load
+        # problem first.  The next mandatory step is to correlate target
+        # PSS/RSS/heap/GC evidence; high app CPU plus high app memory is a
+        # strong memory-leak / memory-bloat candidate, not merely generic
+        # scheduler pressure.
+        if anr_process and anr_process.get("totalPct", 0) > 85:
             hints.append({
                 "id": "ANR_PROCESS_CPU_HIGH",
                 "category": "app",
                 "severity": "warning",
                 "confidence": "strong",
                 "scope": "target_process",
+                "thresholdPct": 85,
                 "process": anr_process,
+                "requiresMemoryCorrelation": True,
+                "suspectedIssue": "app_load_high_possible_memory_leak",
                 "message": (
-                    f"目标进程 {anr_package} 位于前三高负载且 CPU={anr_process['totalPct']}%："
-                    "需要优先排查应用自身 busy loop、主线程/RenderThread 高 CPU 或 GC 抖动。"
+                    f"目标进程 {anr_package} CPU={anr_process['totalPct']}% (>85%)："
+                    "应用自身负载过高。必须结合目标包 meminfo/ANR metadata/GC 证据；"
+                    "若同时存在 PSS/RSS/Anon RSS 偏高或 GC 等待，应判为应用负载问题，"
+                    "大概率为内存泄漏或内存膨胀导致的 GC/分配抖动。"
                 ),
                 "wikiRefs": ["wiki/AnrManager.md"],
                 "nextActions": [
-                    "查看目标进程 trace 中 main/RenderThread/高 CPU 线程的栈",
-                    "进入 meminfo 跟进目标进程 PSS/heap，判断是否内存泄漏、OOM 或 GC 压力导致",
+                    "查看目标进程 trace 中 main/RenderThread/高 CPU 线程的栈，确认是否 GC/分配或 busy loop",
+                    "进入 meminfo 跟进目标进程 PSS/RSS/heap/Anon RSS；高内存时优先按内存泄漏/内存膨胀方向排查",
+                    "抓取 HProf、GC log、heap histogram 验证泄漏对象或大对象分配来源",
                 ],
             })
 

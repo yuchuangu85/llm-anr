@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ import tarfile
 from typing import Any
 import zipfile
 
+from ..am_anr import package_name_from_am_anr_line
 from ..constants import OPTIONAL_SOURCE_KINDS, SOURCE_KINDS
 from ..discovery import try_smart_monkey_discovery
 from ..log_filter import parse_log_timestamp
@@ -229,38 +231,50 @@ def is_archive_path(path: Path) -> bool:
 
 
 def find_event_anr_timestamp_by_command(root: Path, package_name: str | None) -> datetime | None:
-    """Return the first package-matching ``am_anr`` timestamp using rg/grep.
+    """Return the first usable ``am_anr`` timestamp using fg/rg/grep.
 
-    This is an optional directory fast path.  It deliberately falls back to the
-    in-memory Python scanner when no supported command is available, when the
-    command finds no usable timestamp, or when command execution fails.
+    This is an optional directory fast path used before creating
+    ``anr_ai_context``.  When *package_name* is provided, only matching
+    ``am_anr`` lines are considered.  Without a package filter, the first
+    timestamped ``am_anr`` line with an identifiable package/process is used
+    as the EventLog anchor.  Command
+    failures deliberately fall through to the next command so the caller can
+    still fall back to the in-memory Python scanner.
     """
 
-    if not package_name:
-        return None
+    for command in _event_anr_search_commands(root):
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
 
-    command = _event_anr_search_command(root)
-    if command is None:
-        return None
+        # grep-style tools return 1 for no matches.  Other non-zero statuses
+        # usually mean unsupported flags or I/O errors; try the next command.
+        if completed.returncode not in (0, 1):
+            continue
 
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=8,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+        timestamp = _event_anr_timestamp_from_command_output(completed.stdout.splitlines(), package_name)
+        if timestamp is not None:
+            return timestamp
+    return None
 
-    if completed.returncode not in (0, 1):
-        return None
 
-    for line in completed.stdout.splitlines():
-        if package_name not in line:
+def _event_anr_timestamp_from_command_output(lines: Iterable[str], package_name: str | None) -> datetime | None:
+    for line in lines:
+        if "am_anr" not in line.lower():
+            continue
+        if package_name:
+            if package_name not in line:
+                continue
+        elif package_name_from_am_anr_line(line) is None:
             continue
         timestamp = parse_log_timestamp(line)
         if timestamp is not None:
@@ -268,16 +282,29 @@ def find_event_anr_timestamp_by_command(root: Path, package_name: str | None) ->
     return None
 
 
-def _event_anr_search_command(root: Path) -> list[str] | None:
+def _event_anr_search_commands(root: Path) -> list[list[str]]:
+    commands: list[list[str]] = []
+
+    fg = shutil.which("fg")
+    if fg:
+        commands.append([fg, "-n", "--fixed-strings", "am_anr", str(root)])
+
     rg = shutil.which("rg")
     if rg:
-        return [rg, "-n", "--fixed-strings", "am_anr", str(root)]
+        commands.append([rg, "-n", "--fixed-strings", "am_anr", str(root)])
 
     grep = shutil.which("grep")
     if grep:
-        return [grep, "-R", "-n", "-F", "-I", "am_anr", str(root)]
+        commands.append([grep, "-R", "-n", "-F", "-I", "am_anr", str(root)])
 
-    return None
+    return commands
+
+
+def _event_anr_search_command(root: Path) -> list[str] | None:
+    """Backward-compatible single-command helper for older tests/callers."""
+
+    commands = _event_anr_search_commands(root)
+    return commands[0] if commands else None
 
 
 def _read_archive_member(handle, name: str) -> tuple[str, bool]:
