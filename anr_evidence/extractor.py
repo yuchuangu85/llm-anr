@@ -90,9 +90,12 @@ def extract_evidence_package(package: dict[str, Any]) -> dict[str, Any]:
         },
         "classification": {
             "detectedType": classification["detected_type"],
+            "triggerType": classification.get("trigger_type", classification["detected_type"] or "unknown"),
             "supported": classification["supported"],
             "confidence": classification["confidence"],
             "fallbackMode": classification["fallback_mode"],
+            "rootCausePatternHints": classification.get("root_cause_pattern_hints", []),
+            "isSilentAnr": classification.get("is_silent_anr", False),
         },
         "anchors": {
             "primaryAnchor": anchor_summary["primary_anchor"],

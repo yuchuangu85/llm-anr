@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .constants import DEFAULT_WINDOWS, SUPPORTED_TYPES, TYPE_PATTERNS
+from .constants import SUPPORTED_TYPES, TYPE_PATTERNS
 from .log_filter import DEFAULT_EVENT_LOG_TAGS, LOGCAT_SIGNAL_PATTERNS
 
 
@@ -56,6 +56,11 @@ INPUT_LOGCAT_PATTERNS = frozenset(
 
 GENERIC_EVENT_TAGS = DEFAULT_EVENT_LOG_TAGS
 GENERIC_LOGCAT_PATTERNS = LOGCAT_SIGNAL_PATTERNS | frozenset({"anr", "timeout", "not responding", "activitymanager"})
+BROADCAST_LOGCAT_PATTERNS = GENERIC_LOGCAT_PATTERNS | frozenset({"broadcastqueue", "broadcast of intent", "onreceive", "goasync", "finishreceiver"})
+SERVICE_LOGCAT_PATTERNS = GENERIC_LOGCAT_PATTERNS | frozenset({"timeout executing service", "executing service", "foreground service", "fgs", "service timeout"})
+PROVIDER_LOGCAT_PATTERNS = GENERIC_LOGCAT_PATTERNS | frozenset({"contentprovider", "content provider", "provider not responding", "publishing content providers"})
+JOB_LOGCAT_PATTERNS = GENERIC_LOGCAT_PATTERNS | frozenset({"jobscheduler", "jobservice", "onstartjob", "onstopjob", "jobservicecontext"})
+WATCHDOG_LOGCAT_PATTERNS = GENERIC_LOGCAT_PATTERNS | frozenset({"watchdog", "swt", "system_server", "blocked in handler", "monitor checker"})
 
 ANR_TYPE_STRATEGIES: dict[str, AnrTypeStrategy] = {
     "input_dispatching_timeout": AnrTypeStrategy(
@@ -96,6 +101,106 @@ ANR_TYPE_STRATEGIES: dict[str, AnrTypeStrategy] = {
             "窗口焦点缺失、焦点切换和 Activity/WindowManager 生命周期顺序",
             "主线程是否阻塞导致窗口未及时创建/恢复/获取焦点",
             "区分直接 no-focus 触发与底层性能/锁等待放大因素",
+        ),
+    ),
+    "broadcast_timeout": AnrTypeStrategy(
+        anr_type="broadcast_timeout",
+        label="Broadcast timeout",
+        event_before_seconds=90,
+        logcat_before_seconds=90,
+        logcat_after_seconds=30,
+        group_tolerance_seconds=5,
+        event_tags=GENERIC_EVENT_TAGS,
+        logcat_patterns=BROADCAST_LOGCAT_PATTERNS,
+        fallback_anchor_patterns={
+            "trace": ("broadcast", "onreceive", "goasync", "finish"),
+            "logcat": ("am_anr", "broadcastqueue", "broadcast of intent", "receiver", "goasync"),
+            "kernel_log": ("binder", "sched", "hung task", "blocked for more than"),
+        },
+        analysis_focus=(
+            "BroadcastQueue timeout / Broadcast of Intent 的触发链路",
+            "同步 onReceive 默认检查主线程；goAsync 必须检查 PendingResult finish 与工作线程",
+            "区分 receiver 业务耗时、binder/lock/IO 阻塞和系统高负载放大因素",
+        ),
+    ),
+    "service_timeout": AnrTypeStrategy(
+        anr_type="service_timeout",
+        label="Service timeout",
+        event_before_seconds=240,
+        logcat_before_seconds=240,
+        logcat_after_seconds=30,
+        group_tolerance_seconds=5,
+        event_tags=GENERIC_EVENT_TAGS,
+        logcat_patterns=SERVICE_LOGCAT_PATTERNS,
+        fallback_anchor_patterns={
+            "trace": ("service", "oncreate", "onstartcommand", "foreground service"),
+            "logcat": ("am_anr", "timeout executing service", "executing service", "foreground service", "service timeout"),
+            "kernel_log": ("binder", "sched", "hung task", "blocked for more than"),
+        },
+        analysis_focus=(
+            "Service lifecycle / foreground service start / cold start timeout",
+            "首要检查目标进程 main thread 是否阻塞 onCreate/onStartCommand/onBind",
+            "用较长窗口保留 service 启动链和冷启动前序证据",
+        ),
+    ),
+    "content_provider_timeout": AnrTypeStrategy(
+        anr_type="content_provider_timeout",
+        label="ContentProvider timeout",
+        event_before_seconds=60,
+        logcat_before_seconds=60,
+        logcat_after_seconds=30,
+        group_tolerance_seconds=5,
+        event_tags=GENERIC_EVENT_TAGS,
+        logcat_patterns=PROVIDER_LOGCAT_PATTERNS,
+        fallback_anchor_patterns={
+            "trace": ("contentprovider", "content provider", "provider", "binder"),
+            "logcat": ("am_anr", "provider not responding", "publishing content providers", "contentprovider"),
+            "kernel_log": ("binder", "sched", "hung task", "blocked for more than"),
+        },
+        analysis_focus=(
+            "区分 provider publish timeout 与 provider query / CRUD not responding",
+            "publish 优先看 provider 进程 main/cold-start；query 优先看 provider Binder 线程和远端进程",
+            "ContentProvider 证据不足时保持 partial/degraded，不要套用 input timeout 结论",
+        ),
+    ),
+    "job_scheduler_timeout": AnrTypeStrategy(
+        anr_type="job_scheduler_timeout",
+        label="JobScheduler timeout",
+        event_before_seconds=120,
+        logcat_before_seconds=120,
+        logcat_after_seconds=30,
+        group_tolerance_seconds=5,
+        event_tags=GENERIC_EVENT_TAGS,
+        logcat_patterns=JOB_LOGCAT_PATTERNS,
+        fallback_anchor_patterns={
+            "trace": ("jobservice", "onstartjob", "onstopjob", "jobscheduler"),
+            "logcat": ("am_anr", "jobscheduler", "jobservice", "onstartjob", "onstopjob"),
+            "kernel_log": ("binder", "sched", "hung task", "blocked for more than"),
+        },
+        analysis_focus=(
+            "JobService onStartJob/onStopJob 主线程超时链路",
+            "检查 JobScheduler 调度、service bind/start 和 main thread lifecycle 方法",
+            "区分 job 回调业务耗时与系统负载或远端 binder 放大因素",
+        ),
+    ),
+    "system_watchdog_swt": AnrTypeStrategy(
+        anr_type="system_watchdog_swt",
+        label="System Watchdog/SWT",
+        event_before_seconds=300,
+        logcat_before_seconds=300,
+        logcat_after_seconds=60,
+        group_tolerance_seconds=10,
+        event_tags=GENERIC_EVENT_TAGS,
+        logcat_patterns=WATCHDOG_LOGCAT_PATTERNS,
+        fallback_anchor_patterns={
+            "trace": ("watchdog", "system_server", "monitor", "blocked in handler"),
+            "logcat": ("watchdog", "swt", "system_server", "blocked in handler", "monitor checker"),
+            "kernel_log": ("watchdog", "sched", "hung task", "blocked for more than"),
+        },
+        analysis_focus=(
+            "system_server watchdog/SWT 触发链路，不按普通 app ANR 归因",
+            "优先检查 watchdog-monitored Handler、锁、Binder 线程和 system_server trace",
+            "明确 app/system/remote 边界；缺少 system_server 证据时只能给候选链路",
         ),
     ),
     "unknown": AnrTypeStrategy(

@@ -16,6 +16,14 @@ from .ai_agent import (
 from .anr_strategy import ANR_TYPE_STRATEGIES, AnrTypeStrategy, infer_anr_type, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .log_filter import AnrManagerBlock, extract_anrmanager_blocks
+from .root_cause_hints import (
+    ROOT_CAUSE_PATTERN_LABELS,
+    infer_root_cause_pattern_hints,
+    infer_root_cause_pattern_hints_from_ids,
+    infer_root_cause_pattern_hints_from_texts,
+    merge_root_cause_pattern_hints,
+    root_cause_hint_details,
+)
 from .cross_source_fusion import fuse_cross_source_evidence
 from .pattern_catalog import MAIN_THREAD_PATTERN_CATALOG, evaluate_main_thread_patterns
 from .context_flooding import TruncationConfig, TruncationResult, truncate_evidence, truncation_stats_text
@@ -115,6 +123,13 @@ __all__ = [
     "parse_anrmanager_block",
     "AnrManagerBlock",
     "extract_anrmanager_blocks",
+    # root_cause_hints
+    "ROOT_CAUSE_PATTERN_LABELS",
+    "infer_root_cause_pattern_hints",
+    "infer_root_cause_pattern_hints_from_ids",
+    "infer_root_cause_pattern_hints_from_texts",
+    "merge_root_cause_pattern_hints",
+    "root_cause_hint_details",
     # pattern_catalog
     "MAIN_THREAD_PATTERN_CATALOG",
     "evaluate_main_thread_patterns",

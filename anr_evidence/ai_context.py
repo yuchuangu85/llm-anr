@@ -14,6 +14,12 @@ from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .constants import TIME_ANCHOR_PRECEDENCE
 from .cross_source_fusion import fuse_cross_source_evidence
+from .root_cause_hints import (
+    infer_root_cause_pattern_hints_from_ids,
+    infer_root_cause_pattern_hints_from_texts,
+    merge_root_cause_pattern_hints,
+    root_cause_hint_details,
+)
 from .log_filter import (
     LogFilterSpec,
     default_patterns_for_source,
@@ -67,6 +73,7 @@ class AiContextResult:
                     "anchor": group.get("anchor"),
                     "fallbackUsed": group.get("fallbackUsed", False),
                     "strategy": group.get("strategy"),
+                    "rootCausePatternHints": group.get("rootCausePatternHints", []),
                     "completeness": group["completeness"],
                 }
                 for group in self.groups
@@ -152,6 +159,8 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             "anchor": group.get("anchor"),
             "fallbackUsed": group.get("fallbackUsed", False),
             "completeness": group["completeness"],
+            "rootCausePatternHints": group.get("rootCausePatternHints", []),
+            "rootCausePatternHintDetails": group.get("rootCausePatternHintDetails", []),
             "analysisSlots": analysis_slots,
             "analysisComplete": all(status == "filled" for status in analysis_slots.values()),
             "warningCount": _group_warning_count(group),
@@ -192,6 +201,7 @@ def _single_group_summary(result: AiContextResult, group: dict[str, Any], artifa
                 "anchor": group.get("anchor"),
                 "fallbackUsed": group.get("fallbackUsed", False),
                 "strategy": group.get("strategy"),
+                "rootCausePatternHints": group.get("rootCausePatternHints", []),
                 "completeness": group["completeness"],
             }
         ],
@@ -245,6 +255,14 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             if options.package_name
             else {"code": "missing-anchor", "message": "No ANR anchor was found."}
         )
+        root_cause_hints = _root_cause_pattern_hints_for_group(
+            trace,
+            [],
+            [],
+            [],
+            None,
+            [],
+        )
         group = {
             "id": _unanchored_group_id(inferred_anr_dt),
             "anchor": None,
@@ -252,6 +270,8 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "inferredAnrTimeSource": "trace" if inferred_anr_dt else None,
             "fallbackUsed": fallback_used,
             "strategy": _strategy_summary(strategy),
+            "rootCausePatternHints": root_cause_hints,
+            "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
             "trace": trace,
             "eventLog": {"lines": [], "warnings": [warning]},
             "logcat": {"lines": [], "warnings": [warning]},
@@ -338,6 +358,15 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 kernel_log_text=sources.get("kernel_log", {}).get("content", ""),
             )
 
+        root_cause_hints = _root_cause_pattern_hints_for_group(
+            trace,
+            event_lines,
+            merged_logcat_lines,
+            sources.get("kernel_log", {}).get("content", "").splitlines(),
+            anrmanager_summary,
+            meminfo_result.lines if meminfo_result else [],
+        )
+
         group = {
             "id": _group_id(anchor_dt),
             "anchor": {
@@ -348,6 +377,8 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             },
             "fallbackUsed": fallback_used or anchor.get("fallback", False),
             "strategy": _strategy_summary(strategy),
+            "rootCausePatternHints": root_cause_hints,
+            "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
             "trace": trace,
             "eventLog": {"lines": event_lines, "warnings": event_warnings},
             "logcat": {"lines": merged_logcat_lines, "warnings": logcat_result.warnings, "metadata": logcat_metadata},
@@ -368,6 +399,32 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         groups.append(group)
         events.extend(_group_step_events(group))
     return groups, events
+
+
+def _root_cause_pattern_hints_for_group(
+    trace: dict[str, Any],
+    event_lines: list[str],
+    logcat_lines: list[str],
+    kernel_lines: list[str],
+    anrmanager_summary: dict[str, Any] | None,
+    meminfo_lines: list[str],
+) -> list[str]:
+    structured_hints = list(trace.get("deadlockHints", []) or [])
+    structured_hints.extend(trace.get("traceHints", []) or [])
+    if anrmanager_summary:
+        structured_hints.extend(anrmanager_summary.get("derivedHints", []) or [])
+    return merge_root_cause_pattern_hints(
+        infer_root_cause_pattern_hints_from_ids(structured_hints),
+        infer_root_cause_pattern_hints_from_texts(
+            [
+                "\n".join(trace.get("lines", []) or []),
+                "\n".join(event_lines),
+                "\n".join(logcat_lines),
+                "\n".join(kernel_lines),
+                "\n".join(meminfo_lines),
+            ]
+        ),
+    )
 
 
 def _group_step_events(group: dict[str, Any]) -> list[dict[str, Any]]:
@@ -847,8 +904,9 @@ def _render_cache_markdown(
                 f"- Line: `{anchor['line']}`",
                 f"- Fallback anchor: `{group.get('fallbackUsed', False)}`",
                 f"- Strategy: `{group.get('strategy', {}).get('anrType', strategy.anr_type)}`",
-                "",
             ])
+            _append_root_cause_pattern_hint_section(lines, group.get("rootCausePatternHintDetails", []))
+            lines.append("")
         else:
             lines.extend(["### 锚点", "- 未找到匹配的 EventLog `am_anr` 锚点。"])
             if group.get("inferredAnrTime"):
@@ -856,6 +914,7 @@ def _render_cache_markdown(
                     f"- Inferred ANR time: `{group['inferredAnrTime']}` (source: `{group.get('inferredAnrTimeSource', 'unknown')}`)",
                     "- Folder id uses this inferred ANR time to avoid a timeless `anr-unanchored` directory.",
                 ])
+            _append_root_cause_pattern_hint_section(lines, group.get("rootCausePatternHintDetails", []))
             lines.append("")
         _append_deadlock_section(lines, group["trace"].get("lockGraph"), group["trace"].get("deadlockHints", []))
         _append_trace_hints_section(lines, group["trace"].get("traceHints", []), group["trace"].get("deadlockHints", []))
@@ -1083,6 +1142,15 @@ def _append_deadlock_section(
     lines.append("")
 
 
+def _append_root_cause_pattern_hint_section(lines: list[str], details: list[dict[str, str]]) -> None:
+    if not details:
+        lines.append("- Root-cause pattern hints: `none`")
+        return
+    lines.append("- Root-cause pattern hints (candidate only):")
+    for detail in details:
+        lines.append(f"  - `{detail.get('id')}` — {detail.get('label')} (非最终根因，只作为证据提示)")
+
+
 def _append_anrmanager_summary(lines: list[str], summary: dict[str, Any] | None) -> None:
     """Render structured AnrManager fields above the raw block.
 
@@ -1243,6 +1311,11 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "",
         "## 类型特化关注点",
         *[f"- {item}" for item in strategy.analysis_focus],
+        "",
+        "## 根因模式提示约束",
+        "- `rootCausePatternHints[]` 只表示候选根因模式提示，不等于最终根因。",
+        "- `deadlock` / `memory_leak_oom_pressure` / `high_load_anr` 可以与任意 trigger type 并存，也可以出现在 unknown trigger 下。",
+        "- 输出最终结论时必须用 Trace/EventLog/Logcat/AnrManager/Meminfo 证据交叉验证，不能只凭 hint 下结论。",
         "",
         "## 死锁检测速查表",
         "- 每个 `## anr-*` 分组下若存在 `### 死锁检测` 小节，则其内容为程序化锁图分析（基于 Tarjan SCC）的结论，可信度高于对栈帧的自由解读。",

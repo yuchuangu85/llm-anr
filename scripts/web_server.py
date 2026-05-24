@@ -215,6 +215,11 @@ def render_page(*, result=None, input_path: Path | None = None, error: str | Non
               <option value="">自动识别</option>
               <option value="input_dispatching_timeout">Input dispatching timeout</option>
               <option value="no_focus_window">No focus window</option>
+              <option value="broadcast_timeout">Broadcast timeout</option>
+              <option value="service_timeout">Service timeout</option>
+              <option value="content_provider_timeout">ContentProvider timeout</option>
+              <option value="job_scheduler_timeout">JobScheduler timeout</option>
+              <option value="system_watchdog_swt">System Watchdog/SWT</option>
               <option value="unknown">Unknown / future type</option>
             </select>
             <label>包名过滤（可选）</label>

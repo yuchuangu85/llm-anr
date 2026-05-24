@@ -336,21 +336,25 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
             classified = "no_focus_window"
         elif "broadcast" in reason_lower:
             classified = "broadcast_timeout"
-        elif "service" in reason_lower:
-            classified = "service_timeout"
         elif "provider" in reason_lower:
-            classified = "provider_timeout"
-        elif "executing service" in reason_lower:
+            classified = "content_provider_timeout"
+        elif "jobservice" in reason_lower or "jobscheduler" in reason_lower or "onstartjob" in reason_lower or "onstopjob" in reason_lower:
+            classified = "job_scheduler_timeout"
+        elif "watchdog" in reason_lower or "swt" in reason_lower:
+            classified = "system_watchdog_swt"
+        elif "executing service" in reason_lower or "service" in reason_lower:
             classified = "service_timeout"
         else:
             classified = "unknown"
+        legacy_anr_type = "provider_timeout" if classified == "content_provider_timeout" else classified
         hints.append({
             "id": "ANR_REASON_CLASSIFIED",
             "category": "system",
             "severity": "info",
             "confidence": "strong",
             "scope": "global",
-            "anrType": classified,
+            "anrType": legacy_anr_type,
+            "triggerType": classified,
             "rawReason": reason,
             "anrPackage": summary.get("anrPackage"),
             "anrPid": summary.get("anrPid"),
