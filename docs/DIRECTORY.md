@@ -30,7 +30,7 @@ ANR 证据提取 → 标准化 → 分析 → 推理 → 修复建议 → 最终
 | `delivery.py` | **Phase 8** — 最终交付模板：汇总候选结论 + 因果链 + 修复建议 |
 | `trace_preprocessor.py` | Trace 文本确定性结构化解析：PID、主线程、线程摘要、可疑线程、block hint |
 | `log_filter.py` | EventLog 两阶段过滤算法：12s ANR 前窗口内按标签 + 包名过滤 |
-| `ai_context.py` | AI 上下文构建：为 LLM 调用生成 cache.md、ai_prompt.md 等产物 |
+| `ai_context.py` | AI 上下文构建：生成 `index.json` + 每 ANR 一个 `<group-id>/anr_analysis.md`/`logcat.txt` 工作区 |
 | `anr_strategy.py` | ANR 类型策略：`No focus window`、`Input dispatching timeout` 的模板和证据要求 |
 | `constants.py` | 常量定义：支持的 ANR 类型、source kind、类型模式匹配 |
 | `dashboard.py` | Replay 仪表盘渲染：将 replay summary 生成可视化对比 HTML |
@@ -58,13 +58,13 @@ ANR 证据提取 → 标准化 → 分析 → 推理 → 修复建议 → 最终
 | `render_replay_dashboard.py` | Replay 仪表盘渲染器：将 replay summary JSON 渲染为 HTML 仪表盘 |
 | `extract_bugreport.py` | Bugreport 归档解压工具：解压 .zip/.tar/.tar.gz 等格式到按文件名命名的目录 |
 | `web_server.py` | 本地 Web UI：无需第三方框架，支持输入 fixture/目录/归档，查看 pipeline 产物和 AI prompt |
-| `anr_to_ai.py` | **Agent 接入入口** — 一键处理 bugreport（目录/ZIP/TAR/JSON）输出 `anr_ai_context/`（cache.md + ai_prompt.md），供 Claude Code / Codex CLI 直接读取分析 |
+| `anr_to_ai.py` | **Agent 接入入口** — 一键处理 bugreport（目录/ZIP/TAR/JSON）输出 `anr_ai_context/`（index.json + 每 ANR 一个 anr_analysis.md），供 Claude Code / Codex CLI 直接读取分析 |
 
 ---
 
 ## `tests/` — 测试套件
 
-使用 Python `unittest`，共 165 个测试用例。入口：
+使用 Python `unittest`。入口：
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -110,24 +110,16 @@ python3 -m unittest discover -s tests -v
 | `test_cli_phase6.py` | CLI — Phase 6 参数 |
 | `test_cli_phase7.py` | CLI — Phase 7 参数 |
 | `test_cli_phase8.py` | CLI — Phase 8 参数 |
-| `test_cli_dashboard.py` | CLI — dashboard 参数 |
-| `test_cli_replay.py` | CLI — replay 参数 |
-| `test_cli_replay_compare.py` | CLI — replay compare 参数 |
-| `test_cli_replay_session.py` | CLI — replay session 参数 |
-| `test_cli_replay_index.py` | CLI — replay index 参数 |
-| `test_cli_replay_thresholds.py` | CLI — replay 阈值参数 |
 | **功能测试** | |
 | `test_template_additive.py` | 模板可加性验证（基线模板不可被删除） |
 | `test_trace_cleaning.py` | Trace 预处理正确性（block hint、线程摘要等） |
+| `test_trace_deadlock.py` | Trace 锁图 / 死锁检测测试 |
 | `test_trace_preprocessor_script.py` | `scripts/anr_preprocessor.py` 脚本端到端测试 |
 | `test_ai_context.py` | AI 上下文构建产物测试 |
 | `test_integration_fixtures.py` | 全 fixture 集成测试 |
-| `test_dashboard.py` | Dashboard 渲染测试 |
-| `test_replay.py` | Replay 基准回放测试 |
-| `test_replay_compare.py` | Replay 对比测试 |
 | `test_replay_session.py` | Replay session 测试 |
-| `test_replay_index.py` | Replay index 测试 |
 | `test_replay_thresholds.py` | Replay 阈值评估测试 |
+| `test_eval_groundtruth.py` | Eval ground-truth 回归（`tests/fixtures/eval/`） |
 | **新增模块测试** | |
 | `test_time_norm.py` | ΔT 时间归一化测试（4 项） |
 | `test_weighting.py` | 语义权重测试（9 项）：标签分级、计数、过滤 |

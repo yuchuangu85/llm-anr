@@ -212,8 +212,20 @@ def parse_log_timestamp(line: str, *, year: int = DEFAULT_TIMESTAMP_YEAR) -> dat
     match = TIMESTAMP_RE.search(line)
     if not match:
         return None
+    # Manual field parsing instead of strptime: TIMESTAMP_RE already pins the
+    # exact "MM-DD HH:MM:SS.mmm" shape, and strptime dominated profiles when
+    # multi-ANR runs parse hundreds of thousands of log lines.
+    ts = match.group("ts")
     try:
-        return datetime.strptime(f"{year}-{match.group('ts')}", "%Y-%m-%d %H:%M:%S.%f")
+        return datetime(
+            year,
+            int(ts[0:2]),
+            int(ts[3:5]),
+            int(ts[6:8]),
+            int(ts[9:11]),
+            int(ts[12:14]),
+            int(ts[15:18]) * 1000,
+        )
     except ValueError:
         return None
 
@@ -249,6 +261,20 @@ def default_patterns_for_source(source_kind: str) -> frozenset[str]:
     return frozenset()
 
 
+def prepare_timestamped_lines(
+    content: str,
+    *,
+    timestamp_parser: TimestampParser = parse_log_timestamp,
+) -> list[tuple[datetime | None, str]]:
+    """Pre-parse (timestamp, line) pairs once for repeated window filtering.
+
+    Multi-ANR callers filter the same source against several anchors; parsing
+    timestamps up front turns O(anchors x lines) parsing into O(lines).
+    """
+
+    return [(timestamp_parser(line), line) for line in content.splitlines() if line.strip()]
+
+
 def filter_timestamp_window(
     content: str,
     anchor_dt: datetime | None,
@@ -258,28 +284,53 @@ def filter_timestamp_window(
     timestamp_parser: TimestampParser = parse_log_timestamp,
     max_fallback_lines: int = 25,
 ) -> FilterResult:
-    """Filter lines by anchor-relative time window and source-specific signals."""
+    """Filter lines by anchor-relative time window and source-specific signals.
 
-    lines = [line for line in content.splitlines() if line.strip()]
+    For repeated filtering of the same source, use
+    :func:`filter_prepared_timestamp_window` with
+    :func:`prepare_timestamped_lines` so the prepared source is explicit and
+    cannot drift from ``content``.
+    """
+
+    prepared_lines = prepare_timestamped_lines(content, timestamp_parser=timestamp_parser)
+    return filter_prepared_timestamp_window(
+        prepared_lines,
+        anchor_dt,
+        spec,
+        fallback_label=fallback_label,
+        max_fallback_lines=max_fallback_lines,
+    )
+
+
+def filter_prepared_timestamp_window(
+    prepared_lines: list[tuple[datetime | None, str]],
+    anchor_dt: datetime | None,
+    spec: LogFilterSpec,
+    *,
+    fallback_label: str,
+    max_fallback_lines: int = 25,
+) -> FilterResult:
+    """Filter pre-parsed timestamped lines by anchor-relative window."""
+
     warnings: list[dict[str, str]] = []
-    if not lines:
+    if not prepared_lines:
         return FilterResult([], [{"code": f"empty-{fallback_label}", "message": f"No lines retained for {fallback_label}."}])
     if anchor_dt is None:
         warnings.append({"code": "missing-anchor", "message": "Primary anchor missing; full source fallback retained."})
-        return FilterResult(lines[: min(len(lines), max_fallback_lines)], warnings)
+        return FilterResult([line for _, line in prepared_lines[:max_fallback_lines]], warnings)
 
     start = anchor_dt - timedelta(seconds=spec.before_seconds)
     end = anchor_dt + timedelta(seconds=spec.after_seconds)
     selected = [
         line
-        for line in lines
-        if _line_matches_window(line, start, end, spec, timestamp_parser)
+        for ts, line in prepared_lines
+        if ts is not None and start <= ts <= end and _line_matches_spec(line, spec)
     ]
     if selected:
         return FilterResult(selected, warnings)
 
     warnings.append({"code": "empty-anchor-window", "message": f"No timestamped lines matched anchor window for {fallback_label}; full source fallback retained."})
-    return FilterResult(lines[: min(len(lines), max_fallback_lines)], warnings)
+    return FilterResult([line for _, line in prepared_lines[:max_fallback_lines]], warnings)
 
 
 def filter_preceding_anchor_window(
@@ -639,16 +690,20 @@ def _find_anrmanager_block_end(lines: list[str], anr_indices: list[int], anchor_
     return fallback_end_pos
 
 
-def _line_matches_window(line: str, start: datetime, end: datetime, spec: LogFilterSpec, timestamp_parser: TimestampParser) -> bool:
-    ts = timestamp_parser(line)
-    if ts is None or not (start <= ts <= end):
-        return False
+def _line_matches_spec(line: str, spec: LogFilterSpec) -> bool:
     if spec.package_name and spec.package_filter_scope == "all" and spec.package_name not in line:
         return False
     if not spec.require_pattern:
         return True
     lowered = line.lower()
     return any(pattern.lower() in lowered for pattern in spec.include_patterns)
+
+
+def _line_matches_window(line: str, start: datetime, end: datetime, spec: LogFilterSpec, timestamp_parser: TimestampParser) -> bool:
+    ts = timestamp_parser(line)
+    if ts is None or not (start <= ts <= end):
+        return False
+    return _line_matches_spec(line, spec)
 
 
 def _iter_lines_backward(handle, end_offset: int, *, chunk_size: int, encoding: str) -> Iterable[str]:

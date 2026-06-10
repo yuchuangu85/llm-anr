@@ -4,7 +4,7 @@
 No third-party web framework is required. The UI supports:
 - entering a local fixture/directory/archive path on the machine running server;
 - uploading a single fixture/archive file;
-- viewing pipeline events, grouped evidence, cache.md, and ai_prompt.md.
+- viewing pipeline events, grouped evidence, the rendered evidence cache, and the analysis prompt.
 """
 
 from __future__ import annotations
@@ -272,8 +272,8 @@ def render_empty_state() -> str:
             <span class="pill">过程时间线</span>
             <span class="pill">ANR 分组</span>
             <span class="pill">Trace / EventLog / Logcat 证据</span>
-            <span class="pill">cache.md</span>
-            <span class="pill">ai_prompt.md</span>
+            <span class="pill">证据缓存</span>
+            <span class="pill">分析指令</span>
           </div>
         </div>
       </section>
@@ -310,8 +310,8 @@ def render_result(result, input_path: Path | None) -> str:
           <div class="tabs">
             <button class="tab active" data-tab="timeline" onclick="showTab('timeline')">过程</button>
             <button class="tab" data-tab="groups" onclick="showTab('groups')">分组证据</button>
-            <button class="tab" data-tab="cache" onclick="showTab('cache')">cache.md</button>
-            <button class="tab" data-tab="prompt" onclick="showTab('prompt')">ai_prompt.md</button>
+            <button class="tab" data-tab="cache" onclick="showTab('cache')">证据缓存</button>
+            <button class="tab" data-tab="prompt" onclick="showTab('prompt')">分析指令</button>
           </div>
           <div id="panel-timeline" class="tab-panel active">{render_timeline(result.events)}</div>
           <div id="panel-groups" class="tab-panel">{''.join(render_group(group) for group in result.groups)}</div>

@@ -17,6 +17,8 @@ from enum import Enum
 import json
 import os
 import re
+import time
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -53,6 +55,8 @@ class ProviderConfig:
     api_key: str | None = None   # falls back to env var
     max_tokens: int = 4096
     temperature: float = 0.3
+    timeout_seconds: float = 120.0
+    max_retries: int = 2         # retries on 429/5xx/network errors
 
     def resolve_api_key(self) -> str:
         if self.api_key:
@@ -107,11 +111,40 @@ class AgentTurn:
 # ── LLM Client ─────────────────────────────────────────────────────────────
 
 
+class LlmRequestError(RuntimeError):
+    """Raised when an LLM API request fails after exhausting retries."""
+
+
 class LlmClient:
     """Provider-agnostic LLM client supporting Anthropic and OpenAI."""
 
     def __init__(self, config: ProviderConfig):
         self._config = config
+
+    def _post_json(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+        """POST with timeout and bounded retries on 429/5xx/network errors."""
+
+        last_error: Exception | None = None
+        for attempt in range(self._config.max_retries + 1):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self._config.timeout_seconds) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if exc.code not in (429, 500, 502, 503, 504) or attempt >= self._config.max_retries:
+                    raise LlmRequestError(f"LLM API request to {url} failed with HTTP {exc.code}") from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                last_error = exc
+                if attempt >= self._config.max_retries:
+                    raise LlmRequestError(f"LLM API request to {url} failed: {exc}") from exc
+            time.sleep(min(2 ** attempt, 8))
+        raise LlmRequestError(f"LLM API request to {url} failed: {last_error}")
 
     def complete(self, messages: list[AgentMessage]) -> str:
         response, _ = self.complete_with_tokens(messages)
@@ -143,18 +176,15 @@ class LlmClient:
         if system:
             body["system"] = system
 
-        req = urllib.request.Request(
+        data = self._post_json(
             "https://api.anthropic.com/v1/messages",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
+            body,
+            {
                 "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            method="POST",
         )
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
 
         content_blocks = data.get("content", [])
         text = "".join(block.get("text", "") for block in content_blocks if block.get("type") == "text")
@@ -173,17 +203,14 @@ class LlmClient:
             "temperature": self._config.temperature,
             "messages": chat_messages,
         }
-        req = urllib.request.Request(
+        data = self._post_json(
             "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
+            body,
+            {
                 "Authorization": f"Bearer {api_key}",
                 "content-type": "application/json",
             },
-            method="POST",
         )
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
 
         choices = data.get("choices", [])
         text = choices[0].get("message", {}).get("content", "") if choices else ""

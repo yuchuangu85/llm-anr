@@ -80,9 +80,9 @@ python3 scripts/anr_to_ai.py <input> [--package <pkg>] [--anr-type <type>]
 ```
 
 产出:
-- `anr_ai_context/cache.md` — 结构化证据
-- `anr_ai_context/ai_prompt.md` — 分析指令 + 证据
-- `anr_ai_context/summary.json` — 元数据
+- `anr_ai_context/index.json` — 目录索引，链接到所有 ANR 分组
+- `anr_ai_context/<group-id>/anr_analysis.md` — 分析指令 + 过滤后证据 + 内联分析槽位（每个 ANR 一份）
+- `anr_ai_context/<group-id>/logcat.txt` — 过滤后的完整 logcat（由 anr_analysis.md 引用）
 
 ### 0.4 MTK SWT 入口 (平台特化)
 

@@ -208,6 +208,54 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(regenerated['groups'][0]['analysisSlots']['trace'], 'pending')
         self.assertFalse(regenerated['groups'][0]['analysisComplete'])
 
+    def test_trace_cache_does_not_leak_per_group_fusion_evidence(self) -> None:
+        package = {
+            'package_id': 'AICTX-FUSION-LEAK',
+            'sources': {
+                'event_log': {
+                    'path': 'events.log',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.000 am_anr ANR in com.demo first',
+                        '04-12 10:01:05.000 am_anr ANR in com.demo second',
+                    ]),
+                },
+                # One trace section means both ANR anchors share the same
+                # cached preprocessed result; only the second logcat window has
+                # corroborating slow-binder evidence.
+                'trace': {
+                    'path': 'trace.txt',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.100 ----- pid 100 -----',
+                        'Cmd line: com.demo',
+                        '"main" prio=5 tid=1 Native',
+                        '  | sysTid=100',
+                        '  | state=S schedstat=( 50000000 800000000 200 ) utm=2 stm=3 core=0 HZ=100',
+                        '  native: #00 pc 0  /system/lib/libbinder.so (android::IPCThreadState::waitForResponse+8)',
+                        '  at android.os.BinderProxy.transact(BinderProxy.java:550)',
+                    ]),
+                },
+                'logcat': {
+                    'path': 'logcat.txt',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.000 E InputDispatcher first ANR for com.demo',
+                        '04-12 10:01:04.900 W BinderProxy Slow operation: slow binder transaction took 5000ms for com.demo',
+                        '04-12 10:01:05.000 E InputDispatcher second ANR for com.demo',
+                    ]),
+                },
+            },
+        }
+
+        result = build_ai_context(package, AiContextOptions(package_name='com.demo', logcat_before_seconds=5, logcat_after_seconds=1))
+        first_hint = next(h for h in result.groups[0]['trace']['traceHints'] if h['id'] == 'MAIN_BINDER_WAIT_REPLY')
+        second_hint = next(h for h in result.groups[1]['trace']['traceHints'] if h['id'] == 'MAIN_BINDER_WAIT_REPLY')
+
+        self.assertEqual(first_hint['confidence'], 'strong')
+        self.assertNotIn('confidencePromotedFrom', first_hint)
+        self.assertFalse(first_hint.get('corroboratingEvidence'))
+        self.assertEqual(second_hint['confidence'], 'critical')
+        self.assertEqual(second_hint['confidencePromotedFrom'], 'strong')
+        self.assertEqual(second_hint['corroboratingEvidence'][0]['source'], 'logcat')
+
     def test_package_filter_requires_matching_eventlog_am_anr(self) -> None:
         package = {
             'package_id': 'AICTX-PKG-MISS',

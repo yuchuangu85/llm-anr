@@ -12,7 +12,9 @@ from typing import Any
 
 from .evidence_slice import EvidenceSlice
 
-# Estimated tokens per line of ANR log output (~8 chars per token)
+# Rough chars-per-token estimate for ANR log text, used together with an
+# assumed ~80 chars per line to convert a token budget into a line budget
+# (see truncate_evidence): max_lines = max_tokens * 4 / 80.
 _EST_CHARS_PER_TOKEN = 4
 
 

@@ -12,16 +12,18 @@ When a user asks you to analyze an ANR bugreport (providing a directory, ZIP, TA
 python3 scripts/anr_to_ai.py <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
 ```
 
-This produces `anr_ai_context/` with:
-- `cache.md` — structured evidence (trace, EventLog, AnrManager block, logcat)
-- `ai_prompt.md` — analysis instructions + all evidence
-- `summary.json` — run metadata
+This produces `anr_ai_context/` containing:
+- `index.json` — directory index linking to all ANR groups
+- `<group-id>/anr_analysis.md` — AI instructions + filtered evidence + inline analysis slots (one per ANR)
+- `<group-id>/logcat.txt` — full filtered logcat referenced from `anr_analysis.md`
+
+(Older runs produced top-level `cache.md`/`ai_prompt.md`/`summary.json`; those artifacts are obsolete and are deleted automatically on regeneration.)
 
 ### Step 2: Read and analyze the evidence
 
-Read `anr_ai_context/ai_prompt.md` and perform the analysis following the instructions within — the prompt tells you exactly how to structure the output (timeline, blocking point, candidate root-cause chains, evidence quality assessment, remediation suggestions).
-For generated per-ANR workspaces, write each source-specific conclusion and the comprehensive synthesis directly back into `anr_ai_context/<anr-id>/anr_analysis.md`.
-The final comprehensive report must be placed under `#### AI Analysis — Final ANR` (for example starting with `## 综合分析结论` followed by Timeline / Direct blocking point / Candidate root-cause chains / Evidence quality / Remediation suggestions / JSON tail); do not leave the synthesis only in chat.
+Read `anr_ai_context/<group-id>/anr_analysis.md` and perform the analysis following the instructions within — the file tells you exactly how to structure the output (timeline, blocking point, candidate root-cause chains, evidence quality assessment, remediation suggestions).
+Write each source-specific conclusion directly into the `#### AI Analysis — <source>` slots in the same file.
+The final comprehensive report must be placed under the `#### AI Analysis — 最终 ANR 综合分析` slot (for example starting with `## 综合分析结论` followed by Timeline / Direct blocking point / Candidate root-cause chains / Evidence quality / Remediation suggestions / JSON tail); do not leave the synthesis only in chat.
 
 ### Step 3: Output the analysis report
 
@@ -49,7 +51,7 @@ Run without `--package` and infer the package from the evidence (the `AnrManager
 ```
 anr_evidence/          # Core Python library (CLI via anr_evidence.cli / -m anr_evidence)
 scripts/               # Standalone entrypoint scripts
-tests/                 # Unit + integration tests (171 tests, discoverable via unittest)
+tests/                 # Unit + integration tests (discoverable via unittest)
 docs/                  # Algorithm design docs + gap analysis
 wiki/                  # ANR domain reference material
 ```
@@ -71,9 +73,10 @@ python3 -c "
 from anr_evidence import run_ai_agent_analysis, ProviderConfig, ProviderKind, AgentConfig
 from anr_evidence import load_package_from_fixture
 package = load_package_from_fixture('tests/fixtures/nfw_01.json')
+provider_config = ProviderConfig(kind=ProviderKind.ANTHROPIC, model='claude-sonnet-4-20250514')
 result = run_ai_agent_analysis(
     package,
-    provider_config=ProviderConfig(kind=ProviderKind.ANTHROPIC, model='claude-sonnet-4-20250514'),
+    provider_config=provider_config,
     agent_config=AgentConfig(provider=provider_config, max_iterations=3, verbose=True),
 )
 # result.integrated_report contains candidateChains/candidateConclusions/remediationDrafts

@@ -6,6 +6,11 @@
 
 The project is optimized for **high recall and auditability**, not premature final blame: trigger classification, root-cause pattern hints, and remediation drafts remain evidence-backed candidates until a human confirms them.
 
+## Requirements
+
+- Python 3.12 or newer. CI verifies Python 3.12 and 3.13.
+- Runtime dependencies: Python standard library only.
+
 ## Current capabilities
 
 ### Evidence extraction and routing

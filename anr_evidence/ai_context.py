@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import copy
 import json
 from pathlib import Path
 import re
@@ -23,8 +24,9 @@ from .root_cause_hints import (
 from .log_filter import (
     LogFilterSpec,
     default_patterns_for_source,
-    filter_timestamp_window,
+    filter_prepared_timestamp_window,
     parse_log_timestamp,
+    prepare_timestamped_lines,
     timestamp_to_raw,
 )
 from .sources import MeminfoFilterOptions, SourceFilterContext, SourceFilterOptions, filter_logcat_anrmanager_block, filter_meminfo_source
@@ -283,13 +285,22 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
     anchors = _collapse_nearby_anchors(anchors, options.group_tolerance_seconds)
     events.append(_event("grouped", "completed", groupCount=len(anchors), fallbackUsed=fallback_used))
     groups = []
+    # Anchor-independent work hoisted out of the per-anchor loop: trace
+    # preprocessing is shared via cache, logcat timestamps are parsed once,
+    # and kernel_log is split once. With N anchors this turns O(N x full
+    # file) re-parsing into O(full file).
+    trace_preprocess_cache: dict[Any, Any] = {}
+    kernel_log_content = sources.get("kernel_log", {}).get("content", "")
+    kernel_log_lines = kernel_log_content.splitlines()
+    prepared_logcat_lines = prepare_timestamped_lines(sources.get("logcat", {}).get("content", ""))
+    parsed_logcat_lines = [(ts, line.strip()) for ts, line in prepared_logcat_lines if ts is not None]
     for anchor in anchors:
         anchor_dt = anchor["timestamp"]
         effective_package_name = options.package_name or anchor.get("packageName")
         event_lines, event_warnings = _event_window(sources.get("event_log", {}).get("content", ""), anchor, options, strategy)
-        trace = _trace_context(sources.get("trace"), anchor_dt)
-        logcat_result = filter_timestamp_window(
-            sources.get("logcat", {}).get("content", ""),
+        trace = _trace_context(sources.get("trace"), anchor_dt, cache=trace_preprocess_cache)
+        logcat_result = filter_prepared_timestamp_window(
+            prepared_logcat_lines,
             anchor_dt,
             LogFilterSpec(
                 source_kind="logcat",
@@ -317,7 +328,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         anrmanager_lines = anrmanager_result.lines
         anrmanager_pre_context_anchor = _anrmanager_pre_context_anchor(anrmanager_result.metadata)
         anrmanager_pre_context_lines = _timestamped_logcat_context_before(
-            sources.get("logcat", {}).get("content", ""),
+            parsed_logcat_lines,
             anrmanager_pre_context_anchor,
             ANRMANAGER_PRE_CONTEXT_SECONDS,
         )
@@ -355,14 +366,14 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 trace["traceHints"],
                 logcat_text="\n".join(merged_logcat_lines),
                 event_log_text="\n".join(event_lines),
-                kernel_log_text=sources.get("kernel_log", {}).get("content", ""),
+                kernel_log_text=kernel_log_content,
             )
 
         root_cause_hints = _root_cause_pattern_hints_for_group(
             trace,
             event_lines,
             merged_logcat_lines,
-            sources.get("kernel_log", {}).get("content", "").splitlines(),
+            kernel_log_lines,
             anrmanager_summary,
             meminfo_result.lines if meminfo_result else [],
         )
@@ -449,7 +460,7 @@ def _anrmanager_pre_context_anchor(metadata: dict[str, Any]) -> datetime | None:
     return None
 
 
-def _timestamped_logcat_context_before(content: str, anchor_dt: datetime | None, before_seconds: int) -> list[str]:
+def _timestamped_logcat_context_before(parsed_lines: list[tuple[datetime, str]], anchor_dt: datetime | None, before_seconds: int) -> list[str]:
     """Return unpatterned timestamped logcat lines in the window before anchor.
 
     This helper intentionally does not apply package filtering or signal
@@ -457,17 +468,10 @@ def _timestamped_logcat_context_before(content: str, anchor_dt: datetime | None,
     block, not a replacement for the regular noise-reduced logcat filter.
     """
 
-    if not content or anchor_dt is None:
+    if not parsed_lines or anchor_dt is None:
         return []
     start_dt = anchor_dt - timedelta(seconds=before_seconds)
-    selected: list[str] = []
-    for line in content.splitlines():
-        if not line.strip():
-            continue
-        ts = parse_log_timestamp(line)
-        if ts is not None and start_dt <= ts < anchor_dt:
-            selected.append(line.strip())
-    return selected
+    return [line for ts, line in parsed_lines if start_dt <= ts < anchor_dt]
 
 
 def _dedupe_lines(*line_groups: list[str]) -> list[str]:
@@ -612,7 +616,7 @@ def _event_window(content: str, anchor: dict[str, Any], options: AiContextOption
     return selected, []
 
 
-def _trace_context(source: dict[str, Any] | None, anchor_dt: datetime | None) -> dict[str, Any]:
+def _trace_context(source: dict[str, Any] | None, anchor_dt: datetime | None, *, cache: dict[Any, Any] | None = None) -> dict[str, Any]:
     if not source or not source.get("content"):
         return {
             "lines": [],
@@ -624,11 +628,12 @@ def _trace_context(source: dict[str, Any] | None, anchor_dt: datetime | None) ->
     preprocessed = preprocess_trace_content(
         source.get("content", ""),
         anchor_timestamp=timestamp_to_raw(anchor_dt) if anchor_dt else None,
+        cache=cache,
     )
-    deadlock_hints = preprocessed.get("deadlockHints", []) or []
-    trace_hints = preprocessed.get("traceHints", []) or []
-    lock_graph = preprocessed.get("lockGraph")
-    compacted_lines = preprocessed.get("compactedLines", [])
+    deadlock_hints = copy.deepcopy(preprocessed.get("deadlockHints", []) or [])
+    trace_hints = copy.deepcopy(preprocessed.get("traceHints", []) or [])
+    lock_graph = copy.deepcopy(preprocessed.get("lockGraph")) if preprocessed.get("lockGraph") else None
+    compacted_lines = list(preprocessed.get("compactedLines", []))
     return {
         "lines": compacted_lines,
         "warnings": [],

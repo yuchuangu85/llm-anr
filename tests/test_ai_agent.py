@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from anr_evidence.ai_agent import (
@@ -14,6 +15,7 @@ from anr_evidence.ai_agent import (
     AgentMessage,
     AgentTurn,
     LlmClient,
+    LlmRequestError,
     ProviderConfig,
     ProviderKind,
     ReProbeRequest,
@@ -28,7 +30,28 @@ from anr_evidence.evidence_slice import EvidenceSlice, annotate_slices_with_tags
 from anr_evidence.ai_context import AiContextOptions
 
 
+class _MockHTTPError(urllib.error.HTTPError):
+    def __init__(self, code: int):
+        Exception.__init__(self, f"HTTP Error {code}")
+        self.code = code
+        self.url = "https://example.test"
+        self.filename = self.url
+        self.hdrs = None
+        self.headers = None
+        self.fp = None
+
+
 class LlmClientTests(unittest.TestCase):
+    def _mock_http_response(self, payload: dict) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read = MagicMock(return_value=json.dumps(payload).encode("utf-8"))
+        return mock_resp
+
+    def _http_error(self, code: int) -> urllib.error.HTTPError:
+        return _MockHTTPError(code)
+
     def test_parse_manager_json_with_fences(self) -> None:
         text = '```json\n{"candidateChains": [], "globalLimitations": ["test"]}\n```'
         result = _parse_manager_json(text)
@@ -66,6 +89,44 @@ class LlmClientTests(unittest.TestCase):
     def test_parse_re_probe_request_none(self) -> None:
         self.assertIsNone(_parse_re_probe_request({"reProbeRequest": None}))
         self.assertIsNone(_parse_re_probe_request({}))
+
+    def test_post_json_retries_retryable_http_error_and_passes_timeout(self) -> None:
+        config = ProviderConfig(kind=ProviderKind.OPENAI, model="test", api_key="key", timeout_seconds=3.5, max_retries=1)
+        client = LlmClient(config)
+        success = self._mock_http_response({"ok": True})
+
+        with patch("time.sleep") as sleep_mock, patch("urllib.request.urlopen") as urlopen_mock:
+            urlopen_mock.side_effect = [self._http_error(500), success]
+            result = client._post_json("https://example.test", {"hello": "world"}, {"content-type": "application/json"})
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(urlopen_mock.call_count, 2)
+        self.assertEqual(urlopen_mock.call_args_list[0].kwargs["timeout"], 3.5)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_post_json_does_not_retry_non_retryable_http_error(self) -> None:
+        config = ProviderConfig(kind=ProviderKind.OPENAI, model="test", api_key="key", max_retries=3)
+        client = LlmClient(config)
+
+        with patch("time.sleep") as sleep_mock, patch("urllib.request.urlopen") as urlopen_mock:
+            urlopen_mock.side_effect = self._http_error(400)
+            with self.assertRaises(LlmRequestError):
+                client._post_json("https://example.test", {}, {})
+
+        self.assertEqual(urlopen_mock.call_count, 1)
+        sleep_mock.assert_not_called()
+
+    def test_post_json_retries_url_error_until_exhausted(self) -> None:
+        config = ProviderConfig(kind=ProviderKind.OPENAI, model="test", api_key="key", max_retries=2)
+        client = LlmClient(config)
+
+        with patch("time.sleep") as sleep_mock, patch("urllib.request.urlopen") as urlopen_mock:
+            urlopen_mock.side_effect = urllib.error.URLError("network down")
+            with self.assertRaises(LlmRequestError):
+                client._post_json("https://example.test", {}, {})
+
+        self.assertEqual(urlopen_mock.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [1, 2])
 
 
 class SubAgentDispatchTests(unittest.TestCase):
@@ -160,7 +221,7 @@ class AgentIntegrationTests(unittest.TestCase):
         """Create a mock urlopen that returns responses in order."""
         call_count = [0]
 
-        def mock_urlopen(req):
+        def mock_urlopen(req, timeout=None):
             idx = call_count[0]
             call_count[0] += 1
 

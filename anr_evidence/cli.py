@@ -31,7 +31,7 @@ def main() -> int:
     parser.add_argument("--deliver", action="store_true", help="Render the final delivery markdown template from Phase 7 remediation drafts.")
     parser.add_argument("--replay", action="store_true", help="Run a replay manifest and emit per-case artifacts plus a JSON summary.")
     parser.add_argument("--replay-out", help="Output directory for replay artifacts.")
-    parser.add_argument("--build-ai-context", action="store_true", help="Build grouped trace/EventLog/logcat cache.md and ai_prompt.md artifacts.")
+    parser.add_argument("--build-ai-context", action="store_true", help="Build per-ANR anr_analysis.md workspaces plus an index.json under the output directory.")
     parser.add_argument("--out-dir", help="Output directory for --build-ai-context artifacts.")
     parser.add_argument("--event-before-seconds", type=int, default=None, help="EventLog seconds before am_anr retained in AI context cache. Defaults to the ANR type strategy.")
     parser.add_argument("--logcat-before-seconds", type=int, default=None, help="Logcat seconds before ANR anchor retained in AI context cache. Defaults to the ANR type strategy.")

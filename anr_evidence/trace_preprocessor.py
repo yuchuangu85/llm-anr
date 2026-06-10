@@ -52,52 +52,109 @@ TRACE_SIGNAL_PATTERNS = (
 )
 
 
-def preprocess_trace_content(content: str, *, anchor_timestamp: str | None = None, max_lines: int = 40) -> dict[str, Any]:
-    lines = [line for line in content.splitlines() if line.strip()]
-    anchor_dt = _parse_timestamp(anchor_timestamp) if anchor_timestamp else None
-    sections = split_trace_sections(lines)
-    if not sections:
-        compacted_lines = lines[: min(len(lines), max_lines)]
-        compacted_content = "\n".join(compacted_lines)
-        threads = extract_trace_threads(compacted_lines)
-        primary_thread = _select_primary_thread(threads)
-        owner_thread = _resolve_owner_thread(threads, primary_thread)
-        binder_summary = _build_binder_summary(threads, primary_thread)
-        render_summary = _build_render_summary(threads, primary_thread)
-        suspend_summary = _build_suspend_summary(threads)
-        cpu_summary = _build_cpu_summary(threads, primary_thread)
-        suspicious_threads = _select_suspicious_threads(threads)
-        # Deadlock detection: run on the same line set since there is no
-        # separate "selected_section" here. Compaction loss is N/A.
-        full_threads = threads
-        lock_graph = _build_lock_graph(full_threads)
-        deadlock_hints = _emit_deadlock_hints(lock_graph, full_threads)
-        native_poll_hints = _emit_native_poll_hints(full_threads, cpu_summary)
-        main_thread_pattern_hints = _emit_main_thread_pattern_hints(full_threads)
-        trace_hints = list(deadlock_hints) + list(native_poll_hints) + list(main_thread_pattern_hints)
-        return {
-            "sectionCount": 0,
-            "selectedSectionIndex": None,
-            "compactedLines": compacted_lines,
-            "compactedContent": compacted_content,
-            "processName": _extract_process_name(compacted_lines),
-            "pid": _extract_pid(compacted_lines),
-            "threads": threads,
-            "primaryThread": primary_thread,
-            "ownerThread": owner_thread,
-            "binderSummary": binder_summary,
-            "renderSummary": render_summary,
-            "suspendSummary": suspend_summary,
-            "cpuSummary": cpu_summary,
-            "suspiciousThreads": suspicious_threads,
-            "lockGraph": lock_graph,
-            "deadlockHints": deadlock_hints,
-            "traceHints": trace_hints,
-            "threadSummary": _build_thread_summary(threads, primary_thread, owner_thread, suspicious_threads),
-        }
+def preprocess_trace_content(
+    content: str,
+    *,
+    anchor_timestamp: str | None = None,
+    max_lines: int = 40,
+    cache: dict[Any, Any] | None = None,
+) -> dict[str, Any]:
+    """Preprocess a trace dump, optionally reusing work across calls.
 
-    ranked_sections = sorted(enumerate(sections), key=lambda item: _trace_section_rank(item[1], anchor_dt))
-    selected_index, selected_section = ranked_sections[0]
+    ``cache`` lets multi-ANR callers share the expensive anchor-independent
+    work (splitlines, section split, per-section ranking stats, and the full
+    preprocessing result per selected section). The anchor only influences
+    which section is selected, so when several anchors resolve to the same
+    section the result is computed once. Callers must treat cached results as
+    read-only: replace fields on wrapping dicts instead of mutating the
+    returned structures in place.
+    """
+
+    anchor_dt = _parse_timestamp(anchor_timestamp) if anchor_timestamp else None
+    if cache is not None:
+        if cache.get("content") != content:
+            cache.clear()
+            cache["content"] = content
+        prepared = cache.get("prepared")
+        if prepared is None:
+            lines = [line for line in content.splitlines() if line.strip()]
+            sections = split_trace_sections(lines)
+            stats = [_section_static_stats(section) for section in sections]
+            prepared = (lines, sections, stats)
+            cache["prepared"] = prepared
+        lines, sections, stats = prepared
+    else:
+        lines = [line for line in content.splitlines() if line.strip()]
+        sections = split_trace_sections(lines)
+        stats = [_section_static_stats(section) for section in sections]
+
+    if not sections:
+        result_key = ("result", None, max_lines)
+        if cache is not None and result_key in cache:
+            return cache[result_key]
+        result = _preprocess_sectionless(lines, max_lines)
+        if cache is not None:
+            cache[result_key] = result
+        return result
+
+    ranked_indices = sorted(range(len(sections)), key=lambda i: _rank_from_stats(stats[i], anchor_dt))
+    selected_index = ranked_indices[0]
+    result_key = ("result", selected_index, max_lines)
+    if cache is not None and result_key in cache:
+        return cache[result_key]
+    result = _preprocess_selected_section(sections[selected_index], selected_index, len(sections), max_lines)
+    if cache is not None:
+        cache[result_key] = result
+    return result
+
+
+def _preprocess_sectionless(lines: list[str], max_lines: int) -> dict[str, Any]:
+    compacted_lines = lines[: min(len(lines), max_lines)]
+    compacted_content = "\n".join(compacted_lines)
+    threads = extract_trace_threads(compacted_lines)
+    primary_thread = _select_primary_thread(threads)
+    owner_thread = _resolve_owner_thread(threads, primary_thread)
+    binder_summary = _build_binder_summary(threads, primary_thread)
+    render_summary = _build_render_summary(threads, primary_thread)
+    suspend_summary = _build_suspend_summary(threads)
+    cpu_summary = _build_cpu_summary(threads, primary_thread)
+    suspicious_threads = _select_suspicious_threads(threads)
+    # Deadlock detection: run on the same line set since there is no
+    # separate "selected_section" here. Compaction loss is N/A.
+    full_threads = threads
+    lock_graph = _build_lock_graph(full_threads)
+    deadlock_hints = _emit_deadlock_hints(lock_graph, full_threads)
+    native_poll_hints = _emit_native_poll_hints(full_threads, cpu_summary)
+    main_thread_pattern_hints = _emit_main_thread_pattern_hints(full_threads)
+    trace_hints = list(deadlock_hints) + list(native_poll_hints) + list(main_thread_pattern_hints)
+    return {
+        "sectionCount": 0,
+        "selectedSectionIndex": None,
+        "compactedLines": compacted_lines,
+        "compactedContent": compacted_content,
+        "processName": _extract_process_name(compacted_lines),
+        "pid": _extract_pid(compacted_lines),
+        "threads": threads,
+        "primaryThread": primary_thread,
+        "ownerThread": owner_thread,
+        "binderSummary": binder_summary,
+        "renderSummary": render_summary,
+        "suspendSummary": suspend_summary,
+        "cpuSummary": cpu_summary,
+        "suspiciousThreads": suspicious_threads,
+        "lockGraph": lock_graph,
+        "deadlockHints": deadlock_hints,
+        "traceHints": trace_hints,
+        "threadSummary": _build_thread_summary(threads, primary_thread, owner_thread, suspicious_threads),
+    }
+
+
+def _preprocess_selected_section(
+    selected_section: list[str],
+    selected_index: int,
+    section_count: int,
+    max_lines: int,
+) -> dict[str, Any]:
     # Run lock graph + deadlock detection on the FULL selected section before
     # compaction strips threads — otherwise an owner in the cycle may be
     # dropped and we lose the edge.
@@ -127,7 +184,7 @@ def preprocess_trace_content(content: str, *, anchor_timestamp: str | None = Non
     cpu_summary = _build_cpu_summary(threads, primary_thread)
     suspicious_threads = _select_suspicious_threads(threads)
     return {
-        "sectionCount": len(sections),
+        "sectionCount": section_count,
         "selectedSectionIndex": selected_index,
         "compactedLines": compacted_lines,
         "compactedContent": compacted_content,
@@ -1575,14 +1632,21 @@ def _thread_suspicion(lower: str, block_hint: str | None, thread_state: str | No
     return score, reasons
 
 
-def _trace_section_rank(section: list[str], anchor_dt: datetime | None) -> tuple[int, float, int, int, str]:
+def _section_static_stats(section: list[str]) -> tuple[int, int, datetime | None, str]:
+    """Anchor-independent ranking inputs for one trace section."""
+
     lowered = [line.lower() for line in section]
     signal_hits = sum(1 for line in lowered if any(pattern in line for pattern in TRACE_SIGNAL_PATTERNS))
     main_hits = sum(1 for line in lowered if "main tid=" in line)
     first_timestamp = next((_extract_timestamp(line) for line in section if _extract_timestamp(line) is not None), None)
+    timestamp_key = _timestamp_to_raw(first_timestamp) if first_timestamp else "99-99 99:99:99.999"
+    return signal_hits, main_hits, first_timestamp, timestamp_key
+
+
+def _rank_from_stats(stats: tuple[int, int, datetime | None, str], anchor_dt: datetime | None) -> tuple[int, int, float, int, str]:
+    signal_hits, main_hits, first_timestamp, timestamp_key = stats
     anchor_distance = abs((first_timestamp - anchor_dt).total_seconds()) if first_timestamp and anchor_dt else float("inf")
     anchor_bucket = 0 if anchor_distance <= 5 else 1 if anchor_distance <= 30 else 2 if anchor_distance != float("inf") else 3
-    timestamp_key = _timestamp_to_raw(first_timestamp) if first_timestamp else "99-99 99:99:99.999"
     return (
         0 if signal_hits else 1,
         anchor_bucket,
@@ -1590,6 +1654,10 @@ def _trace_section_rank(section: list[str], anchor_dt: datetime | None) -> tuple
         0 if main_hits else 1,
         timestamp_key,
     )
+
+
+def _trace_section_rank(section: list[str], anchor_dt: datetime | None) -> tuple[int, int, float, int, str]:
+    return _rank_from_stats(_section_static_stats(section), anchor_dt)
 
 
 def _extract_process_name(lines: list[str]) -> str | None:
