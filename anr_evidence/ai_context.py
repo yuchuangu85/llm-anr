@@ -835,7 +835,15 @@ def _read_existing_analyses_from_text(text: str) -> dict[str, str]:
             continue
         start, end = span
         body = text[start:end].strip()
-        if body and "_Pending AI analysis" not in body and "待 AI 分析填写" not in body:
+        # Check if the body is still a template (unfilled) by looking for template markers
+        is_template = (
+            "_Pending AI analysis" in body
+            or "待 AI 分析填写" in body
+            or "_请用" in body  # New template format markers
+            or "_列出" in body
+            or "_评估" in body
+        )
+        if body and not is_template:
             results[slot_id] = body
     return results
 
@@ -1093,10 +1101,120 @@ def _append_analysis_slot(
         lines.append(f"> Skill: `{skill_name}`")
     for instruction in instructions or []:
         lines.append(f"> - {instruction}")
+
+    # Provide slot-specific output templates
+    template = _get_analysis_slot_template(slot_id)
     lines.extend([
-        "_待 AI 分析填写。请替换为本段专项结论、关键证据、缺口和置信度。_",
+        "",
+        template,
         "",
     ])
+
+
+def _get_analysis_slot_template(slot_id: str) -> str:
+    """Return a detailed output template for each analysis slot."""
+
+    templates = {
+        "trace": """##### 本段专项结论
+_请用 2-3 句话总结 Trace 专项结论：主线程状态、直接阻塞点、相关线程/hints。_
+
+##### 关键证据
+_列出支持上述结论的关键 Trace 证据：_
+- _主线程：tid/state/top frames_
+- _死锁检测结果（如有）_
+- _Trace 线索（如有）_
+- _相关 owner/peer 线程（如有）_
+
+##### 缺口
+_列出 Trace 分析中的证据缺口：_
+- _例如：缺少 owner 线程栈、schedstat 不足以判断负载等_
+
+##### 置信度
+_评估本段分析的置信度：strong / medium / weak，并说明原因。_""",
+
+        "eventlog": """##### 本段专项结论
+_请用 2-3 句话总结 EventLog 专项结论：ANR anchor、pre-ANR 时间线、关键状态转换。_
+
+##### 关键证据
+_按时间顺序列出关键 EventLog 证据：_
+- _am_anr 行及其 ΔT=0 基准_
+- _pre-ANR 窗口内的关键 tag（生命周期/焦点/输入等）_
+- _状态机转换序列_
+
+##### 缺口
+_列出 EventLog 分析中的证据缺口：_
+- _例如：缺少 input 事件、窗口焦点变化不明确等_
+
+##### 置信度
+_评估本段分析的置信度：strong / medium / weak，并说明原因。_""",
+
+        "logcat-anrmanager": """##### 本段专项结论
+_请用 2-3 句话总结 Logcat/AnrManager 专项结论：触发点、dump 生命周期、负载/PSI 状态。_
+
+##### 关键证据
+_列出关键 Logcat/AnrManager 证据：_
+- _触发点（InputDispatcher / WindowManager / etc.）_
+- _AnrManager reason / CPU / PSI / 高负载进程_
+- _窗口/焦点/surface 序列（如有）_
+- _Meminfo 跟进（如有）_
+
+##### 缺口
+_列出 Logcat/AnrManager 分析中的证据缺口：_
+- _例如：缺少完整 dump 流程、CPU/PSI 数据不全等_
+
+##### 置信度
+_评估本段分析的置信度：strong / medium / weak，并说明原因。_""",
+
+        "final-anr": """## 综合分析结论
+_用 3-5 条 bullet 写明：ANR 类型、直接阻塞点、最可信根因链、降级/不支持方向。_
+
+## 时间线
+_按时间顺序整合 trace、EventLog、logcat 的关键事件。_
+
+## Trace 证据分析
+_按 Trace 分析要求展开主线程/相关线程/Trace 线索。_
+
+## EventLog 证据分析
+_按 EventLog 分析要求展开 12 秒 pre-ANR tag 证据。_
+
+## Logcat 与 AnrManager 证据分析
+_按 Logcat 与 AnrManager 分析要求展开 WMS/Input/AM/AnrManager。_
+
+## 直接阻塞点
+_判断直接阻塞点，并说明对应证据；如有死锁检测 hint 命中，请优先采纳并引用 hint id。_
+
+## 候选根因链
+_给出候选根因链路，按置信度排序。每条链路包含：触发类型 → 直接阻塞点 → 上游诱因 → 责任边界 → 证据强度。_
+
+## 证据质量
+_标注证据强弱、矛盾点、缺失信息、fallback/过滤问题。_
+
+## 修复建议
+_输出详细结论和下一步排查建议。_
+
+## 结构化 JSON 尾部
+_追加 fenced JSON 代码块，包含 anrType、primaryRootCauseHintId、candidateChains 等字段。_
+```json
+{
+  "anrType": "input_dispatching_timeout | no_focus_window | unknown",
+  "primaryRootCauseHintId": "DEADLOCK_CYCLE | MAIN_BINDER_WAIT_REPLY | null",
+  "primaryRootCauseDescription": "<≤80字概述>",
+  "supportingHintIds": [],
+  "blockingThread": {"tid": "1", "name": "main", "frame": "..."},
+  "ownerThread": {"tid": null, "name": null, "frame": null},
+  "candidateChains": [
+    {"rank": 1, "confidence": "strong", "summary": "...", "evidence": []}
+  ],
+  "remediationSuggestions": [],
+  "evidenceGaps": [],
+  "finalJudgment": false,
+  "notRootCauseYet": true,
+  "requiresHumanConfirmation": true
+}
+```"""
+    }
+
+    return templates.get(slot_id, "_待 AI 分析填写。请替换为本段专项结论、关键证据、缺口和置信度。_")
 
 
 def _append_deadlock_section(
