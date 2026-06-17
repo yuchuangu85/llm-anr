@@ -250,7 +250,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         fallback_used = True
         anchors = _fallback_anchors(sources, options.package_name, strategy)
     if not anchors:
-        trace = _trace_context(sources.get("trace"), None)
+        trace = _trace_context(sources.get("trace"), None, package_name=options.package_name)
         inferred_anr_dt = _trace_selected_timestamp(trace)
         warning = (
             {"code": "target-am-anr-not-found", "message": f"No EventLog am_anr line matched package `{options.package_name}`."}
@@ -298,7 +298,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         anchor_dt = anchor["timestamp"]
         effective_package_name = options.package_name or anchor.get("packageName")
         event_lines, event_warnings = _event_window(sources.get("event_log", {}).get("content", ""), anchor, options, strategy)
-        trace = _trace_context(sources.get("trace"), anchor_dt, cache=trace_preprocess_cache)
+        trace = _trace_context(sources.get("trace"), anchor_dt, package_name=effective_package_name, cache=trace_preprocess_cache)
         logcat_result = filter_prepared_timestamp_window(
             prepared_logcat_lines,
             anchor_dt,
@@ -492,22 +492,36 @@ def _dedupe_lines(*line_groups: list[str]) -> list[str]:
 def _top_process_names_from_anrmanager(summary: dict[str, Any] | None, limit: int = 5) -> tuple[str, ...]:
     if not summary:
         return ()
-    names = []
+    names: list[str] = []
+    seen: set[str] = set()
+    for proc in summary.get("highCpuProcessesOver90") or []:
+        name = proc.get("processName")
+        if name and str(name) not in seen:
+            names.append(str(name))
+            seen.add(str(name))
     for proc in (summary.get("cpuTopProcesses") or [])[:limit]:
         name = proc.get("processName")
-        if name:
+        if name and str(name) not in seen:
             names.append(str(name))
+            seen.add(str(name))
     return tuple(names)
 
 
 def _top_pids_from_anrmanager(summary: dict[str, Any] | None, limit: int = 5) -> tuple[int, ...]:
     if not summary:
         return ()
-    pids = []
+    pids: list[int] = []
+    seen: set[int] = set()
+    for proc in summary.get("highCpuProcessesOver90") or []:
+        pid = proc.get("pid")
+        if pid is not None and int(pid) not in seen:
+            pids.append(int(pid))
+            seen.add(int(pid))
     for proc in (summary.get("cpuTopProcesses") or [])[:limit]:
         pid = proc.get("pid")
-        if pid is not None:
+        if pid is not None and int(pid) not in seen:
             pids.append(int(pid))
+            seen.add(int(pid))
     return tuple(pids)
 
 
@@ -616,7 +630,13 @@ def _event_window(content: str, anchor: dict[str, Any], options: AiContextOption
     return selected, []
 
 
-def _trace_context(source: dict[str, Any] | None, anchor_dt: datetime | None, *, cache: dict[Any, Any] | None = None) -> dict[str, Any]:
+def _trace_context(
+    source: dict[str, Any] | None,
+    anchor_dt: datetime | None,
+    *,
+    package_name: str | None = None,
+    cache: dict[Any, Any] | None = None,
+) -> dict[str, Any]:
     if not source or not source.get("content"):
         return {
             "lines": [],
@@ -628,6 +648,7 @@ def _trace_context(source: dict[str, Any] | None, anchor_dt: datetime | None, *,
     preprocessed = preprocess_trace_content(
         source.get("content", ""),
         anchor_timestamp=timestamp_to_raw(anchor_dt) if anchor_dt else None,
+        process_name=package_name,
         cache=cache,
     )
     deadlock_hints = copy.deepcopy(preprocessed.get("deadlockHints", []) or [])
@@ -1286,9 +1307,15 @@ def _append_anrmanager_summary(lines: list[str], summary: dict[str, Any] | None)
         return
     interesting = (
         summary.get("anrReason")
+        or summary.get("load")
         or summary.get("cpuTotal")
-        or summary.get("memoryPressure", {}).get("some")
+        or any(
+            (section.get("some") or section.get("full"))
+            for section in (summary.get("pressure") or {}).values()
+            if isinstance(section, dict)
+        )
         or summary.get("cpuTopProcesses")
+        or summary.get("highCpuProcessesOver90")
         or summary.get("derivedHints")
     )
     if not interesting:
@@ -1299,6 +1326,9 @@ def _append_anrmanager_summary(lines: list[str], summary: dict[str, Any] | None)
         lines.append(f"- Reason: `{summary['anrReason']}`")
         if summary.get("anrPackage"):
             lines.append(f"- Process: `pid={summary.get('anrPid')} {summary.get('anrPackage')}`")
+    load = summary.get("load")
+    if load:
+        lines.append(f"- Load: `{load.get('load1')} / {load.get('load5')} / {load.get('load15')}`")
     cpu_total = summary.get("cpuTotal")
     if cpu_total:
         iowait = cpu_total.get("iowaitPct")
@@ -1320,14 +1350,29 @@ def _append_anrmanager_summary(lines: list[str], summary: dict[str, Any] | None)
                 f"  - `{proc['totalPct']}%` pid=`{proc['pid']}` `{proc['processName']}` "
                 f"(user `{proc['userPct']}%` / kernel `{proc['kernelPct']}%`)"
             )
-    psi = summary.get("memoryPressure") or {}
-    psi_some = psi.get("some")
-    psi_full = psi.get("full")
-    if psi_some or psi_full:
+    high_cpu = summary.get("highCpuProcessesOver90") or []
+    if high_cpu:
+        lines.append("- CPU >90% processes:")
+        for proc in high_cpu:
+            lines.append(
+                f"  - `{proc['totalPct']}%` pid=`{proc['pid']}` `{proc['processName']}` "
+                f"(user `{proc['userPct']}%` / kernel `{proc['kernelPct']}%`)"
+            )
+    for pressure_name, pressure in (summary.get("pressure") or {}).items():
+        if not isinstance(pressure, dict):
+            continue
+        psi_some = pressure.get("some")
+        psi_full = pressure.get("full")
         if psi_some:
-            lines.append(f"- PSI memory.some: avg10=`{psi_some.get('avg10')}` avg60=`{psi_some.get('avg60')}` avg300=`{psi_some.get('avg300')}`")
+            lines.append(
+                f"- PSI {pressure_name}.some: avg10=`{psi_some.get('avg10')}` "
+                f"avg60=`{psi_some.get('avg60')}` avg300=`{psi_some.get('avg300')}`"
+            )
         if psi_full:
-            lines.append(f"- PSI memory.full: avg10=`{psi_full.get('avg10')}` avg60=`{psi_full.get('avg60')}` avg300=`{psi_full.get('avg300')}`")
+            lines.append(
+                f"- PSI {pressure_name}.full: avg10=`{psi_full.get('avg10')}` "
+                f"avg60=`{psi_full.get('avg60')}` avg300=`{psi_full.get('avg300')}`"
+            )
     if summary.get("tracesFilePath"):
         lines.append(f"- DropBox tracesFile: `{summary['tracesFilePath']}`")
     derived = summary.get("derivedHints") or []
@@ -1462,11 +1507,13 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "  - `MAIN_GC_PAUSED` = 主线程被 GC 暂停（WaitForGcToComplete / Runtime.gc）。",
         "  - `MAIN_RENDER_WAIT_FENCE` = 主线程在 ThreadedRenderer 同步 GPU 帧 / 等 fence。",
         "  - 一条主线程可同时命中多个 MAIN_* hint，没有互斥要求；按 confidence 优先级综合。",
-        "- 若分组下有 `### AnrManager Summary` 小节，里面的 `Reason` / `CPU TOTAL` / `Top CPU processes` / `PSI memory.some` 是 AOSP 端权威字段，比从 trace 自由推断更可靠：",
-        "  - AnrManager 负载归因顺序必须是：先看 `CPU TOTAL`/`iowait` 判断整体 CPU 或 IO 是否高；再看 `Top CPU processes` 判断目标包是否高负载。若目标包 CPU `>85%`（例如 114%），即使 TOTAL 未到 90%，也要明确标记为**应用自身负载过高**；必须联动目标包 meminfo/ANR metadata/PSI/GC/LMK/OOM 证据，若 PSS/RSS/Anon RSS 偏高或 trace 出现 GC 等待，应把它归为应用负载问题，**大概率为内存泄漏或内存膨胀导致的 GC/分配抖动**（仍需 heap/GC 证据最终确认）。若其它进程高负载，则同样检查该进程内存/IO 证据，并把它归为外部系统压力或跨进程影响候选。",
+        "- 若分组下有 `### AnrManager Summary` 小节，里面的 `Reason` / `Load` / `PSI memory|cpu|io` / `CPU TOTAL` / `CPU >90% processes` / `Top CPU processes` 是 AOSP 端权威字段，比从 trace 自由推断更可靠：",
+        "  - AnrManager 负载归因顺序必须是：先看 `Load` 与 PSI 判断系统 CPU/IO/内存压力；再看 `CPU TOTAL`/`iowait`，若 `CPU TOTAL >=90%` 必须标记**整机/任务负载重**；再列出所有 `CPU >90% processes`。若这些进程包含目标包，必须明确标记为**目标应用自身极高负载**并联动目标包 meminfo/ANR metadata/PSI/GC/LMK/OOM 证据；若目标包 CPU `>85%`（例如 114%），即使 TOTAL 未到 90%，也要明确标记为**应用自身负载过高**。若 PSS/RSS/Anon RSS 偏高或 trace 出现 GC 等待，应把它归为应用负载问题，**大概率为内存泄漏或内存膨胀导致的 GC/分配抖动**（仍需 heap/GC 证据最终确认）。若其它进程 `>90%` 或高负载，则同样检查该进程内存/IO 证据，并把它归为外部系统压力或跨进程影响候选。",
         "  - 没有目标包/其它高负载进程的内存证据时，不能直接下“内存泄漏”或“OOM”结论，只能标记为待确认缺口。",
         "  - `[ANR_REASON_CLASSIFIED]` 的 `anrType` 字段是 AOSP 给出的 ANR 类型，应作为分析分支判定的首选依据。",
         "  - `[SYSTEM_CPU_SATURATED / strong / warning]` 出现时，主线程「卡」更可能是被调度饿死，而非应用代码问题。",
+        "  - `[HIGH_CPU_PROCESS_OVER_90 / strong / warning]` 出现时，必须逐个检查 `CPU >90%` 进程；若命中目标包，目标包 meminfo 是必查项。",
+        "  - `[ANR_PROCESS_CPU_CRITICAL / strong / critical]` 出现时，目标进程 CPU `>90%`，应优先按应用自身极高负载排查。",
         "  - `[SYSTEM_IO_PRESSURE / strong / warning]` 出现时，任何主线程同步 IO 都会被显著放大。",
         "  - `[SYSTEM_MEMORY_PRESSURE / strong / warning]` 出现时，主线程 STW / GC 暴涨需作为候选根因。",
         "",
@@ -1512,8 +1559,8 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "- 若 `### Logcat 系统日志` 只给出 `logcat.txt` 文件名，必须先读取同目录下该文件，再分析 InputDispatcher、WindowManager、ActivityManager、AnrManager 的关键行。",
         "- 分析 InputDispatcher、WindowManager、ActivityManager、AnrManager 的关键行，尤其真实触发点和 dump/kill/restart 流程。",
         "- 对窗口/focus/surface/transition 事件写清顺序：focus from/to、relayout、surface show/hide、finishDrawing/reportDrawFinished、window death。",
-        "- 分析 AnrManager CPU/PSI/Load/trace dump 字段；必须按“Total整体负载/IO → 目标包 Top 负载 → 高负载进程内存证据（meminfo/PSI/GC/LMK/OOM）→ 外部进程压力”顺序归因；若目标包 CPU `>85%`，必须写成应用自身负载过高，并结合目标包内存提示判断是否大概率内存泄漏/内存膨胀；若缺失或只有部分 block，也要写明缺口。",
-        "- 若 cache 中存在 `### Meminfo 目标/高负载跟进`，必须在 AnrManager 负载分析之后引用该节，验证目标包和 AnrManager Top 高负载进程的 PSS/RSS/系统内存状态。",
+        "- 分析 AnrManager CPU/PSI/Load/trace dump 字段；必须按“Load/PSI → CPU TOTAL/iowait → CPU >90% processes → 目标包 Top 负载 → 高负载进程内存证据（meminfo/PSI/GC/LMK/OOM）→ 外部进程压力”顺序归因；若 `CPU TOTAL >=90%`，必须写成整机/任务负载重；若目标包 CPU `>90%`，必须写成目标应用自身极高负载并查目标包 meminfo；若目标包 CPU `>85%`，必须写成应用自身负载过高，并结合目标包内存提示判断是否大概率内存泄漏/内存膨胀；若缺失或只有部分 block，也要写明缺口。",
+        "- 若 cache 中存在 `### Meminfo 目标/高负载跟进`，必须在 AnrManager 负载分析之后引用该节，验证目标包和 AnrManager `CPU >90%` / Top 高负载进程的 PSS/RSS/系统内存状态。",
         "- 区分 ANR 触发前证据、dump 期间证据、ANR 后恢复/重启证据，避免把后置日志当根因。",
         "",
         "### 跨源综合要求",

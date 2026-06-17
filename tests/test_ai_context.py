@@ -157,11 +157,13 @@ class AiContextTests(unittest.TestCase):
         self.assertIn('综合分析必须写回当前 `anr_analysis.md` 的 `#### AI Analysis — 最终 ANR 综合分析` 分析位', first_analysis)
         self.assertIn('`## 综合分析结论`', first_analysis)
         self.assertIn('不得只在聊天回复中输出', first_analysis)
-        self.assertIn('先看 `CPU TOTAL`/`iowait` 判断整体 CPU 或 IO 是否高', first_analysis)
+        self.assertIn('先看 `Load` 与 PSI 判断系统 CPU/IO/内存压力', first_analysis)
+        self.assertIn('若 `CPU TOTAL >=90%` 必须标记**整机/任务负载重**', first_analysis)
+        self.assertIn('`CPU >90% processes`', first_analysis)
         self.assertIn('目标包 CPU `>85%`', first_analysis)
         self.assertIn('应用自身负载过高', first_analysis)
         self.assertIn('大概率为内存泄漏或内存膨胀', first_analysis)
-        self.assertIn('Total整体负载/IO → 目标包 Top 负载 → 高负载进程内存证据', first_analysis)
+        self.assertIn('Load/PSI → CPU TOTAL/iowait → CPU >90% processes', first_analysis)
         self.assertIn('### Meminfo 目标/高负载跟进', first_analysis)
         self.assertIn('## Trace 证据分析', first_analysis)
         self.assertIn('## EventLog 证据分析', first_analysis)
@@ -255,6 +257,54 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(second_hint['confidence'], 'critical')
         self.assertEqual(second_hint['confidencePromotedFrom'], 'strong')
         self.assertEqual(second_hint['corroboratingEvidence'][0]['source'], 'logcat')
+
+    def test_trace_selection_prefers_matching_cmdline_block_for_package(self) -> None:
+        package = {
+            'package_id': 'AICTX-TRACE-PACKAGE',
+            'sources': {
+                'event_log': {
+                    'path': 'events.log',
+                    'content': '06-09 12:20:19.348  1302  9360 I am_anr  : [0,2703,com.demo,0,Input dispatching timed out (Application does not have a focused window).]',
+                },
+                'trace': {
+                    'path': 'anr_2026-06-09-12-20-19-397',
+                    'content': '\n'.join([
+                        '----- pid 1198 at 2026-06-09 12:16:58.017274309+0800 -----',
+                        'Cmd line: /system/bin/cameraserver',
+                        'DALVIK THREADS (1):',
+                        '"binder:1198_2" prio=5 tid=3 Waiting',
+                        '  - waiting to lock <0x1> held by thread 4',
+                        '  native: #00 pc 0 /system/lib64/libbinder.so (binder_thread_read+8)',
+                        'DumpLatencyMs: 1.0',
+                        '----- pid 2703 at 2026-06-09 12:20:19.324169628+0800 -----',
+                        'Cmd line: com.demo',
+                        "Build fingerprint: 'TCL/T852K_EEA/Avatar_Pro_NP:16/BP2A.250605.031.A3/D541:user/release-keys'",
+                        "ABI: 'arm64'",
+                        'DALVIK THREADS (2):',
+                        '"main" prio=5 tid=1 Native',
+                        '  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x73297478 self=0xb4000077ee3e6010',
+                        '  | sysTid=2703 nice=-10 cgrp=top-app sched=0/0 handle=0x7a9520a090',
+                        '  native: #00 pc 000dfcc8  /apex/com.android.runtime/lib64/bionic/libc.so (__epoll_pwait+8)',
+                        '  at android.os.MessageQueue.nativePollOnce(Native method)',
+                        '  at android.os.Looper.loop(Looper.java:371)',
+                        'DumpLatencyMs: 9.86069',
+                        '"worker" prio=5 tid=2 Runnable',
+                        '  at com.demo.Worker.run(Worker.java:1)',
+                    ]),
+                },
+            },
+        }
+
+        result = build_ai_context(package, AiContextOptions(package_name='com.demo'))
+
+        lines = result.groups[0]['trace']['lines']
+        joined = '\n'.join(lines)
+        self.assertIn('----- pid 2703 at 2026-06-09 12:20:19.324169628+0800 -----', joined)
+        self.assertIn('Cmd line: com.demo', joined)
+        self.assertIn('DumpLatencyMs: 9.86069', joined)
+        self.assertNotIn('Cmd line: /system/bin/cameraserver', joined)
+        self.assertNotIn('"worker" prio=5 tid=2 Runnable', joined)
+        self.assertEqual(result.groups[0]['trace']['metadata']['processName'], 'com.demo')
 
     def test_package_filter_requires_matching_eventlog_am_anr(self) -> None:
         package = {
@@ -514,6 +564,94 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(logcat['metadata']['anrManagerPreContextSeconds'], 12)
         self.assertEqual(logcat['metadata']['anrManagerPreContextAnchor'], '04-12 10:00:57.463')
         self.assertEqual(logcat['metadata']['anrManagerPreContextRetainedLineCount'], 2)
+
+    def test_anrmanager_summary_surfaces_pressure_and_meminfo_follows_all_over_90_processes(self) -> None:
+        package = {
+            'package_id': 'AICTX-ANRMANAGER-LOAD',
+            'sources': {
+                'event_log': {
+                    'path': 'events.log',
+                    'content': '06-09 13:12:54.321 am_anr ANR in com.tcl.android.launcher Input dispatching timed out',
+                },
+                'trace': {
+                    'path': 'trace.txt',
+                    'content': '----- pid 9373 at 2026-06-09 13:12:54.300000000+0800 -----\nCmd line: com.tcl.android.launcher\n"main" prio=5 tid=1 Native\nDumpLatencyMs: 1.0',
+                },
+                'logcat': {
+                    'path': 'logcat.txt',
+                    'content': '\n'.join([
+                        '06-09 13:12:54.319  1302  8310 I AnrManager: dumpStackTraces end!',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ANR in com.tcl.android.launcher, time=66595997',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: Reason: Input dispatching timed out (37e4ea9 Taskbar is not responding. Waited 8000ms for MotionEvent).',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: Load: 77.99 / 56.92 / 41.64',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ----- Output from /proc/pressure/memory -----',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: some avg10=6.85 avg60=6.61 avg300=3.64 total=1851111472',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: full avg10=4.21 avg60=3.82 avg300=2.02 total=1186497918',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ----- End output from /proc/pressure/memory -----',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ----- Output from /proc/pressure/cpu -----',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: some avg10=23.57 avg60=31.69 avg300=34.72 total=13421719822',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: full avg10=0.00 avg60=0.00 avg300=0.00 total=0',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ----- End output from /proc/pressure/cpu -----',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ----- Output from /proc/pressure/io -----',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: some avg10=66.60 avg60=34.14 avg300=15.76 total=4664085786',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: full avg10=46.89 avg60=21.10 avg300=8.00 total=2114058611',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: ----- End output from /proc/pressure/io -----',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   99% 1001/com.heavy.one: 90% user + 9% kernel',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   98% 1002/com.heavy.two: 88% user + 10% kernel',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   97% 1003/com.heavy.three: 87% user + 10% kernel',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   96% 1004/com.heavy.four: 86% user + 10% kernel',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   95% 1005/com.heavy.five: 85% user + 10% kernel',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   94% 1006/com.heavy.sixth: 84% user + 10% kernel',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager:   93% 9373/com.tcl.android.launcher: 60% user + 33% kernel / faults: 1528 minor 35 major',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: 99% TOTAL: 52% user + 42% kernel + 0.7% iowait + 3.1% irq + 1.2% softirq',
+                        '06-09 13:12:54.321  1302  8310 I AnrManager: dumpAnrDebugInfo end: AnrDumpRecord{ Input dispatching timed out ProcessRecord{4491c11 9373:com.tcl.android.launcher/u0a89} IsCompleted:true }',
+                    ]),
+                },
+                'meminfo': {
+                    'path': 'System_log/meminfo.txt',
+                    'content': '\n'.join([
+                        '================================',
+                        '2026-06-09 13:12:50',
+                        '================================',
+                        'Applications Memory Usage (in Kilobytes):',
+                        'Total RSS by OOM adjustment:',
+                        '    900,000K: Foreground',
+                        '        160,000K: com.heavy.one (pid 1001)',
+                        '        150,000K: com.heavy.two (pid 1002)',
+                        '        140,000K: com.heavy.three (pid 1003)',
+                        '        130,000K: com.heavy.four (pid 1004)',
+                        '        120,000K: com.heavy.five (pid 1005)',
+                        '         50,000K: com.heavy.sixth (pid 1006)',
+                        '         40,000K: com.tcl.android.launcher (pid 9373)',
+                        'Total PSS by OOM adjustment:',
+                        '    700,000K: Foreground',
+                        '        130,000K: com.heavy.one (pid 1001)',
+                        '        120,000K: com.heavy.two (pid 1002)',
+                        '        110,000K: com.heavy.three (pid 1003)',
+                        '        100,000K: com.heavy.four (pid 1004)',
+                        '         90,000K: com.heavy.five (pid 1005)',
+                        '         30,000K: com.heavy.sixth (pid 1006)',
+                        '         20,000K: com.tcl.android.launcher (pid 9373)',
+                        'Total RAM: 1,000,000K (status low)',
+                        ' Free RAM: 100,000K',
+                        ' Used RAM: 900,000K',
+                        ' Lost RAM: 0K',
+                    ]),
+                },
+            },
+        }
+
+        result = build_ai_context(package, AiContextOptions(package_name='com.tcl.android.launcher', anr_type='input_dispatching_timeout'))
+        rendered = result.cache_markdown
+
+        self.assertIn('- Load: `77.99 / 56.92 / 41.64`', rendered)
+        self.assertIn('- PSI cpu.some: avg10=`23.57`', rendered)
+        self.assertIn('- PSI io.some: avg10=`66.6`', rendered)
+        self.assertIn('- CPU >90% processes:', rendered)
+        self.assertIn('`94.0%` pid=`1006` `com.heavy.sixth`', rendered)
+        high_mem_section = rendered[rendered.index('### AnrManager top CPU process memory'):]
+        self.assertIn('com.heavy.sixth', high_mem_section)
+        self.assertIn('com.tcl.android.launcher', high_mem_section)
 
     def test_cli_build_ai_context_from_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

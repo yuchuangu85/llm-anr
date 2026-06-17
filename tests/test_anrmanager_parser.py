@@ -126,6 +126,32 @@ class AnrManagerParserTests(unittest.TestCase):
         self.assertIn("CPU=114.0% (>85%)", app_hint["message"])
         self.assertIn("大概率为内存泄漏或内存膨胀", app_hint["message"])
 
+    def test_processes_over_90_are_collected_and_target_gets_critical_hint(self) -> None:
+        lines = [
+            "06-09 13:12:54.321  1302  8310 I AnrManager: ANR in com.tcl.android.launcher, time=66595997",
+            "06-09 13:12:54.321  1302  8310 I AnrManager: Reason: Input dispatching timed out (37e4ea9 Taskbar is not responding. Waited 8000ms for MotionEvent).",
+            "06-09 13:12:54.321  1302  8310 I AnrManager:   95% 999/vendor.tcl.ipel@1.0-service: 95% user + 0% kernel",
+            "06-09 13:12:54.321  1302  8310 I AnrManager:   93% 9373/com.tcl.android.launcher: 60% user + 33% kernel / faults: 1528 minor 35 major",
+            "06-09 13:12:54.321  1302  8310 I AnrManager:   91% 8089/com.google.android.apps.nbu.files: 64% user + 27% kernel",
+            "06-09 13:12:54.321  1302  8310 I AnrManager: 99% TOTAL: 52% user + 42% kernel + 0.7% iowait + 3.1% irq + 1.2% softirq",
+        ]
+
+        summary = parse_anrmanager_block(lines)
+
+        over_90_names = [proc["processName"] for proc in summary["highCpuProcessesOver90"]]
+        self.assertEqual(
+            over_90_names,
+            ["vendor.tcl.ipel@1.0-service", "com.tcl.android.launcher", "com.google.android.apps.nbu.files"],
+        )
+        high_hint = _hint(summary, "HIGH_CPU_PROCESS_OVER_90")
+        self.assertIsNotNone(high_hint)
+        self.assertEqual(high_hint["processCount"], 3)
+        critical_hint = _hint(summary, "ANR_PROCESS_CPU_CRITICAL")
+        self.assertIsNotNone(critical_hint)
+        self.assertTrue(critical_hint["requiresMemoryCorrelation"])
+        self.assertEqual(critical_hint["process"]["processName"], "com.tcl.android.launcher")
+        self.assertIn("目标进程", critical_hint["message"])
+
     def test_target_cpu_at_or_below_85_does_not_emit_app_overload_hint(self) -> None:
         lines = [
             "04-22 02:34:38.785  1485  7148 I AnrManager: ANR in com.demo",
@@ -148,6 +174,7 @@ class AnrManagerParserTests(unittest.TestCase):
         self.assertIsNotNone(hint)
         self.assertEqual(hint["confidence"], "strong")
         self.assertEqual(hint["topProcess"]["processName"], "badapp")
+        self.assertIn("整机/任务负载重", hint["message"])
 
     def test_io_pressure_hint(self) -> None:
         lines = [

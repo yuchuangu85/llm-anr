@@ -49,7 +49,7 @@ _REASON_RE = re.compile(
     r"AnrDumpRecord\{\s*(?P<reason>.*?)\s+ProcessRecord\{(?:\S+\s+)?(?P<pid>\d+):(?P<package>[^/]+)/(?P<user>[^}]+)\}.*?\}"
 )
 _REASON_LINE_RE = re.compile(r"^Reason:\s*(?P<reason>.+)")
-_ANR_IN_RE = re.compile(r"^ANR in (?P<package>\S+)")
+_ANR_IN_RE = re.compile(r"^ANR in (?P<package>[^\s,(]+)")
 _TRACES_FILE_RE = re.compile(r"(?:mTracesFile|tracesFile)\s*=\s*(?P<path>\S+)")
 
 
@@ -72,6 +72,7 @@ def parse_anrmanager_block(lines: list[str]) -> dict[str, Any]:
         "cpuWindows": [],
         "cpuTotal": None,
         "cpuTopProcesses": [],
+        "highCpuProcessesOver90": [],
         "anrReason": None,
         "anrPackage": None,
         "anrPid": None,
@@ -179,6 +180,10 @@ def parse_anrmanager_block(lines: list[str]) -> dict[str, Any]:
             summary["tracesFilePath"] = traces_match.group("path").strip()
 
     summary["cpuTopProcesses"].sort(key=lambda item: -item["totalPct"])
+    summary["highCpuProcessesOver90"] = [
+        process for process in summary["cpuTopProcesses"]
+        if process.get("totalPct", 0) > 90
+    ]
     summary["derivedHints"] = _derive_hints(summary)
     return summary
 
@@ -222,11 +227,34 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
             "scope": "global",
             "cpuTotal": cpu_total,
             "topProcess": top,
-            "message": msg + "：系统 CPU 几乎打满，主线程被调度饿死的可能性高。",
+            "message": msg + "：整机/任务负载重，系统 CPU 几乎打满，主线程被调度饿死的可能性高。",
             "wikiRefs": ["wiki/AnrManager.md"],
             "nextActions": [
                 "确认 top CPU 进程是不是被分析进程本身（autopilot busy loop）还是其他进程（系统压力）",
                 "结合 trace 主线程 schedstat.waitNs 验证是否被饿死",
+            ],
+        })
+
+    high_cpu_processes = summary.get("highCpuProcessesOver90") or []
+    if high_cpu_processes:
+        hints.append({
+            "id": "HIGH_CPU_PROCESS_OVER_90",
+            "category": "system",
+            "severity": "warning",
+            "confidence": "strong",
+            "scope": "process_set",
+            "thresholdPct": 90,
+            "processCount": len(high_cpu_processes),
+            "processes": high_cpu_processes,
+            "message": (
+                "AnrManager Top CPU 中存在 "
+                f"{len(high_cpu_processes)} 个进程 CPU >90%；必须逐一判断是否目标包，"
+                "并对目标包或高负载外部进程做 meminfo/IO/GC/LMK 证据跟进。"
+            ),
+            "wikiRefs": ["wiki/AnrManager.md"],
+            "nextActions": [
+                "列出所有 CPU >90% 进程，目标包优先归为应用自身负载候选",
+                "对每个 CPU >90% 进程查看 meminfo PSS/RSS 与 IO/GC/LMK 旁证",
             ],
         })
 
@@ -273,13 +301,34 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
         })
 
     if anr_package:
-        anr_process = next((proc for proc in top_processes[:3] if proc.get("processName") == anr_package), None)
+        anr_process = next((proc for proc in top_processes if proc.get("processName") == anr_package), None)
         # Target-process overload: when the ANR process itself is above 85%,
         # even a non-saturated TOTAL line should be treated as an app-side load
         # problem first.  The next mandatory step is to correlate target
         # PSS/RSS/heap/GC evidence; high app CPU plus high app memory is a
         # strong memory-leak / memory-bloat candidate, not merely generic
         # scheduler pressure.
+        if anr_process and anr_process.get("totalPct", 0) > 90:
+            hints.append({
+                "id": "ANR_PROCESS_CPU_CRITICAL",
+                "category": "app",
+                "severity": "critical",
+                "confidence": "strong",
+                "scope": "target_process",
+                "thresholdPct": 90,
+                "process": anr_process,
+                "requiresMemoryCorrelation": True,
+                "suspectedIssue": "target_process_critical_load",
+                "message": (
+                    f"目标进程 {anr_package} CPU={anr_process['totalPct']}% (>90%)："
+                    "目标应用自身处于极高负载，必须优先查目标包 meminfo/GC/分配/线程忙循环证据。"
+                ),
+                "wikiRefs": ["wiki/AnrManager.md"],
+                "nextActions": [
+                    "把目标包 meminfo 作为必查项，确认 PSS/RSS/Anon RSS 是否异常",
+                    "结合 trace/GC/logcat 判断是 busy loop、GC/分配抖动还是渲染/IO 放大",
+                ],
+            })
         if anr_process and anr_process.get("totalPct", 0) > 85:
             hints.append({
                 "id": "ANR_PROCESS_CPU_HIGH",

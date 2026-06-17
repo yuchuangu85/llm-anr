@@ -30,8 +30,9 @@ def build_package_from_entries(
 
     ranked_trace_entries = dedupe_and_rank_entries("trace", grouped["trace"])
     ranked_event_entries = dedupe_and_rank_entries("event_log", grouped["event_log"])
+    event_anchor_dts = _event_anr_timestamps_from_entries(ranked_event_entries, package_name) if package_name else []
     if event_anchor_dt is None:
-        event_anchor_dt = _event_anr_timestamp_from_entries(ranked_event_entries, package_name)
+        event_anchor_dt = event_anchor_dts[0] if event_anchor_dts else None
     if package_name:
         package_trace_entries = [
             entry for entry in ranked_trace_entries
@@ -47,12 +48,15 @@ def build_package_from_entries(
             continue
         source_entries = dedupe_and_rank_entries(source_kind, source_entries)
         if source_kind == "trace":
-            if event_anchor_dt:
-                source_entries = _select_trace_entries_for_anchor(source_entries, event_anchor_dt)
-            elif package_trace_entries:
+            if package_trace_entries:
                 source_entries = package_trace_entries
+            elif event_anchor_dt:
+                source_entries = _select_trace_entries_for_anchor(source_entries, event_anchor_dt)
         if source_kind in ("event_log", "logcat"):
-            source_entries = select_preceding_entries_for_anchor(source_entries, trace_anchor_dt)
+            source_entries = _select_preceding_entries_for_anchors(
+                source_entries,
+                event_anchor_dts or ([trace_anchor_dt] if trace_anchor_dt else []),
+            )
         sources[source_kind] = {
             "path": ",".join(entry["path"] for entry in source_entries),
             "content": "\n".join(entry["content"] for entry in source_entries if entry["content"]),
@@ -94,6 +98,42 @@ def _event_anr_timestamp_from_entries(entries: list[dict[str, Any]], package_nam
             if timestamp is not None:
                 return timestamp
     return None
+
+
+def _event_anr_timestamps_from_entries(entries: list[dict[str, Any]], package_name: str | None) -> list[datetime]:
+    """Return every EventLog ``am_anr`` timestamp matching *package_name*."""
+
+    timestamps: list[datetime] = []
+    seen: set[datetime] = set()
+    for entry in entries:
+        for line in entry.get("content", "").splitlines():
+            lowered = line.lower()
+            if "am_anr" not in lowered:
+                continue
+            if package_name:
+                if package_name not in line:
+                    continue
+            elif package_name_from_am_anr_line(line) is None:
+                continue
+            timestamp = parse_log_timestamp(line)
+            if timestamp is not None and timestamp not in seen:
+                timestamps.append(timestamp)
+                seen.add(timestamp)
+    return sorted(timestamps)
+
+
+def _select_preceding_entries_for_anchors(entries: list[dict[str, Any]], anchors: list[datetime]) -> list[dict[str, Any]]:
+    """Select predecessor shards for every anchor, preserving source rank order."""
+
+    if not anchors:
+        return entries
+    selected_paths: set[str] = set()
+    for anchor in anchors:
+        for entry in select_preceding_entries_for_anchor(entries, anchor):
+            selected_paths.add(entry["path"])
+    if not selected_paths:
+        return entries
+    return [entry for entry in entries if entry["path"] in selected_paths]
 
 
 def _select_trace_entries_for_anchor(entries: list[dict[str, Any]], anchor_dt: datetime) -> list[dict[str, Any]]:

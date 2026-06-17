@@ -12,6 +12,7 @@ TIMESTAMP_RE = re.compile(r"(?P<ts>\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})")
 TRACE_SECTION_HEADER_RE = re.compile(r"-----\s+pid\s+\d+")
 TRACE_PROCESS_RE = re.compile(r"Cmd line:\s*(?P<process>.+)")
 TRACE_PID_RE = re.compile(r"-----\s+pid\s+(?P<pid>\d+)")
+TRACE_DUMP_LATENCY_RE = re.compile(r"^DumpLatencyMs:")
 TRACE_SYSTID_RE = re.compile(r"\|\s+sysTid=(?P<sys_tid>\d+)")
 TRACE_GROUP_RE = re.compile(r'\|\s+group="(?P<group>[^"]+)"')
 TRACE_SCOUNT_RE = re.compile(r"\bsCount=(?P<s_count>\d+)")
@@ -56,6 +57,7 @@ def preprocess_trace_content(
     content: str,
     *,
     anchor_timestamp: str | None = None,
+    process_name: str | None = None,
     max_lines: int = 40,
     cache: dict[Any, Any] | None = None,
 ) -> dict[str, Any]:
@@ -97,7 +99,7 @@ def preprocess_trace_content(
             cache[result_key] = result
         return result
 
-    ranked_indices = sorted(range(len(sections)), key=lambda i: _rank_from_stats(stats[i], anchor_dt))
+    ranked_indices = sorted(range(len(sections)), key=lambda i: _rank_from_stats(stats[i], anchor_dt, process_name))
     selected_index = ranked_indices[0]
     result_key = ("result", selected_index, max_lines)
     if cache is not None and result_key in cache:
@@ -169,8 +171,9 @@ def _preprocess_selected_section(
     # Pin every tid that participates in a cycle / chain so compaction never
     # silently drops a deadlock-graph member from the AI-visible view.
     priority_tids = _collect_priority_tids(lock_graph, deadlock_hints)
+    display_section = _trim_section_at_first_dump_latency(selected_section)
     compacted_lines = compact_trace_section(
-        selected_section,
+        display_section,
         max_lines=max_lines,
         priority_tids=priority_tids,
     )
@@ -1632,7 +1635,7 @@ def _thread_suspicion(lower: str, block_hint: str | None, thread_state: str | No
     return score, reasons
 
 
-def _section_static_stats(section: list[str]) -> tuple[int, int, datetime | None, str]:
+def _section_static_stats(section: list[str]) -> tuple[int, int, datetime | None, str, str | None]:
     """Anchor-independent ranking inputs for one trace section."""
 
     lowered = [line.lower() for line in section]
@@ -1640,13 +1643,27 @@ def _section_static_stats(section: list[str]) -> tuple[int, int, datetime | None
     main_hits = sum(1 for line in lowered if "main tid=" in line)
     first_timestamp = next((_extract_timestamp(line) for line in section if _extract_timestamp(line) is not None), None)
     timestamp_key = _timestamp_to_raw(first_timestamp) if first_timestamp else "99-99 99:99:99.999"
-    return signal_hits, main_hits, first_timestamp, timestamp_key
+    process_name = _extract_process_name(section)
+    return signal_hits, main_hits, first_timestamp, timestamp_key, process_name
 
 
-def _rank_from_stats(stats: tuple[int, int, datetime | None, str], anchor_dt: datetime | None) -> tuple[int, int, float, int, str]:
-    signal_hits, main_hits, first_timestamp, timestamp_key = stats
+def _rank_from_stats(
+    stats: tuple[int, int, datetime | None, str, str | None],
+    anchor_dt: datetime | None,
+    target_process_name: str | None = None,
+) -> tuple[Any, ...]:
+    signal_hits, main_hits, first_timestamp, timestamp_key, section_process_name = stats
     anchor_distance = abs((first_timestamp - anchor_dt).total_seconds()) if first_timestamp and anchor_dt else float("inf")
     anchor_bucket = 0 if anchor_distance <= 5 else 1 if anchor_distance <= 30 else 2 if anchor_distance != float("inf") else 3
+    if target_process_name:
+        return (
+            0 if _process_matches(section_process_name, target_process_name) else 1,
+            anchor_bucket,
+            anchor_distance,
+            0 if signal_hits else 1,
+            0 if main_hits else 1,
+            timestamp_key,
+        )
     return (
         0 if signal_hits else 1,
         anchor_bucket,
@@ -1658,6 +1675,21 @@ def _rank_from_stats(stats: tuple[int, int, datetime | None, str], anchor_dt: da
 
 def _trace_section_rank(section: list[str], anchor_dt: datetime | None) -> tuple[int, int, float, int, str]:
     return _rank_from_stats(_section_static_stats(section), anchor_dt)
+
+
+def _process_matches(section_process_name: str | None, target_process_name: str) -> bool:
+    if not section_process_name:
+        return False
+    section_value = section_process_name.strip()
+    target_value = target_process_name.strip()
+    return bool(section_value and target_value and target_value in section_value)
+
+
+def _trim_section_at_first_dump_latency(section: list[str]) -> list[str]:
+    for index, line in enumerate(section):
+        if TRACE_DUMP_LATENCY_RE.search(line.strip()):
+            return section[: index + 1]
+    return section
 
 
 def _extract_process_name(lines: list[str]) -> str | None:

@@ -20,6 +20,7 @@ from anr_evidence import (
 from anr_evidence.loaders.package import build_package_from_entries
 from anr_evidence.extractor import collect_anchor_candidates, resolve_anchor
 from anr_evidence.sources.shared import parse_raw_timestamp, select_preceding_entries_for_anchor
+from anr_evidence.sources.shared.detection import detect_source_kind
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -95,6 +96,94 @@ class SourceWorkflowTests(unittest.TestCase):
         self.assertIn("System_MT_logcat_event_05_03_09_16_13.txt", package["sources"]["event_log"]["path"])
         self.assertIn("com.demo", package["sources"]["event_log"]["content"])
         self.assertNotIn("other.app", package["sources"]["event_log"]["content"])
+
+    def test_package_name_keeps_multiple_matching_anr_trace_files(self) -> None:
+        entries = [
+            {
+                "path": "anr/anr_2026-04-12-10-00-00-000",
+                "content": "Subject: Input dispatching timed out\n\n----- pid 1 at 2026-04-12 10:00:00.000000000+0800 -----\nCmd line: com.demo\nmain tid=1 first ANR\n",
+                "readable": True,
+            },
+            {
+                "path": "anr/anr_2026-04-12-10-01-00-000",
+                "content": "Subject: Input dispatching timed out\n\n----- pid 2 at 2026-04-12 10:01:00.000000000+0800 -----\nCmd line: com.demo\nmain tid=1 second ANR\n",
+                "readable": True,
+            },
+            {
+                "path": "anr/anr_2026-04-12-10-02-00-000",
+                "content": "----- pid 3 at 2026-04-12 10:02:00.000000000+0800 -----\nCmd line: other.app\nmain tid=1 unrelated ANR\n",
+                "readable": True,
+            },
+            {
+                "path": "events/events.txt",
+                "content": "04-12 10:00:00.000 am_anr ANR in com.demo\n04-12 10:01:00.000 am_anr ANR in com.demo\n",
+                "readable": True,
+            },
+        ]
+
+        package = build_package_from_entries("demo", entries, package_name="com.demo")
+
+        self.assertIn("anr_2026-04-12-10-00-00-000", package["sources"]["trace"]["path"])
+        self.assertIn("anr_2026-04-12-10-01-00-000", package["sources"]["trace"]["path"])
+        self.assertIn("first ANR", package["sources"]["trace"]["content"])
+        self.assertIn("second ANR", package["sources"]["trace"]["content"])
+        self.assertNotIn("unrelated ANR", package["sources"]["trace"]["content"])
+
+    def test_multiple_package_anrs_keep_corresponding_logcat_shards(self) -> None:
+        entries = [
+            {
+                "path": "events/events.txt",
+                "content": "04-12 10:00:00.000 am_anr ANR in com.demo\n04-12 10:30:00.000 am_anr ANR in com.demo\n",
+                "readable": True,
+            },
+            {
+                "path": "logs/System_MT_logcat_04_12_09_55_00.txt",
+                "content": "04-12 10:00:00.100 E InputDispatcher first timeout\n",
+                "readable": True,
+            },
+            {
+                "path": "logs/System_MT_logcat_04_12_10_25_00.txt",
+                "content": "04-12 10:30:00.100 E InputDispatcher second timeout\n",
+                "readable": True,
+            },
+            {
+                "path": "logs/System_MT_logcat_04_12_11_00_00.txt",
+                "content": "04-12 11:00:00.100 I unrelated later\n",
+                "readable": True,
+            },
+            {
+                "path": "anr/anr_2026-04-12-10-00-00-000",
+                "content": "----- pid 1 at 2026-04-12 10:00:00.000000000+0800 -----\nCmd line: com.demo\n",
+                "readable": True,
+            },
+        ]
+
+        package = build_package_from_entries("demo", entries, package_name="com.demo")
+
+        self.assertIn("first timeout", package["sources"]["logcat"]["content"])
+        self.assertIn("second timeout", package["sources"]["logcat"]["content"])
+        self.assertNotIn("unrelated later", package["sources"]["logcat"]["content"])
+
+    def test_loose_anr_file_without_cmdline_in_head_is_detected_as_trace(self) -> None:
+        content = "\n".join(
+            [
+                "Subject: Input dispatching timed out",
+                "RssHwmKb: 715784",
+                "RssKb: 339492",
+                "",
+                "--- CriticalEventLog ---",
+                "capacity: 20",
+                "timestamp_ms: 1780978819364",
+                "",
+                "----- dumping pid: 2703 at 63463134",
+                "",
+                "----- pid 2703 at 2026-06-09 12:20:19.324169628+0800 -----",
+                "Cmd line: com.demo",
+                "DALVIK THREADS (65):",
+            ]
+        )
+
+        self.assertEqual(detect_source_kind(Path("anr/anr_2026-06-09-12-20-19-397"), content), "trace")
 
     def test_event_log_and_logcat_entrypoints_filter_independently(self) -> None:
         anchor_dt = parse_raw_timestamp("04-12 10:00:05.000")

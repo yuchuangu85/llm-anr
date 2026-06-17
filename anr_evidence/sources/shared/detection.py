@@ -150,8 +150,16 @@ def detect_source_kind(relative_path: Path, content: str) -> str | None:
             score += 2
         if source_kind == "event_log" and any(hint in lower_path for hint in EVENT_SHARD_HINTS):
             score += 8
-        if source_kind == "trace" and ("traces" in filename or "/anr/" in lower_path):
+        if source_kind == "trace" and (
+            "traces" in filename
+            or "/anr/" in lower_path
+            or lower_path.startswith("anr/")
+            or "/anr_" in lower_path
+            or lower_path.startswith("anr_")
+        ):
             score += 2
+        if source_kind == "trace" and "dropbox" in lower_path:
+            score += 8
         if source_kind == "kernel_log" and ("kernel" in filename or "kmsg" in filename or "ramoops" in lower_path):
             score += 2
         for signature in CONTENT_SIGNATURES[source_kind]:

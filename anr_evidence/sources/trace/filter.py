@@ -87,8 +87,8 @@ def filter_trace_source(
 ) -> SourceFilterResult:
     """Build baseline trace evidence from one trace source."""
 
-    del options
     context = context or SourceFilterContext()
+    options = options or SourceFilterOptions()
     content = source.get("content", "")
     lines = [line for line in content.splitlines() if line.strip()]
     if not lines:
@@ -100,6 +100,7 @@ def filter_trace_source(
     preprocessed = preprocess_trace_content(
         content,
         anchor_timestamp=timestamp_to_raw(context.anchor_dt) if context.anchor_dt else None,
+        process_name=options.package_name or context.package_name,
     )
     selected = preprocessed["compactedLines"]
     evidence = [build_evidence(
