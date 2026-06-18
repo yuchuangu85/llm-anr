@@ -59,8 +59,8 @@ class LogFilterTests(unittest.TestCase):
             "04-12 10:00:13.000 am_anr ANR in com.demo",
         ])
 
-    def test_default_event_log_tags_cover_docs_master(self) -> None:
-        doc_tags = parse_tags_from_markdown([Path("docs/event_log_tags_master.md")])
+    def test_default_event_log_tags_cover_docs_reference(self) -> None:
+        doc_tags = parse_tags_from_markdown([Path("docs/event-log-tags-reference.md")])
         self.assertTrue(doc_tags)
         self.assertTrue(doc_tags.issubset(DEFAULT_EVENT_LOG_TAGS))
 

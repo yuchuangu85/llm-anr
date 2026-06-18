@@ -610,7 +610,7 @@ def _event_window(content: str, anchor: dict[str, Any], options: AiContextOption
     anchor_dt = anchor["timestamp"]
     start = anchor_dt - timedelta(seconds=options.event_before_seconds)
     selected = []
-    # EventLog filtering follows docs/算法设计.md: anchor on the target
+    # EventLog filtering follows docs/hermes-gemma-algorithm-design.md: anchor on the target
     # ``am_anr`` line, then retain every documented EventLog tag in the
     # preceding 12s window.  The package filter applies to anchor discovery,
     # not to contextual pre-window lines, because lifecycle/focus evidence may

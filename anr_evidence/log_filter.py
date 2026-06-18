@@ -94,23 +94,29 @@ FALLBACK_EVENT_LOG_TAGS = frozenset(
 )
 
 
-def event_log_tags_master_path() -> Path:
+def event_log_tags_reference_path() -> Path:
     """Return the repository-local EventLog tag reference document."""
 
-    return Path(__file__).resolve().parent.parent / "docs" / "event_log_tags_master.md"
+    return Path(__file__).resolve().parent.parent / "docs" / "event-log-tags-reference.md"
+
+
+def event_log_tags_master_path() -> Path:
+    """Backward-compatible alias for the renamed tag reference document."""
+
+    return event_log_tags_reference_path()
 
 
 def load_event_log_tags_from_docs(md_paths: Iterable[str | Path] | None = None) -> frozenset[str]:
     """Load EventLog filter tags from docs, falling back to the built-in set.
 
-    The EventLog filtering contract is documented in ``docs/算法设计.md`` and
-    ``docs/event_log_tags_master.md``: anchor on ``am_anr`` and retain all
+    The EventLog filtering contract is documented in ``docs/hermes-gemma-algorithm-design.md`` and
+    ``docs/event-log-tags-reference.md``: anchor on ``am_anr`` and retain all
     documented EventLog tags in the 12s pre-ANR window.  This helper keeps the
     executable tag set aligned with the markdown reference while preserving a
     safe fallback for packaged/test environments that do not include docs.
     """
 
-    paths = list(md_paths) if md_paths is not None else [event_log_tags_master_path()]
+    paths = list(md_paths) if md_paths is not None else [event_log_tags_reference_path()]
     tags = parse_tags_from_markdown(paths)
     if "am_anr" not in tags:
         tags.add("am_anr")

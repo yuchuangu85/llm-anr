@@ -63,7 +63,7 @@
 - **Context**: 记录仓库结构和扩展工作流，确保后续 ANR pipeline 变更能保持证据保证和验证预期。
 - **Status**: Completed (documentation only).
 - **Key Changes**:
-    1. 新增 `docs/DEVELOPMENT_GUIDE.md`：包含仓库地图、扩展工作流、证据保证和验证预期。
+    1. 新增 `docs/development-guide.md`：包含仓库地图、扩展工作流、证据保证和验证预期。
 - **Forward Directive**:
     - 修改 pipeline phases、source filters 或 AI context artifacts 时，同步更新该指南。
 
@@ -295,11 +295,11 @@
 - **Context**: 用户在分析 `5LLN85HMOBSK9P65_2026_05_07_12_04_07` / `com.tcl.android.launcher` 时发现生成的 EventLog 缓存错误 fallback 到无关 ANR，且 EventLog 过滤漏掉 `am_anr` 前 12 秒内的关键 AM/WM/Input tag 上下文。
 - **Status**: Implemented and verified.
 - **Key Changes**:
-    1. EventLog cache filtering now follows `docs/算法设计.md`:
+    1. EventLog cache filtering now follows `docs/hermes-gemma-algorithm-design.md`:
         - Use target-package `am_anr` as the anchor.
         - Retain documented EventLog tags in the 12s pre-ANR window.
         - Apply package filtering to anchor discovery only, not contextual pre-window lines.
-    2. `docs/event_log_tags_master.md` was expanded from placeholder/truncated examples to concrete tags needed by focus/window/lifecycle analysis, including `wm_task_created`, `wm_create_activity`, `wm_pause_activity`, `wm_on_paused_called`, `wm_add_to_stopping`, `am_proc_start`, `am_proc_bound`, `am_mem_factor`, `am_freeze`, and `am_unfreeze`.
+    2. `docs/event-log-tags-reference.md` was expanded from placeholder/truncated examples to concrete tags needed by focus/window/lifecycle analysis, including `wm_task_created`, `wm_create_activity`, `wm_pause_activity`, `wm_on_paused_called`, `wm_add_to_stopping`, `am_proc_start`, `am_proc_bound`, `am_mem_factor`, `am_freeze`, and `am_unfreeze`.
     3. Directory/package loading now uses the target package's EventLog `am_anr` timestamp to select the matching trace, EventLog shard, and logcat shard in multi-ANR Monkey result directories.
     4. `scripts/anr_to_ai.py` passes `--package` into package loading, so AI context generation can choose target-aligned shards before grouping.
 - **Case Verification**:
@@ -308,7 +308,7 @@
     - EventLog cache retained 32 target-window lines, including `input_focus`, `wm_task_created`, `wm_create_activity`, `wm_pause_activity`, `wm_on_paused_called`, `wm_add_to_stopping`, `am_proc_start`, `am_proc_bound`, `am_mem_factor`, and `am_anr`.
 - **Tests Added/Updated**:
     - `test_event_log_package_filter_applies_to_anchor_only_when_requested`
-    - `test_default_event_log_tags_cover_docs_master`
+    - `test_default_event_log_tags_cover_docs_reference`
     - `test_event_log_cache_keeps_documented_tags_without_package_filtering_context`
     - `test_package_name_prefers_matching_trace_for_sharded_event_log_selection`
 - **Verification**:
@@ -318,7 +318,7 @@
     - Result: OK
 - **Forward Directive**:
     - Do not require package-name matches on EventLog pre-window context lines; lifecycle/focus evidence often belongs to system_server, the next app, or other processes.
-    - Keep `docs/event_log_tags_master.md` as the source of truth for EventLog cache tag coverage.
+    - Keep `docs/event-log-tags-reference.md` as the source of truth for EventLog cache tag coverage.
 
 ## [2026-05-12] - Review Fix: Smart Discovery Trace Preservation
 - **Context**: Code review identified two smart-discovery regressions after source-specific workflow refactor.

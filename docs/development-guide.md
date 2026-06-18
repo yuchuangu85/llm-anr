@@ -112,12 +112,12 @@ llm-anr/
 │   └── helpers.py
 │
 ├── docs/                      # 设计文档
-│   ├── DIRECTORY.md
-│   ├── ANR-analysis-flow.md
-│   ├── ANR智能分析系统.md
-│   ├── GAP_ANALYSIS.md
-│   ├── algorithm_design_log_filter.md
-│   ├── event_log_tags_master.md
+│   ├── directory-structure.md
+│   ├── anr-analysis-flow.md
+│   ├── anr-intelligent-analysis-system-architecture.md
+│   ├── architecture-implementation-gap-analysis.md
+│   ├── eventlog-trace-filter-algorithm-design.md
+│   ├── event-log-tags-reference.md
 │   └── ...
 │
 ├── skills/                    # ANR 分来源分析技能说明
@@ -331,7 +331,7 @@ anr_evidence/log_filter.py
 anr_evidence/sources/event_log/filter.py
 anr_evidence/sources/logcat/filter.py
 anr_evidence/anrmanager_parser.py
-docs/event_log_tags_master.md
+docs/event-log-tags-reference.md
 ```
 
 测试：

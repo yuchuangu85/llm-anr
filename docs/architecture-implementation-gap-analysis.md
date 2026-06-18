@@ -4,11 +4,11 @@
 > Multi-Agent 推理（`ai_agent.py`）、语义权重（`weighting.py`）、Evidence Slice Schema（`evidence_slice.py`）、
 > 跨源实体关联（`entity_linker.py`）、ΔT 时间归一化（`time_norm.py`）、Context Flooding 防护（`context_flooding.py`）均已落地。
 > AI 上下文产物也已从 `cache.md`/`ai_prompt.md`/`summary.json` 迁移为 `index.json` + 每 ANR 一个 `<group-id>/anr_analysis.md` 工作区。
-> 当前状态请以 `README.md` 和 `docs/DEVELOPMENT_GUIDE.md` 为准；本文仅保留作为早期差距分析的存档。
+> 当前状态请以 `README.md` 和 `docs/development-guide.md` 为准；本文仅保留作为早期差距分析的存档。
 
 ## 一、设计架构回顾
 
-根据 `docs/ANR智能分析系统.md` 定义的四层架构：
+根据 `docs/anr-intelligent-analysis-system-architecture.md` 定义的四层架构：
 
 ```
 原始数据 → 预处理层 → 过滤层 → 推理层 → 输出层

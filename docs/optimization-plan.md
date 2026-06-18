@@ -22,9 +22,9 @@
 | `AGENTS.md` | Step 1 产物清单改为 `index.json` + `<group-id>/anr_analysis.md` + `logcat.txt`；Step 2 槽位标题改为 `#### AI Analysis — 最终 ANR 综合分析`；删除硬编码测试数（171）；修正 Multi-Agent 示例中 `provider_config` 未定义的代码错误 |
 | `CLAUDE.md` / `GEMINI.md` / `CODEBUDDY.md` / `HERMES.md` | 同步槽位标题、测试数、示例代码三处修复 |
 | `anr_evidence/cli.py` | `--build-ai-context` help 文案从 "cache.md and ai_prompt.md" 改为 "per-ANR anr_analysis.md workspaces plus an index.json" |
-| `docs/DIRECTORY.md` | `ai_context.py`/`anr_to_ai.py` 条目改为新产物描述；删除硬编码测试数（165）；删除不存在的测试文件条目（`test_cli_dashboard.py`、`test_cli_replay*.py`、`test_dashboard.py`、`test_replay.py`、`test_replay_compare.py`、`test_replay_index.py`），补充实际存在的 `test_trace_deadlock.py`、`test_eval_groundtruth.py` |
-| `docs/ANR-analysis-flow.md` | 0.3 节产物清单改为新格式 |
-| `docs/GAP_ANALYSIS.md` | 顶部加"已过时（历史快照）"声明 — 文中标记"缺失"的 Multi-Agent、语义权重、ESS、实体关联、ΔT、Context Flooding 均已在 `ai_agent.py`/`weighting.py`/`evidence_slice.py`/`entity_linker.py`/`time_norm.py`/`context_flooding.py` 落地 |
+| `docs/directory-structure.md` | `ai_context.py`/`anr_to_ai.py` 条目改为新产物描述；删除硬编码测试数（165）；删除不存在的测试文件条目（`test_cli_dashboard.py`、`test_cli_replay*.py`、`test_dashboard.py`、`test_replay.py`、`test_replay_compare.py`、`test_replay_index.py`），补充实际存在的 `test_trace_deadlock.py`、`test_eval_groundtruth.py` |
+| `docs/anr-analysis-flow.md` | 0.3 节产物清单改为新格式 |
+| `docs/architecture-implementation-gap-analysis.md` | 顶部加"已过时（历史快照）"声明 — 文中标记"缺失"的 Multi-Agent、语义权重、ESS、实体关联、ΔT、Context Flooding 均已在 `ai_agent.py`/`weighting.py`/`evidence_slice.py`/`entity_linker.py`/`time_norm.py`/`context_flooding.py` 落地 |
 | `scripts/web_server.py` | UI 中 `cache.md`/`ai_prompt.md` 标签改为"证据缓存"/"分析指令"（实际渲染的是内存中的 markdown，不落盘） |
 
 ### P0-2 合并 build_evidence/window_summary 双份实现（已完成）

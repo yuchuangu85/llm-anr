@@ -946,7 +946,7 @@ def _emit_deadlock_hints(
 ) -> list[dict[str, Any]]:
     """Generate structured deadlock hints from the lock graph.
 
-    Hint vocabulary (see docs/trace_hint_annotation_design.md §4.3.1):
+    Hint vocabulary (see docs/trace-hint-annotation-design.md §4.3.1):
       * `DEADLOCK_CYCLE`           — SCC ≥2 nodes, every member monitor-blocked.
       * `DEADLOCK_LIKELY`          — SCC ≥2 nodes, some member not blocked.
       * `DEADLOCK_SELF`            — owner_tid == waiter_tid (self-loop).

@@ -134,13 +134,13 @@ python3 -m unittest discover -s tests -v
 
 | 文件 | 说明 |
 |------|------|
-| `算法设计.md` | 整体算法设计文档 |
-| `algorithm_design_log_filter.md` | EventLog 过滤算法详细设计（两阶段扫描、标签权重等） |
-| `ANR智能分析系统.md` | ANR 智能分析系统总体设计、各阶段规划 |
-| `event_log_tags_master.md` | EventLog 关键标签主列表，供 `anr_log_pattern_filter.py` 使用 |
-| `operation_log.md` | 操作日志：记录开发过程中的关键决策和变更 |
-| `DIRECTORY.md` | 本文件，项目目录结构说明 |
-| `GAP_ANALYSIS.md` | 设计架构 vs 实现现状的逐环节差距分析 |
+| `hermes-gemma-algorithm-design.md` | 整体算法设计文档 |
+| `eventlog-trace-filter-algorithm-design.md` | EventLog 过滤算法详细设计（两阶段扫描、标签权重等） |
+| `anr-intelligent-analysis-system-architecture.md` | ANR 智能分析系统总体设计、各阶段规划 |
+| `event-log-tags-reference.md` | EventLog 关键标签主列表，供 `anr_log_pattern_filter.py` 使用 |
+| `optimization-operation-log.md` | 操作日志：记录开发过程中的关键决策和变更 |
+| `directory-structure.md` | 本文件，项目目录结构说明 |
+| `architecture-implementation-gap-analysis.md` | 设计架构 vs 实现现状的逐环节差距分析 |
 
 ---
 

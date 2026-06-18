@@ -91,7 +91,7 @@ result = run_ai_agent_analysis(
 
 # === Standalone scripts ===
 python3 scripts/anr_preprocessor.py tests/fixtures/nfw_01.json
-python3 scripts/anr_log_pattern_filter.py path/to/events.txt --tags docs/event_log_tags_master.md
+python3 scripts/anr_log_pattern_filter.py path/to/events.txt --tags docs/event-log-tags-reference.md
 python3 scripts/extract_bugreport.py path/to/bugreport.zip -o output_dir/
 python3 scripts/compare_replays.py path/to/run_a path/to/run_b
 python3 scripts/web_server.py --port 8080

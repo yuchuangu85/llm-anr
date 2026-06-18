@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from anr_evidence.log_filter import (
     DEFAULT_EVENT_LOG_TAGS,
     LogFilterSpec,
-    event_log_tags_master_path,
+    event_log_tags_reference_path,
     filter_file_preceding_anchor_window,
     parse_tags_from_markdown,
 )
@@ -58,7 +58,7 @@ def filter_anr_logs(log_file: str, tag_sources: list[str], package_name: str | N
 def main() -> None:
     parser = argparse.ArgumentParser(description="Filter EventLog for the 12s pre-ANR diagnostic window.")
     parser.add_argument("log_file", help="Path to the event log file")
-    parser.add_argument("--tags", nargs="*", default=[str(event_log_tags_master_path())], help="Markdown files containing EventLog tags")
+    parser.add_argument("--tags", nargs="*", default=[str(event_log_tags_reference_path())], help="Markdown files containing EventLog tags")
     parser.add_argument("--package", help="Optional package name to require in retained lines", default=None)
     args = parser.parse_args()
     filter_anr_logs(args.log_file, args.tags, args.package)
