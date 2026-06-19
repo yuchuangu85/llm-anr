@@ -565,6 +565,47 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(logcat['metadata']['anrManagerPreContextAnchor'], '04-12 10:00:57.463')
         self.assertEqual(logcat['metadata']['anrManagerPreContextRetainedLineCount'], 2)
 
+    def test_empty_logcat_anchor_window_is_not_replaced_with_stale_fallback(self) -> None:
+        package = {
+            'package_id': 'AICTX-STALE-LOGCAT-FALLBACK',
+            'sources': {
+                'event_log': {
+                    'path': 'events.log',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.000 am_anr ANR in com.demo first',
+                        '04-12 15:14:03.980 am_anr ANR in com.demo second',
+                    ]),
+                },
+                'trace': {
+                    'path': 'trace.txt',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.100 ----- pid 100 -----',
+                        'Cmd line: com.demo',
+                        '"main" prio=5 tid=1 Native',
+                        '04-12 15:14:04.000 ----- pid 101 -----',
+                        'Cmd line: com.demo',
+                        '"main" prio=5 tid=1 Native',
+                    ]),
+                },
+                'logcat': {
+                    'path': 'logcat.txt',
+                    'content': '\n'.join([
+                        '04-12 10:00:05.050 E InputDispatcher first ANR for com.demo',
+                        '04-12 10:00:05.060 I/AnrManager( 1377): ANR in com.demo',
+                    ]),
+                },
+            },
+        }
+
+        result = build_ai_context(package, AiContextOptions(package_name='com.demo'))
+
+        first, second = result.groups
+        self.assertIn('04-12 10:00:05.050 E InputDispatcher first ANR for com.demo', first['logcat']['lines'])
+        self.assertEqual(second['logcat']['warnings'][0]['code'], 'empty-anchor-window')
+        self.assertEqual(second['logcat']['lines'], [])
+        self.assertFalse(second['completeness']['complete'])
+        self.assertIn('logcat', second['completeness']['emptyFilteredSources'])
+
     def test_anrmanager_summary_surfaces_pressure_and_meminfo_follows_all_over_90_processes(self) -> None:
         package = {
             'package_id': 'AICTX-ANRMANAGER-LOAD',

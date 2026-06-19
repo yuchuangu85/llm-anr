@@ -308,6 +308,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 after_seconds=options.logcat_after_seconds,
                 include_patterns=strategy.logcat_patterns,
                 package_name=effective_package_name,
+                package_filter_scope="system_or_package",
             ),
             fallback_label="logcat-ai-context",
         )

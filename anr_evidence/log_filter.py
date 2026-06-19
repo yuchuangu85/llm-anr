@@ -137,9 +137,28 @@ LOGCAT_SIGNAL_PATTERNS = frozenset(
         "contentprovider",
         "system_server",
         "slow operation",
+        "slow binder transaction",
         "timeout",
         "not responding",
     }
+)
+
+LOGCAT_SYSTEM_CONTEXT_TAGS = frozenset(
+    {
+        "ActivityManager",
+        "AndroidRuntime",
+        "AnrManager",
+        "BinderProxy",
+        "Choreographer",
+        "InputDispatcher",
+        "SurfaceFlinger",
+        "WindowManager",
+    }
+)
+LOGCAT_SYSTEM_CONTEXT_TAG_RE = re.compile(
+    r"\s[VDIWEF]\s+(?P<tag>"
+    + "|".join(re.escape(tag) for tag in sorted(LOGCAT_SYSTEM_CONTEXT_TAGS))
+    + r")(?:\s*:|\s+)"
 )
 
 KERNEL_SIGNAL_PATTERNS = frozenset(
@@ -335,8 +354,8 @@ def filter_prepared_timestamp_window(
     if selected:
         return FilterResult(selected, warnings)
 
-    warnings.append({"code": "empty-anchor-window", "message": f"No timestamped lines matched anchor window for {fallback_label}; full source fallback retained."})
-    return FilterResult([line for _, line in prepared_lines[:max_fallback_lines]], warnings)
+    warnings.append({"code": "empty-anchor-window", "message": f"No timestamped lines matched anchor window for {fallback_label}; no fallback lines retained because they would be outside the ANR window."})
+    return FilterResult([], warnings)
 
 
 def filter_preceding_anchor_window(
@@ -699,10 +718,21 @@ def _find_anrmanager_block_end(lines: list[str], anr_indices: list[int], anchor_
 def _line_matches_spec(line: str, spec: LogFilterSpec) -> bool:
     if spec.package_name and spec.package_filter_scope == "all" and spec.package_name not in line:
         return False
+    if (
+        spec.package_name
+        and spec.package_filter_scope == "system_or_package"
+        and spec.package_name not in line
+        and not _is_logcat_system_context_line(line)
+    ):
+        return False
     if not spec.require_pattern:
         return True
     lowered = line.lower()
     return any(pattern.lower() in lowered for pattern in spec.include_patterns)
+
+
+def _is_logcat_system_context_line(line: str) -> bool:
+    return bool(LOGCAT_SYSTEM_CONTEXT_TAG_RE.search(line))
 
 
 def _line_matches_window(line: str, start: datetime, end: datetime, spec: LogFilterSpec, timestamp_parser: TimestampParser) -> bool:

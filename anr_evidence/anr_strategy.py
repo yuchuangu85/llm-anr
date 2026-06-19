@@ -44,6 +44,7 @@ INPUT_LOGCAT_PATTERNS = frozenset(
         "inputdispatcher",
         "input dispatching timed out",
         "input dispatching timeout",
+        "slow binder transaction",
         "focused window",
         "no focused window",
         "no focus window",
