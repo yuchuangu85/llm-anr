@@ -126,12 +126,12 @@ MONKEY_LOGCAT_PATTERN = re.compile(
 def detect_source_kind(relative_path: Path, content: str) -> str | None:
     lower_path = normalize_path_text(relative_path).lower()
     filename = path_name(relative_path).lower()
-    lowered_content = content.lower()
-    content_head = "\n".join(lowered_content.splitlines()[:20])
+    content_sample = content[:8192]
+    content_head = "\n".join(content_sample.lower().splitlines()[:20])
     if (
         filename == "meminfo.txt"
         or lower_path.endswith("/system_log/meminfo.txt")
-        or ("applications memory usage" in content_head and "total pss by oom adjustment" in lowered_content[:8192])
+        or ("applications memory usage" in content_head and "total pss by oom adjustment" in content_sample.lower())
     ):
         return "meminfo"
     best_kind = None
@@ -226,7 +226,7 @@ def dedupe_and_rank_entries(source_kind: str, entries: list[dict[str, Any]]) -> 
     ranked = sorted(entries, key=lambda entry: (source_entry_priority(source_kind, entry["path"], entry["content"]), entry["path"]))
     by_content: dict[str, dict[str, Any]] = {}
     for entry in ranked:
-        content_key = sha1(entry["content"].strip().encode("utf-8")).hexdigest() if entry["content"].strip() else f"empty::{entry['path']}"
+        content_key = _content_digest(entry["content"]) if _has_non_whitespace(entry["content"]) else f"empty::{entry['path']}"
         incumbent = by_content.get(content_key)
         if incumbent is None:
             by_content[content_key] = entry
@@ -238,3 +238,16 @@ def dedupe_and_rank_entries(source_kind: str, entries: list[dict[str, Any]]) -> 
         elif current_priority == incumbent_priority and entry["path"] < incumbent["path"]:
             by_content[content_key] = entry
     return sorted(by_content.values(), key=lambda entry: (source_entry_priority(source_kind, entry["path"], entry["content"]), entry["path"]))
+
+
+def _content_digest(content: str, *, chunk_chars: int = 1024 * 1024) -> str:
+    """Hash large text without encoding the entire string into one bytes copy."""
+
+    digest = sha1()
+    for start in range(0, len(content), chunk_chars):
+        digest.update(content[start : start + chunk_chars].encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _has_non_whitespace(content: str) -> bool:
+    return any(not char.isspace() for char in content)

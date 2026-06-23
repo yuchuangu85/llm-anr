@@ -37,7 +37,7 @@ def load_package_from_directory(
         event_anchor_dt = find_event_anr_timestamp_by_command(root, package_name)
     # Try smart Monkey-test discovery first (System_log/ directory with
     # System_MT_logcat* files). Falls back to full recursive traversal.
-    smart_entries = try_smart_monkey_discovery(root)
+    smart_entries = try_smart_monkey_discovery(root, package_name=package_name)
     if smart_entries is not None:
         smart_package = build_package_from_entries(
             root.name,
@@ -45,7 +45,7 @@ def load_package_from_directory(
             package_name=package_name,
             event_anchor_dt=event_anchor_dt,
         )
-        if all(kind in smart_package.get("sources", {}) for kind in SOURCE_KINDS):
+        if _has_core_anr_sources(smart_package):
             return smart_package
     # Original fallback: load everything recursively.
     entries = []
@@ -149,7 +149,7 @@ def try_load_smart_package(
     event_anchor_dt: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Try smart Monkey-test discovery; return a package dict or None."""
-    entries = try_smart_monkey_discovery(path)
+    entries = try_smart_monkey_discovery(path, package_name=package_name)
     if entries is None:
         return None
     if event_anchor_dt is None:
@@ -194,6 +194,8 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
         # complete than what's in the archive (especially for Monkey test
         # results where the zip only contains a partial bugreport snapshot).
         smart_package = try_load_smart_package(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
+        if smart_package is not None and _has_core_anr_sources(smart_package):
+            return smart_package
         if not archives:
             if smart_package is not None:
                 return smart_package
@@ -273,6 +275,19 @@ def is_archive_path(path: Path) -> bool:
     if suffixes[-1] == ".zip":
         return True
     return any(suffix in {".tar", ".gz", ".tgz", ".bz2", ".xz"} for suffix in suffixes)
+
+
+def _has_core_anr_sources(package: dict[str, Any]) -> bool:
+    """Return True when a package has enough evidence to build ANR context.
+
+    Kernel logs are valuable but not required by the AI-context completeness
+    gate.  Treating trace/EventLog/logcat as the core set lets Monkey result
+    directories with complete loose evidence avoid loading duplicate archive
+    snapshots that are often much larger and staler.
+    """
+
+    sources = package.get("sources", {}) or {}
+    return all(sources.get(kind, {}).get("content") for kind in ("trace", "event_log", "logcat"))
 
 
 def find_event_anr_timestamp_by_command(root: Path, package_name: str | None) -> datetime | None:

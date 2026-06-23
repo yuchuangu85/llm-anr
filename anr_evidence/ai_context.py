@@ -24,9 +24,10 @@ from .root_cause_hints import (
 from .log_filter import (
     LogFilterSpec,
     default_patterns_for_source,
-    filter_prepared_timestamp_window,
+    filter_timestamp_windows,
+    iter_text_lines,
+    timestamped_context_before_windows,
     parse_log_timestamp,
-    prepare_timestamped_lines,
     timestamp_to_raw,
 )
 from .sources import MeminfoFilterOptions, SourceFilterContext, SourceFilterOptions, filter_logcat_anrmanager_block, filter_meminfo_source
@@ -108,19 +109,33 @@ def build_ai_context(package: dict[str, Any], options: AiContextOptions) -> AiCo
 
 
 def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOptions) -> dict[str, Any]:
-    """Create anr_analysis.md per ANR group and index.json for AI-assisted ANR analysis."""
+    """Create anr_analysis.md per ANR group and index.json for AI-assisted ANR analysis.
+
+    Artifact generation intentionally avoids rendering a monolithic cache/prompt
+    for every group before writing files.  Large multi-ANR inputs can retain
+    megabytes of rendered markdown otherwise; rendering each group directly
+    keeps peak memory proportional to one group plus the shared source package.
+    """
 
     out_dir = Path(options.out_dir or "anr_ai_context")
     out_dir.mkdir(parents=True, exist_ok=True)
-    result = build_ai_context(package, AiContextOptions(
+
+    strategy = strategy_for_package(package, options.anr_type)
+    resolved = _resolve_options(AiContextOptions(
         out_dir=out_dir,
         event_before_seconds=options.event_before_seconds,
         logcat_before_seconds=options.logcat_before_seconds,
         logcat_after_seconds=options.logcat_after_seconds,
+        meminfo_before_seconds=options.meminfo_before_seconds,
+        meminfo_after_seconds=options.meminfo_after_seconds,
         group_tolerance_seconds=options.group_tolerance_seconds,
         package_name=options.package_name,
         anr_type=options.anr_type,
-    ))
+    ), strategy)
+    events = [_event("source_loaded", "loaded", packageId=package.get("package_id"), sourceKinds=sorted(package.get("sources", {}).keys()))]
+    events.append(_event("anr_type_selected", "completed", anrType=strategy.anr_type, label=strategy.label))
+    groups, group_events = _build_groups(package, resolved, strategy)
+    events.extend(group_events)
 
     # Clean stale legacy files from the top-level output directory.
     for stale in ("cache.md", "ai_prompt.md", "summary.json", "analysis.md"):
@@ -136,8 +151,7 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
                     stale_child.unlink()
 
     index_groups: list[dict[str, Any]] = []
-    render_strategy = strategy_for_package(package, result.options.anr_type)
-    for group in result.groups:
+    for group in groups:
         group_dir = out_dir / group["id"]
         group_dir.mkdir(parents=True, exist_ok=True)
         analysis_path = group_dir / "anr_analysis.md"
@@ -150,8 +164,8 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             "logcat": str(logcat_path),
         }
         existing = _read_existing_analyses(analysis_path) if analysis_path.exists() else {}
-        evidence_md = _render_cache_markdown(package, [group_for_render], result.options, render_strategy, include_analysis_slots=True)
-        anr_analysis_md = _render_ai_prompt(evidence_md, [group], render_strategy, evidence_analysis_md=evidence_md)
+        evidence_md = _render_cache_markdown(package, [group_for_render], resolved, strategy, include_analysis_slots=True)
+        anr_analysis_md = _render_ai_prompt(evidence_md, [group], strategy, evidence_analysis_md=evidence_md)
         if existing:
             anr_analysis_md = _merge_analyses(anr_analysis_md, existing)
         analysis_slots = _analysis_slot_statuses_from_text(anr_analysis_md)
@@ -173,18 +187,19 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             },
         })
 
+    events.append(_event("cache_rendered", "completed", groupCount=len(groups)))
+    events.append(_event("prompt_generated", "completed", groupCount=len(groups)))
     index_path = out_dir / "index.json"
     index = {
-        "packageId": result.package_id,
-        "strategy": result.strategy,
+        "packageId": package.get("package_id"),
+        "strategy": _strategy_summary(strategy),
         "artifactPaths": {"index": str(index_path)},
-        "groupCount": len(result.groups),
-        "events": result.events,
+        "groupCount": len(groups),
+        "events": events,
         "groups": index_groups,
     }
     index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return index
-
 
 def _single_group_summary(result: AiContextResult, group: dict[str, Any], artifact_paths: dict[str, str]) -> dict[str, Any]:
     return {
@@ -285,54 +300,70 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
     anchors = _collapse_nearby_anchors(anchors, options.group_tolerance_seconds)
     events.append(_event("grouped", "completed", groupCount=len(anchors), fallbackUsed=fallback_used))
     groups = []
-    # Anchor-independent work hoisted out of the per-anchor loop: trace
-    # preprocessing is shared via cache, logcat timestamps are parsed once,
-    # and kernel_log is split once. With N anchors this turns O(N x full
-    # file) re-parsing into O(full file).
+    # Anchor-independent work hoisted out of the per-anchor loop.  Trace
+    # preprocessing is shared via cache, and logcat timestamp-window filtering
+    # is done as a single streaming pass over the source text instead of
+    # materializing a large (timestamp, line) tuple table.
     trace_preprocess_cache: dict[Any, Any] = {}
     kernel_log_content = sources.get("kernel_log", {}).get("content", "")
-    kernel_log_lines = kernel_log_content.splitlines()
-    prepared_logcat_lines = prepare_timestamped_lines(sources.get("logcat", {}).get("content", ""))
-    parsed_logcat_lines = [(ts, line.strip()) for ts, line in prepared_logcat_lines if ts is not None]
-    for anchor in anchors:
+    kernel_log_lines = list(iter_text_lines(kernel_log_content)) if kernel_log_content else []
+    logcat_content = sources.get("logcat", {}).get("content", "")
+    effective_package_names = [options.package_name or anchor.get("packageName") for anchor in anchors]
+    logcat_results = filter_timestamp_windows(
+        logcat_content,
+        [
+            (
+                anchor["timestamp"],
+                LogFilterSpec(
+                    source_kind="logcat",
+                    before_seconds=options.logcat_before_seconds,
+                    after_seconds=options.logcat_after_seconds,
+                    include_patterns=strategy.logcat_patterns,
+                    package_name=effective_package_names[index],
+                    package_filter_scope="system_or_package",
+                ),
+                "logcat-ai-context",
+            )
+            for index, anchor in enumerate(anchors)
+        ],
+    )
+    anrmanager_results = [
+        filter_logcat_anrmanager_block(
+            sources.get("logcat", {}),
+            SourceFilterContext(anchor_dt=anchor["timestamp"], package_name=effective_package_names[index]),
+            SourceFilterOptions(package_name=effective_package_names[index]),
+        )
+        for index, anchor in enumerate(anchors)
+    ]
+    anrmanager_pre_context_anchors = [
+        _anrmanager_pre_context_anchor(result.metadata)
+        for result in anrmanager_results
+    ]
+    anrmanager_pre_contexts = timestamped_context_before_windows(
+        logcat_content,
+        anrmanager_pre_context_anchors,
+        ANRMANAGER_PRE_CONTEXT_SECONDS,
+    )
+
+    for index, anchor in enumerate(anchors):
         anchor_dt = anchor["timestamp"]
-        effective_package_name = options.package_name or anchor.get("packageName")
+        effective_package_name = effective_package_names[index]
         event_lines, event_warnings = _event_window(sources.get("event_log", {}).get("content", ""), anchor, options, strategy)
         trace = _trace_context(sources.get("trace"), anchor_dt, package_name=effective_package_name, cache=trace_preprocess_cache)
-        logcat_result = filter_prepared_timestamp_window(
-            prepared_logcat_lines,
-            anchor_dt,
-            LogFilterSpec(
-                source_kind="logcat",
-                before_seconds=options.logcat_before_seconds,
-                after_seconds=options.logcat_after_seconds,
-                include_patterns=strategy.logcat_patterns,
-                package_name=effective_package_name,
-                package_filter_scope="system_or_package",
-            ),
-            fallback_label="logcat-ai-context",
-        )
+        logcat_result = logcat_results[index]
 
         # Extract the AnrManager diagnostic block (memory pressure, CPU usage,
         # AnrDumpRecord, addErrorToDropBox) for the target or inferred package.
-        anrmanager_result = filter_logcat_anrmanager_block(
-            sources.get("logcat", {}),
-            SourceFilterContext(anchor_dt=anchor_dt, package_name=effective_package_name),
-            SourceFilterOptions(package_name=effective_package_name),
-        )
         # Merge raw logcat context immediately preceding the selected
         # AnrManager dump, then the AnrManager block, then the generic
         # signal-filtered anchor window.  The generic window is intentionally
         # pattern/package-filtered, so without this explicit pre-context slice
         # ordinary framework/vendor lines in the 12s before AnrManager can be
         # lost even though they explain the dump trigger.
+        anrmanager_result = anrmanager_results[index]
         anrmanager_lines = anrmanager_result.lines
-        anrmanager_pre_context_anchor = _anrmanager_pre_context_anchor(anrmanager_result.metadata)
-        anrmanager_pre_context_lines = _timestamped_logcat_context_before(
-            parsed_logcat_lines,
-            anrmanager_pre_context_anchor,
-            ANRMANAGER_PRE_CONTEXT_SECONDS,
-        )
+        anrmanager_pre_context_anchor = anrmanager_pre_context_anchors[index]
+        anrmanager_pre_context_lines = anrmanager_pre_contexts[index]
         anrmanager_summary = parse_anrmanager_block(anrmanager_lines) if anrmanager_lines else None
         meminfo_result = filter_meminfo_source(
             sources.get("meminfo", {}),
@@ -461,20 +492,6 @@ def _anrmanager_pre_context_anchor(metadata: dict[str, Any]) -> datetime | None:
     return None
 
 
-def _timestamped_logcat_context_before(parsed_lines: list[tuple[datetime, str]], anchor_dt: datetime | None, before_seconds: int) -> list[str]:
-    """Return unpatterned timestamped logcat lines in the window before anchor.
-
-    This helper intentionally does not apply package filtering or signal
-    patterns. It is a narrow raw context slice for the selected AnrManager
-    block, not a replacement for the regular noise-reduced logcat filter.
-    """
-
-    if not parsed_lines or anchor_dt is None:
-        return []
-    start_dt = anchor_dt - timedelta(seconds=before_seconds)
-    return [line for ts, line in parsed_lines if start_dt <= ts < anchor_dt]
-
-
 def _dedupe_lines(*line_groups: list[str]) -> list[str]:
     """Merge line groups while preserving first occurrence order."""
 
@@ -550,7 +567,7 @@ def _collapse_nearby_anchors(anchors: list[dict[str, Any]], tolerance_seconds: i
 
 def _event_anchors(content: str, package_name: str | None) -> list[dict[str, Any]]:
     anchors = []
-    for index, line in enumerate(content.splitlines()):
+    for index, line in enumerate(iter_text_lines(content)):
         if "am_anr" not in line.lower():
             continue
         if package_name and package_name not in line:
@@ -579,7 +596,7 @@ def _fallback_anchors(sources: dict[str, Any], package_name: str | None, strateg
         if not source:
             continue
         anchors = []
-        for index, line in enumerate(source.get("content", "").splitlines()):
+        for index, line in enumerate(iter_text_lines(source.get("content", ""))):
             if package_name and package_name not in line:
                 continue
             ts = parse_log_timestamp(line)
@@ -617,7 +634,7 @@ def _event_window(content: str, anchor: dict[str, Any], options: AiContextOption
     # not to contextual pre-window lines, because lifecycle/focus evidence may
     # belong to system_server, the next app, or other processes.
     event_tags = default_patterns_for_source("event_log")
-    for index, line in enumerate(content.splitlines()):
+    for index, line in enumerate(iter_text_lines(content)):
         if index > anchor.get("lineIndex", 0):
             break
         ts = parse_log_timestamp(line)

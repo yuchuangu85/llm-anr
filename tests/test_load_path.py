@@ -81,6 +81,32 @@ class LoadPathTests(unittest.TestCase):
             self.assertIn("event_log", package["sources"])
             self.assertIn("logcat", package["sources"])
 
+
+    def test_directory_with_complete_smart_loose_sources_skips_archive_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            (tmpdir / 'System_log/anr').mkdir(parents=True)
+            (tmpdir / 'System_log/System_MT_logcat_event_04_12_10_00_00.txt').write_text(
+                '04-12 10:05:00.000 am_anr ANR in com.demo: Input dispatching timed out\n',
+                encoding='utf-8',
+            )
+            (tmpdir / 'System_log/System_MT_logcat_04_12_10_00_00.txt').write_text(
+                '04-12 10:05:00.100 E InputDispatcher target timeout for com.demo\n',
+                encoding='utf-8',
+            )
+            (tmpdir / 'System_log/anr/anr_2026-04-12-10-05-00-000').write_text(
+                '----- pid 100 at 2026-04-12 10:05:00.000000000+0800 -----\nCmd line: com.demo\n',
+                encoding='utf-8',
+            )
+            with zipfile.ZipFile(tmpdir / 'bugreport.zip', 'w') as zf:
+                zf.writestr('logs/logcat_main.txt', '04-12 10:05:00.100 E InputDispatcher stale archive timeout\n')
+
+            with unittest.mock.patch('anr_evidence.loaders.core.load_package_from_archive', side_effect=AssertionError('archive should not be loaded')):
+                package = load_package_from_path(tmpdir, package_name='com.demo')
+
+        self.assertIn('target timeout', package['sources']['logcat']['content'])
+        self.assertNotIn('stale archive timeout', package['sources']['logcat']['content'])
+
     def test_load_path_not_exists(self) -> None:
         with self.assertRaises(ArchiveLoadError):
             load_package_from_path("/nonexistent/path")

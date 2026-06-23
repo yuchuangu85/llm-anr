@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from anr_evidence import AiContextOptions, build_ai_context, build_ai_context_artifacts
@@ -191,6 +192,17 @@ class AiContextTests(unittest.TestCase):
         self.assertIn('### Trace 字段解读检查表', first_analysis)
         self.assertIn('schedstat` 三元组按 runNs/waitNs/timeSlices 解读', first_analysis)
         self.assertIn('tid` 是 ART 线程标识，`sysTid` 才是 Linux 线程号', first_analysis)
+
+
+    def test_artifact_builder_renders_each_group_without_monolithic_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import anr_evidence.ai_context as ai_context_module
+            with patch('anr_evidence.ai_context._render_cache_markdown', wraps=ai_context_module._render_cache_markdown) as render_cache:
+                build_ai_context_artifacts(_multi_anr_package(), AiContextOptions(out_dir=tmpdir, anr_type='input_dispatching_timeout'))
+
+        rendered_group_counts = [len(call.args[1]) for call in render_cache.call_args_list]
+        self.assertTrue(rendered_group_counts)
+        self.assertTrue(all(count == 1 for count in rendered_group_counts))
 
     def test_regeneration_preserves_filled_final_analysis_with_headings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

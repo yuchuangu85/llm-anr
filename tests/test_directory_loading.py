@@ -247,6 +247,111 @@ class DirectoryLoadingTests(unittest.TestCase):
             self.assertIn('trace', package['sources'])
             self.assertIn('data/anr/anr_2026-04-06-08-41-06-491', package['sources']['trace']['path'])
 
+
+
+    def test_top_level_monkey_logs_use_smart_discovery_without_dropbox_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / 'top-level-monkey'
+            (root / 'anr').mkdir(parents=True)
+            root.mkdir(exist_ok=True)
+            (root / 'System_MT_logcat_event_04_12_10_00_00.txt').write_text(
+                '04-12 10:05:00.000 am_anr ANR in com.demo: Input dispatching timed out\n',
+                encoding='utf-8',
+            )
+            (root / 'System_MT_logcat_event_04_12_11_00_00.txt').write_text(
+                '04-12 11:05:00.000 input_focus future event shard\n',
+                encoding='utf-8',
+            )
+            (root / 'System_MT_logcat_04_12_10_00_00.txt').write_text(
+                '04-12 10:05:00.100 E InputDispatcher target timeout for com.demo\n',
+                encoding='utf-8',
+            )
+            (root / 'System_MT_logcat_04_12_11_00_00.txt').write_text(
+                '04-12 11:05:00.100 E InputDispatcher future timeout\n',
+                encoding='utf-8',
+            )
+            (root / 'anr/anr_2026-04-12-10-05-00-000').write_text(
+                '----- pid 100 at 2026-04-12 10:05:00.000000000+0800 -----\nCmd line: com.demo\n',
+                encoding='utf-8',
+            )
+            (root / 'dropbox.txt').write_text(
+                '04-12 09:00:00.000 Cmd line: stale.dropbox\n' + ('dropbox noise\n' * 100),
+                encoding='utf-8',
+            )
+            (root / 'anr/anr_sf_dump_20260412_100500_000.winscope').write_text(
+                'winscope should not be treated as trace\n',
+                encoding='utf-8',
+            )
+            original_read_text = Path.read_text
+
+            def guarded_read_text(path: Path, *args, **kwargs):
+                if path.name in {
+                    'dropbox.txt',
+                    'System_MT_logcat_event_04_12_11_00_00.txt',
+                    'System_MT_logcat_04_12_11_00_00.txt',
+                    'anr_sf_dump_20260412_100500_000.winscope',
+                }:
+                    raise AssertionError(f'unselected large file should not be materialized: {path.name}')
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, 'read_text', guarded_read_text):
+                package = load_package_from_directory(root, package_name='com.demo')
+
+        self.assertEqual(package['sources']['trace']['path'], 'anr/anr_2026-04-12-10-05-00-000')
+        self.assertNotIn('dropbox', package['sources']['trace']['path'])
+        self.assertNotIn('winscope', package['sources']['trace']['path'])
+        self.assertIn('target timeout', package['sources']['logcat']['content'])
+        self.assertNotIn('future timeout', package['sources']['logcat']['content'])
+
+    def test_smart_discovery_reads_only_anchor_relevant_shards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / 'smart-read-budget'
+            (root / 'System_log/anr').mkdir(parents=True)
+            (root / 'System_log/System_MT_logcat_event_04_12_10_00_00.txt').write_text(
+                '04-12 10:05:00.000 am_anr ANR in com.demo: Input dispatching timed out\n',
+                encoding='utf-8',
+            )
+            (root / 'System_log/System_MT_logcat_event_04_12_11_00_00.txt').write_text(
+                '04-12 11:05:00.000 input_focus unrelated later event shard\n',
+                encoding='utf-8',
+            )
+            (root / 'System_log/System_MT_logcat_event_04_12_12_00_00.txt').write_text(
+                '04-12 12:05:00.000 input_focus far later event shard\n',
+                encoding='utf-8',
+            )
+            (root / 'System_log/System_MT_logcat_04_12_10_00_00.txt').write_text(
+                '04-12 10:05:00.100 E InputDispatcher target timeout for com.demo\n',
+                encoding='utf-8',
+            )
+            (root / 'System_log/System_MT_logcat_04_12_11_00_00.txt').write_text(
+                '04-12 11:05:00.100 E InputDispatcher unrelated later timeout\n',
+                encoding='utf-8',
+            )
+            (root / 'System_log/System_MT_logcat_04_12_12_00_00.txt').write_text(
+                '04-12 12:05:00.100 E InputDispatcher far later timeout\n',
+                encoding='utf-8',
+            )
+            (root / 'System_log/anr/anr_2026-04-12-10-05-00-000').write_text(
+                '----- pid 100 at 2026-04-12 10:05:00.000000000+0800 -----\n'
+                'Cmd line: com.demo\n'
+                'main tid=1 input dispatching timeout\n',
+                encoding='utf-8',
+            )
+
+            with patch('anr_evidence.discovery.monkey._make_file_entry', wraps=__import__('anr_evidence.discovery.monkey', fromlist=['_make_file_entry'])._make_file_entry) as make_entry:
+                package = load_package_from_directory(root, package_name='com.demo')
+
+            loaded_names = [call.args[0].name for call in make_entry.call_args_list]
+
+        self.assertIn('System_MT_logcat_event_04_12_10_00_00.txt', loaded_names)
+        self.assertIn('System_MT_logcat_04_12_10_00_00.txt', loaded_names)
+        self.assertNotIn('System_MT_logcat_event_04_12_11_00_00.txt', loaded_names)
+        self.assertNotIn('System_MT_logcat_04_12_11_00_00.txt', loaded_names)
+        self.assertNotIn('System_MT_logcat_event_04_12_12_00_00.txt', loaded_names)
+        self.assertNotIn('System_MT_logcat_04_12_12_00_00.txt', loaded_names)
+        self.assertIn('target timeout', package['sources']['logcat']['content'])
+        self.assertNotIn('unrelated later timeout', package['sources']['logcat']['content'])
+
     def test_smart_discovery_filters_system_log_trace_candidates_by_trace_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / 'system-log-traces'

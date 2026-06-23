@@ -276,6 +276,31 @@ def parse_tags_from_markdown(md_paths: Iterable[str | Path]) -> set[str]:
 DEFAULT_EVENT_LOG_TAGS = load_event_log_tags_from_docs()
 
 
+def iter_text_lines(content: str, *, skip_empty: bool = False) -> Iterable[str]:
+    """Yield lines from a string without materializing ``content.splitlines()``.
+
+    The ANR pipeline frequently receives tens or hundreds of megabytes of
+    logcat/EventLog text already loaded by package loaders.  Calling
+    ``splitlines()`` creates a second list-sized copy before filtering starts.
+    This generator walks newline offsets instead, preserving ``splitlines()``
+    style CR stripping for Android logs.
+    """
+
+    start = 0
+    length = len(content)
+    while start < length:
+        end = content.find("\n", start)
+        if end == -1:
+            end = length
+            next_start = length
+        else:
+            next_start = end + 1
+        line = content[start:end].rstrip("\r")
+        if not skip_empty or line.strip():
+            yield line
+        start = next_start
+
+
 def default_patterns_for_source(source_kind: str) -> frozenset[str]:
     if source_kind == "event_log":
         return DEFAULT_EVENT_LOG_TAGS
@@ -297,7 +322,7 @@ def prepare_timestamped_lines(
     timestamps up front turns O(anchors x lines) parsing into O(lines).
     """
 
-    return [(timestamp_parser(line), line) for line in content.splitlines() if line.strip()]
+    return [(timestamp_parser(line), line) for line in iter_text_lines(content, skip_empty=True)]
 
 
 def filter_timestamp_window(
@@ -358,6 +383,100 @@ def filter_prepared_timestamp_window(
     return FilterResult([], warnings)
 
 
+def filter_timestamp_windows(
+    content: str,
+    window_specs: list[tuple[datetime | None, LogFilterSpec, str]],
+    *,
+    timestamp_parser: TimestampParser = parse_log_timestamp,
+    max_fallback_lines: int = 25,
+) -> list[FilterResult]:
+    """Filter one timestamped source for several anchor windows in one pass.
+
+    This is the memory-oriented counterpart to ``prepare_timestamped_lines`` +
+    repeated ``filter_prepared_timestamp_window``.  It trades a small
+    ``O(line_count * window_count)`` predicate cost for avoiding a large list of
+    ``(timestamp, line)`` tuples over full logcat content.
+    """
+
+    if not window_specs:
+        return []
+    warnings: list[list[dict[str, str]]] = [[] for _ in window_specs]
+    selected: list[list[str]] = [[] for _ in window_specs]
+    fallback_lines: list[str] = []
+    if not content:
+        return [
+            FilterResult([], [{"code": f"empty-{fallback_label}", "message": f"No lines retained for {fallback_label}."}])
+            for _, _, fallback_label in window_specs
+        ]
+
+    windows: list[tuple[int, datetime, datetime, LogFilterSpec] | None] = []
+    for idx, (anchor_dt, spec, _fallback_label) in enumerate(window_specs):
+        if anchor_dt is None:
+            warnings[idx].append({"code": "missing-anchor", "message": "Primary anchor missing; full source fallback retained."})
+            windows.append(None)
+            continue
+        windows.append((
+            idx,
+            anchor_dt - timedelta(seconds=spec.before_seconds),
+            anchor_dt + timedelta(seconds=spec.after_seconds),
+            spec,
+        ))
+
+    for line in iter_text_lines(content, skip_empty=True):
+        if len(fallback_lines) < max_fallback_lines:
+            fallback_lines.append(line)
+        ts = timestamp_parser(line)
+        if ts is None:
+            continue
+        for window in windows:
+            if window is None:
+                continue
+            idx, start, end, spec = window
+            if start <= ts <= end and _line_matches_spec(line, spec):
+                selected[idx].append(line)
+
+    results: list[FilterResult] = []
+    for idx, (anchor_dt, _spec, fallback_label) in enumerate(window_specs):
+        if anchor_dt is None:
+            results.append(FilterResult(fallback_lines[:max_fallback_lines], warnings[idx]))
+            continue
+        if selected[idx]:
+            results.append(FilterResult(selected[idx], warnings[idx]))
+        else:
+            results.append(FilterResult(
+                [],
+                warnings[idx] + [{"code": "empty-anchor-window", "message": f"No timestamped lines matched anchor window for {fallback_label}; no fallback lines retained because they would be outside the ANR window."}],
+            ))
+    return results
+
+
+def timestamped_context_before_windows(
+    content: str,
+    anchor_dts: list[datetime | None],
+    before_seconds: int,
+    *,
+    timestamp_parser: TimestampParser = parse_log_timestamp,
+) -> list[list[str]]:
+    """Return raw timestamped pre-context windows for several anchors."""
+
+    results: list[list[str]] = [[] for _ in anchor_dts]
+    windows: list[tuple[int, datetime, datetime]] = []
+    for idx, anchor_dt in enumerate(anchor_dts):
+        if anchor_dt is None:
+            continue
+        windows.append((idx, anchor_dt - timedelta(seconds=before_seconds), anchor_dt))
+    if not windows or not content:
+        return results
+    for line in iter_text_lines(content, skip_empty=True):
+        ts = timestamp_parser(line)
+        if ts is None:
+            continue
+        for idx, start_dt, anchor_dt in windows:
+            if start_dt <= ts < anchor_dt:
+                results[idx].append(line.strip())
+    return results
+
+
 def filter_preceding_anchor_window(
     content: str,
     anchor_pattern: str,
@@ -367,7 +486,7 @@ def filter_preceding_anchor_window(
 ) -> FilterResult:
     """Find the first anchor line and retain matching lines in its preceding window."""
 
-    lines = [line for line in content.splitlines() if line.strip()]
+    lines = list(iter_text_lines(content, skip_empty=True))
     for index, line in enumerate(lines):
         if anchor_pattern.lower() not in line.lower():
             continue
@@ -468,7 +587,7 @@ def find_anrmanager_anchor(
     best_idx: int | None = None
     best_priority = 999
 
-    for idx, line in enumerate(content.splitlines()):
+    for idx, line in enumerate(iter_text_lines(content)):
         lowered = line.lower()
         if not _is_anrmanager_line(line):
             continue
@@ -505,22 +624,24 @@ def extract_anrmanager_blocks(
     if not content:
         return []
 
-    lines = content.splitlines()
-    anr_indices = [idx for idx, line in enumerate(lines) if _is_anrmanager_line(line)]
-    if not anr_indices:
+    anr_lines = [
+        (idx, line.strip())
+        for idx, line in enumerate(iter_text_lines(content))
+        if _is_anrmanager_line(line)
+    ]
+    if not anr_lines:
         return []
 
     ranges: dict[tuple[int, int], AnrManagerBlock] = {}
-    for pos, line_idx in enumerate(anr_indices):
-        line = lines[line_idx]
+    for pos, (line_idx, line) in enumerate(anr_lines):
         if package_name and package_name not in line:
             continue
-        start_pos = _find_anrmanager_block_start(lines, anr_indices, pos)
-        end_pos = _find_anrmanager_block_end(lines, anr_indices, pos)
-        start_idx = anr_indices[start_pos]
-        end_idx = anr_indices[end_pos]
+        start_pos = _find_anrmanager_block_start(anr_lines, pos)
+        end_pos = _find_anrmanager_block_end(anr_lines, pos)
+        start_idx = anr_lines[start_pos][0]
+        end_idx = anr_lines[end_pos][0]
         key = (start_idx, end_idx)
-        block_lines = [lines[idx].strip() for idx in anr_indices[start_pos : end_pos + 1]]
+        block_lines = [candidate_line for _, candidate_line in anr_lines[start_pos : end_pos + 1]]
         anchor_line, anchor_dt, anchor_priority = _best_anchor_in_block(
             block_lines,
             package_name,
@@ -686,11 +807,12 @@ def _nearest_anrmanager_position(anr_indices: list[int], anchor_idx: int) -> int
         return len(anr_indices) - 1
 
 
-def _find_anrmanager_block_start(lines: list[str], anr_indices: list[int], anchor_pos: int) -> int:
+def _find_anrmanager_block_start(anr_lines: list[tuple[int, str]], anchor_pos: int) -> int:
     begin_pos: int | None = None
     for pos in range(anchor_pos, -1, -1):
-        lowered = lines[anr_indices[pos]].lower()
-        if _START_ANR_DUMP_RE.search(lines[anr_indices[pos]]):
+        line = anr_lines[pos][1]
+        lowered = line.lower()
+        if _START_ANR_DUMP_RE.search(line):
             return pos
         if "dumpanrdebuginfo begin" in lowered and begin_pos is None:
             begin_pos = pos
@@ -700,11 +822,12 @@ def _find_anrmanager_block_start(lines: list[str], anr_indices: list[int], ancho
     return begin_pos if begin_pos is not None else 0
 
 
-def _find_anrmanager_block_end(lines: list[str], anr_indices: list[int], anchor_pos: int) -> int:
+def _find_anrmanager_block_end(anr_lines: list[tuple[int, str]], anchor_pos: int) -> int:
     fallback_end_pos = anchor_pos
-    for pos in range(anchor_pos, len(anr_indices)):
-        lowered = lines[anr_indices[pos]].lower()
-        if pos > anchor_pos and _START_ANR_DUMP_RE.search(lines[anr_indices[pos]]):
+    for pos in range(anchor_pos, len(anr_lines)):
+        line = anr_lines[pos][1]
+        lowered = line.lower()
+        if pos > anchor_pos and _START_ANR_DUMP_RE.search(line):
             break
         if "dumpanrdebuginfo end" in lowered:
             fallback_end_pos = pos

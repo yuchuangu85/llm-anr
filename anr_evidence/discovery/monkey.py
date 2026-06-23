@@ -7,7 +7,10 @@ from pathlib import Path
 import re
 from typing import Any
 
+from ..am_anr import package_name_from_am_anr_line
 from ..log_filter import parse_log_timestamp
+from ..path_utils import path_name
+from ..sources.shared import parse_shard_filename_timestamp
 from ..sources.shared.detection import (
     MONKEY_EVENT_LOG_PATTERN,
     MONKEY_LOGCAT_PATTERN,
@@ -38,7 +41,7 @@ _EXCLUDE_FROM_MONKEY_LOGS = re.compile(
 )
 
 
-def try_smart_monkey_discovery(root: Path) -> list[dict[str, Any]] | None:
+def try_smart_monkey_discovery(root: Path, package_name: str | None = None) -> list[dict[str, Any]] | None:
     """Attempt smart discovery in a Monkey-test result directory.
 
     Strategy (phased to avoid loading gigabytes of irrelevant data):
@@ -56,19 +59,22 @@ def try_smart_monkey_discovery(root: Path) -> list[dict[str, Any]] | None:
         return None
     anr_dir = log_dir / "anr"
     entries: list[dict[str, Any]] = []
-    # Phase 1: Load event_log files (few and small) to discover ANR anchors.
+    # Phase 1: Stream event_log files to discover ANR anchors.  Do not build
+    # entries for every event shard up front: real Monkey runs can contain many
+    # 50MB+ shards and only the predecessor shards for the ANR anchors are
+    # needed for accurate EventLog windows.
     event_files = _collect_smart_files(log_dir, MONKEY_EVENT_LOG_PATTERN)
-    event_content = ""
+    anr_timestamps: list[datetime] = []
     if event_files:
-        for fp in event_files:
+        anr_timestamps = _extract_anr_timestamps_from_files(event_files, package_name=package_name)
+        selected_event_files = _select_preceding_files_for_anchors(event_files, anr_timestamps)
+        for fp in selected_event_files:
             entries.append(_make_file_entry(fp, root))
-        event_content = "\n".join(e["content"] for e in entries if e.get("content"))
-    # Phase 2: Parse ANR timestamps from event_log (if available).
-    anr_timestamps = _extract_anr_timestamps_from_content(event_content)
+    # Phase 2: ANR timestamps are now available from the streaming pass above.
     # Phase 3: Load logcat files near ANR timestamps.
     all_logcat_files = _collect_smart_files(log_dir, MONKEY_LOGCAT_PATTERN)
     all_logcat_files = [f for f in all_logcat_files if f not in event_files]
-    logcat_files = _filter_files_by_time_proximity(all_logcat_files, anr_timestamps, proximity_minutes=60)
+    logcat_files = _select_preceding_files_for_anchors(all_logcat_files, anr_timestamps)
     if logcat_files:
         for fp in logcat_files:
             entries.append(_make_file_entry(fp, root))
@@ -146,16 +152,75 @@ def _parse_monkey_filename_timestamp(filename: str) -> datetime | None:
         return None
 
 
+def _extract_anr_timestamps_from_files(files: list[Path], package_name: str | None = None) -> list[datetime]:
+    """Extract ANR timestamps from EventLog files without retaining contents."""
+
+    timestamps: list[datetime] = []
+    seen: set[datetime] = set()
+    for file_path in files:
+        try:
+            with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if "am_anr" not in line.lower():
+                        continue
+                    if package_name:
+                        if package_name not in line:
+                            continue
+                    elif package_name_from_am_anr_line(line) is None:
+                        continue
+                    ts = parse_log_timestamp(line)
+                    if ts is not None and ts not in seen:
+                        timestamps.append(ts)
+                        seen.add(ts)
+        except OSError:
+            continue
+    return sorted(timestamps)
+
+
 def _extract_anr_timestamps_from_content(event_log_content: str) -> list[datetime]:
     """Extract ANR timestamps from event_log content (am_anr lines)."""
+
     timestamps: list[datetime] = []
+    seen: set[datetime] = set()
     for line in event_log_content.splitlines():
         if "am_anr" not in line.lower():
             continue
         ts = parse_log_timestamp(line)
-        if ts is not None:
+        if ts is not None and ts not in seen:
             timestamps.append(ts)
-    return timestamps
+            seen.add(ts)
+    return sorted(timestamps)
+
+
+def _select_preceding_files_for_anchors(files: list[Path], anchors: list[datetime]) -> list[Path]:
+    """Select the predecessor shard for each anchor using filename timestamps."""
+
+    if not files or not anchors:
+        return []
+    timestamped: list[tuple[datetime, Path]] = []
+    untimestamped: list[Path] = []
+    for file_path in files:
+        timestamp = parse_shard_filename_timestamp(path_name(file_path))
+        if timestamp is None:
+            untimestamped.append(file_path)
+        else:
+            timestamped.append((timestamp, file_path))
+    if not timestamped:
+        return list(files)
+    timestamped.sort(key=lambda item: (item[0], str(item[1])))
+    selected: dict[Path, None] = {file_path: None for file_path in untimestamped}
+    for anchor in anchors:
+        previous: Path | None = None
+        for timestamp, file_path in timestamped:
+            if timestamp > anchor:
+                if previous is not None:
+                    selected[previous] = None
+                break
+            previous = file_path
+        else:
+            if previous is not None:
+                selected[previous] = None
+    return [file_path for _, file_path in timestamped if file_path in selected] + [file_path for file_path in untimestamped if file_path in selected]
 
 
 def _filter_files_by_time_proximity(
@@ -230,9 +295,11 @@ def _pick_recent_trace_files(files: list[Path], max_files: int) -> list[Path]:
 
 def _find_system_log_dir(root: Path) -> Path | None:
     """Find the System_log directory (or a similar log directory)."""
+    if _contains_monkey_log_shards(root):
+        return root
     for candidate_name in _SYSTEM_LOG_CANDIDATE_DIRS:
         candidate = root / candidate_name
-        if candidate.is_dir():
+        if candidate.is_dir() and _contains_monkey_log_shards(candidate):
             return candidate
     # Also try one level deep in case the data is nested.
     for child in sorted(root.iterdir()):
@@ -240,9 +307,23 @@ def _find_system_log_dir(root: Path) -> Path | None:
             continue
         for candidate_name in _SYSTEM_LOG_CANDIDATE_DIRS:
             candidate = child / candidate_name
-            if candidate.is_dir():
+            if candidate.is_dir() and _contains_monkey_log_shards(candidate):
                 return candidate
     return None
+
+
+def _contains_monkey_log_shards(directory: Path) -> bool:
+    if not directory.is_dir():
+        return False
+    try:
+        children = list(directory.iterdir())
+    except OSError:
+        return False
+    return any(
+        child.is_file()
+        and (MONKEY_EVENT_LOG_PATTERN.search(str(child)) or MONKEY_LOGCAT_PATTERN.search(str(child)))
+        for child in children
+    )
 
 
 def _collect_smart_files(log_dir: Path, pattern: re.Pattern) -> list[Path]:

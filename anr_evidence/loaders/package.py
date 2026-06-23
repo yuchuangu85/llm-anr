@@ -8,7 +8,7 @@ from typing import Any
 
 from ..am_anr import package_name_from_am_anr_line
 from ..constants import OPTIONAL_SOURCE_KINDS, SOURCE_KINDS
-from ..log_filter import parse_log_timestamp
+from ..log_filter import iter_text_lines, parse_log_timestamp
 from ..sources.shared import select_preceding_entries_for_anchor
 from ..sources.shared.detection import dedupe_and_rank_entries, detect_source_kind
 from ..sources.trace import parse_trace_content_timestamp, parse_trace_filename_timestamp, trace_anr_timestamp_from_entries
@@ -85,7 +85,7 @@ def _event_anr_timestamp_from_entries(entries: list[dict[str, Any]], package_nam
     """
 
     for entry in entries:
-        for line in entry.get("content", "").splitlines():
+        for line in iter_text_lines(entry.get("content", "")):
             lowered = line.lower()
             if "am_anr" not in lowered:
                 continue
@@ -106,7 +106,7 @@ def _event_anr_timestamps_from_entries(entries: list[dict[str, Any]], package_na
     timestamps: list[datetime] = []
     seen: set[datetime] = set()
     for entry in entries:
-        for line in entry.get("content", "").splitlines():
+        for line in iter_text_lines(entry.get("content", "")):
             lowered = line.lower()
             if "am_anr" not in lowered:
                 continue
