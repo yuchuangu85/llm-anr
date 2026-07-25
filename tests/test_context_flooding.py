@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from anr_evidence.context_flooding import TruncationConfig, truncate_evidence
+from anr_evidence.context_flooding import TruncationConfig, truncate_evidence, truncation_stats_text
 from anr_evidence.evidence_slice import EvidenceSlice
 
 
@@ -36,6 +36,20 @@ class ContextFloodingTests(unittest.TestCase):
         config = TruncationConfig(max_total_lines=5, min_importance="warning")
         result = truncate_evidence(slices, config)
         self.assertEqual(len(result.retained_slices), 10)
+        self.assertEqual(result.stats["_global"]["budgetOverflow"], 5)
+        self.assertIn("Protected evidence overflow", truncation_stats_text(result))
+
+    def test_anchor_line_is_preserved_when_below_importance_threshold(self) -> None:
+        anchor = EvidenceSlice(
+            source="event_log", timestamp_iso=None, delta_t_seconds=0.0,
+            tag=None, content="anchor", importance="contextual",
+            group_id="g1", line_index=99,
+        )
+        config = TruncationConfig(max_total_lines=1, min_importance="critical", preserve_anchor_lines=True)
+
+        result = truncate_evidence([anchor], config)
+
+        self.assertEqual(result.retained_slices, [anchor])
 
     def test_contextual_dropped_when_min_is_warning(self) -> None:
         slices = self._make_slices(5, 5, 5)

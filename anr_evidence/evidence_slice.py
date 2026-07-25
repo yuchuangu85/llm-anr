@@ -49,6 +49,7 @@ def build_evidence_slices(
             ("eventLog", "event_log"),
             ("logcat", "logcat"),
             ("anrManager", "anr_manager"),
+            ("meminfo", "meminfo"),
         ]:
             source_data = group.get(source_key, {})
             lines = source_data.get("lines", [])
@@ -93,7 +94,12 @@ def annotate_slices_with_tags(
     for s in slices:
         tag = None
         importance = ImportanceLevel.CONTEXTUAL.value
-        if s.source == "event_log":
+        if s.source == "trace":
+            # The trace is already compacted by trace_preprocessor and is the
+            # primary direct-blocking evidence; truncation must not discard it
+            # merely because stack lines do not have EventLog-style tags.
+            importance = ImportanceLevel.CRITICAL.value
+        elif s.source == "event_log":
             tag = resolve_tag(s.content, event_tags)
             if tag:
                 importance = EVENT_LOG_TAG_WEIGHTS.get(tag.lower(), ImportanceLevel.CONTEXTUAL).value
@@ -111,6 +117,8 @@ def annotate_slices_with_tags(
             if tag:
                 from .weighting import KERNEL_SIGNAL_WEIGHTS
                 importance = KERNEL_SIGNAL_WEIGHTS.get(tag.lower(), ImportanceLevel.CONTEXTUAL).value
+        elif s.source == "meminfo":
+            importance = ImportanceLevel.WARNING.value
         annotated.append(EvidenceSlice(
             source=s.source,
             timestamp_iso=s.timestamp_iso,

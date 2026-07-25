@@ -7,15 +7,11 @@ import json
 from pathlib import Path
 
 from .ai_context import AiContextOptions, build_ai_context_artifacts
-from .analyzer import analyze_normalized_package
 from .delivery import render_final_delivery
-from .extractor import ArchiveLoadError, extract_evidence_package, load_package_from_archive, load_package_from_directory, load_package_from_fixture
-from .hypothesis import generate_causal_draft
-from .normalizer import normalize_evidence_package
-from .remediation import generate_remediation_drafts
+from .extractor import ArchiveLoadError, load_package_from_archive, load_package_from_directory, load_package_from_fixture
+from .pipeline import payload_phase, run_until
 from .replay import run_replay_manifest
 from .reporter import render_analysis_report
-from .root_cause import generate_root_cause_report
 
 
 def main() -> int:
@@ -89,130 +85,55 @@ def main() -> int:
 
 
 def _transform_payload(payload: dict, *, normalize: bool, analyze: bool, hypothesize: bool, report: bool, root_cause: bool, remediate: bool, deliver: bool) -> dict | str:
-    phase_kind = _payload_phase(payload)
+    phase_kind = payload_phase(payload)
+    operation = next((name for name, enabled in (
+        ("deliver", deliver),
+        ("report", report),
+        ("remediate", remediate),
+        ("root-cause", root_cause),
+        ("hypothesize", hypothesize),
+        ("analyze", analyze),
+        ("normalize", normalize),
+    ) if enabled), None)
 
-    if phase_kind == 7:
-        if deliver:
-            return render_final_delivery(payload)
-        if report:
-            return render_analysis_report(payload)
-        raise SystemExit("Input is already a Phase 7 remediation draft package. Use --deliver or --report.")
+    allowed_from_phase = {
+        1: {"normalize", "analyze", "hypothesize", "root-cause", "remediate", "report", "deliver"},
+        2: {"analyze", "hypothesize", "root-cause", "remediate", "report", "deliver"},
+        3: {"hypothesize", "root-cause", "remediate", "report", "deliver"},
+        5: {"root-cause", "remediate", "report", "deliver"},
+        6: {"remediate", "report", "deliver"},
+        7: {"report", "deliver"},
+    }
+    if phase_kind and operation not in allowed_from_phase[phase_kind]:
+        raise SystemExit(_phase_guidance(phase_kind))
 
-    if phase_kind == 6:
-        phase7 = generate_remediation_drafts(payload)
-        if deliver:
-            return render_final_delivery(phase7)
-        if remediate:
-            return phase7
-        if report:
-            return render_analysis_report(phase7)
-        raise SystemExit("Input is already a Phase 6 root-cause report package. Use --remediate, --deliver, or --report.")
-
-    if phase_kind == 5:
-        phase6 = generate_root_cause_report(payload)
-        phase7 = generate_remediation_drafts(phase6)
-        if deliver:
-            return render_final_delivery(phase7)
-        if remediate:
-            return phase7
-        if root_cause:
-            return phase6
-        if report:
-            return render_analysis_report(phase7)
-        raise SystemExit("Input is already a Phase 5 causal draft package. Use --root-cause, --remediate, --deliver, or --report.")
-
-    if phase_kind == 3:
-        phase5 = generate_causal_draft(payload)
-        phase6 = generate_root_cause_report(phase5)
-        phase7 = generate_remediation_drafts(phase6)
-        if deliver:
-            return render_final_delivery(phase7)
-        if remediate:
-            return phase7
-        if root_cause:
-            return phase6
-        if report:
-            return render_analysis_report(phase7)
-        if hypothesize:
-            return phase5
-        raise SystemExit("Input is already a Phase 3 assisted analysis package. Use --hypothesize, --root-cause, --remediate, --deliver, or --report.")
-
-    if phase_kind == 2:
-        phase3 = analyze_normalized_package(payload)
-        phase5 = generate_causal_draft(phase3)
-        phase6 = generate_root_cause_report(phase5)
-        phase7 = generate_remediation_drafts(phase6)
-        if deliver:
-            return render_final_delivery(phase7)
-        if remediate:
-            return phase7
-        if root_cause:
-            return phase6
-        if report:
-            return render_analysis_report(phase7)
-        if hypothesize:
-            return phase5
-        if analyze:
-            return phase3
-        raise SystemExit("Input is already a Phase 2 normalized package. Use --analyze, --hypothesize, --root-cause, --remediate, --deliver, or --report.")
-
-    if phase_kind == 1:
-        phase2 = normalize_evidence_package(payload)
-        phase3 = analyze_normalized_package(phase2)
-        phase5 = generate_causal_draft(phase3)
-        phase6 = generate_root_cause_report(phase5)
-        phase7 = generate_remediation_drafts(phase6)
-        if deliver:
-            return render_final_delivery(phase7)
-        if remediate:
-            return phase7
-        if root_cause:
-            return phase6
-        if report:
-            return render_analysis_report(phase7)
-        if hypothesize:
-            return phase5
-        if analyze:
-            return phase3
-        if normalize:
-            return phase2
-        raise SystemExit("Input is already a Phase 1 evidence package. Use --normalize, --analyze, --hypothesize, --root-cause, --remediate, --deliver, or --report.")
-
-    phase1 = extract_evidence_package(payload)
-    phase2 = normalize_evidence_package(phase1)
-    phase3 = analyze_normalized_package(phase2)
-    phase5 = generate_causal_draft(phase3)
-    phase6 = generate_root_cause_report(phase5)
-    phase7 = generate_remediation_drafts(phase6)
-    if deliver:
-        return render_final_delivery(phase7)
-    if remediate:
-        return phase7
-    if root_cause:
-        return phase6
-    if report:
-        return render_analysis_report(phase7)
-    if hypothesize:
-        return phase5
-    if analyze:
-        return phase3
-    if normalize:
-        return phase2
-    return phase1
+    target_phase = {
+        None: 1,
+        "normalize": 2,
+        "analyze": 3,
+        "hypothesize": 5,
+        "root-cause": 6,
+        "remediate": 7,
+        "report": 7,
+        "deliver": 7,
+    }[operation]
+    result = run_until(payload, target_phase)
+    if operation == "report":
+        return render_analysis_report(result)
+    if operation == "deliver":
+        return render_final_delivery(result)
+    return result
 
 
-def _payload_phase(payload: dict) -> int:
-    metadata = payload.get("metadata")
-    if not isinstance(metadata, dict):
-        return 0
+def _phase_guidance(phase: int) -> str:
     return {
-        "phase1-evidence-extraction-mvp": 1,
-        "phase2-evidence-normalization": 2,
-        "phase3-assisted-analysis": 3,
-        "phase5-causal-draft": 5,
-        "phase6-root-cause-report-v1": 6,
-        "phase7-remediation-draft": 7,
-    }.get(metadata.get("phase"), 0)
+        1: "Input is already a Phase 1 evidence package. Use --normalize, --analyze, --hypothesize, --root-cause, --remediate, --deliver, or --report.",
+        2: "Input is already a Phase 2 normalized package. Use --analyze, --hypothesize, --root-cause, --remediate, --deliver, or --report.",
+        3: "Input is already a Phase 3 assisted analysis package. Use --hypothesize, --root-cause, --remediate, --deliver, or --report.",
+        5: "Input is already a Phase 5 causal draft package. Use --root-cause, --remediate, --deliver, or --report.",
+        6: "Input is already a Phase 6 root-cause report package. Use --remediate, --deliver, or --report.",
+        7: "Input is already a Phase 7 remediation draft package. Use --deliver or --report.",
+    }[phase]
 
 
 def _is_archive_path(path: Path) -> bool:

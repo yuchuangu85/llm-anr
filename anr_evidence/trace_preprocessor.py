@@ -6,9 +6,9 @@ from datetime import datetime
 import re
 from typing import Any
 
+from .log_filter import parse_log_timestamp
 from .pattern_catalog import evaluate_main_thread_patterns
 
-TIMESTAMP_RE = re.compile(r"(?P<ts>\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})")
 TRACE_SECTION_HEADER_RE = re.compile(r"-----\s+pid\s+\d+")
 TRACE_PROCESS_RE = re.compile(r"Cmd line:\s*(?P<process>.+)")
 TRACE_PID_RE = re.compile(r"-----\s+pid\s+(?P<pid>\d+)")
@@ -1755,16 +1755,13 @@ def _trace_block_hint(lower: str) -> str | None:
 
 
 def _extract_timestamp(line: str) -> datetime | None:
-    match = TIMESTAMP_RE.search(line)
-    if not match:
-        return None
-    return _parse_timestamp(match.group("ts"))
+    return parse_log_timestamp(line)
 
 
 def _parse_timestamp(raw_timestamp: str | None) -> datetime | None:
     if not raw_timestamp:
         return None
-    return datetime.strptime(f"2026-{raw_timestamp}", "%Y-%m-%d %H:%M:%S.%f")
+    return parse_log_timestamp(raw_timestamp)
 
 
 def _timestamp_to_raw(timestamp: datetime) -> str:

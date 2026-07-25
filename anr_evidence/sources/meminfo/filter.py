@@ -83,16 +83,24 @@ def filter_meminfo_source(
     if not package_name:
         warnings.append({"code": "missing-package", "message": "No package name was provided; target package memory cannot be filtered."})
 
-    selection_policy = "latest-before-anchor" if context.anchor_dt else "latest-available"
+    selection_policy = "anchor-window-prefer-before" if context.anchor_dt else "latest-available"
     selected_snapshots: list[dict[str, Any]] = []
     if context.anchor_dt:
-        analysis_snapshot = _select_snapshot_before_anchor(snapshots, context.anchor_dt)
+        analysis_snapshot = _select_snapshot_in_anchor_window(
+            snapshots,
+            context.anchor_dt,
+            before_seconds=options.window_before_seconds,
+            after_seconds=options.window_after_seconds,
+        )
         if analysis_snapshot is not None:
             selected_snapshots = [analysis_snapshot]
         else:
             warnings.append({
-                "code": "missing-meminfo-before-anchor",
-                "message": "No meminfo snapshot timestamp was earlier than the ANR anchor.",
+                "code": "missing-meminfo-in-window",
+                "message": (
+                    "No meminfo snapshot timestamp was within the configured "
+                    f"-{options.window_before_seconds}s/+{options.window_after_seconds}s ANR window."
+                ),
             })
     elif snapshots:
         selected_snapshots = [snapshots[-1]]
@@ -180,13 +188,19 @@ def parse_meminfo_snapshots(content: str) -> list[dict[str, Any]]:
     return [_snapshot_to_dict(snapshot) for snapshot in snapshots if snapshot.processes or snapshot.system]
 
 
-def _select_snapshot_before_anchor(snapshots: list[dict[str, Any]], anchor_dt: datetime | None) -> dict[str, Any] | None:
-    """Return the latest meminfo snapshot strictly earlier than *anchor_dt*."""
+def _select_snapshot_in_anchor_window(
+    snapshots: list[dict[str, Any]],
+    anchor_dt: datetime | None,
+    *,
+    before_seconds: int,
+    after_seconds: int,
+) -> dict[str, Any] | None:
+    """Return the nearest in-window snapshot, preferring one at/before ANR."""
 
     if not snapshots or anchor_dt is None:
         return None
 
-    scored: list[tuple[float, int, dict[str, Any]]] = []
+    scored: list[tuple[int, float, int, dict[str, Any]]] = []
     for snapshot in snapshots:
         ts_raw = snapshot.get("timestamp")
         if not ts_raw:
@@ -195,14 +209,15 @@ def _select_snapshot_before_anchor(snapshots: list[dict[str, Any]], anchor_dt: d
             ts = datetime.strptime(str(ts_raw), "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        if ts >= anchor_dt:
+        delta = (ts - anchor_dt).total_seconds()
+        if delta < -before_seconds or delta > after_seconds:
             continue
-        delta = (anchor_dt - ts).total_seconds()
-        scored.append((delta, -int(snapshot.get("index", 0)), snapshot))
+        is_after = 1 if delta > 0 else 0
+        scored.append((is_after, abs(delta), -int(snapshot.get("index", 0)), snapshot))
     if not scored:
         return None
-    scored.sort(key=lambda item: (item[0], item[1]))
-    return scored[0][2]
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    return scored[0][3]
 
 
 def _parse_snapshot(lines: list[str], start: int, end: int, *, timestamp: str | None, index: int) -> MeminfoSnapshot:

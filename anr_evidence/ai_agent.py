@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .ai_context import AiContextOptions, AiContextResult, build_ai_context, _build_groups, _strategy_summary, _resolve_options
+from .ai_context import AiContextOptions, AiContextResult, build_ai_context
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .context_flooding import TruncationConfig, truncate_evidence
 from .entity_linker import EntityMap, build_entity_map, entity_summary_for_ai
@@ -81,6 +81,7 @@ class AgentConfig:
     sub_agent_model: str | None = None
     manager_model: str | None = None
     verbose: bool = False
+    truncation: TruncationConfig = field(default_factory=TruncationConfig)
 
     def model_for(self, role: str) -> str:
         if role == "manager" and self.manager_model:
@@ -625,12 +626,7 @@ def run_ai_agent_analysis(
     entity_map = build_entity_map(package)
 
     # Apply context flooding prevention
-    trunc_config = TruncationConfig(
-        max_total_lines=200,
-        min_importance="warning",
-        preserve_critical=True,
-    )
-    trunc_result = truncate_evidence(slices, trunc_config)
+    trunc_result = truncate_evidence(slices, agent_cfg.truncation)
     slices = trunc_result.retained_slices
 
     # Step 3: Iterative agent loop

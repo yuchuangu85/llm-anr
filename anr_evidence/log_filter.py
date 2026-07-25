@@ -17,12 +17,17 @@ from typing import Callable, Iterable
 TimestampParser = Callable[[str], datetime | None]
 LinePredicate = Callable[[str], bool]
 
-TIMESTAMP_RE = re.compile(r"(?P<ts>\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})")
+TIMESTAMP_RE = re.compile(
+    r"(?<!\d)(?:(?P<year>\d{4})-)?"
+    r"(?P<month>\d{2})-(?P<day>\d{2})\s+"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+    r"(?:\.(?P<fraction>\d{1,9}))?(?!\d)"
+)
 ANRMANAGER_LINE_RE = re.compile(
     r"(?:\b[A-Z]/AnrManager\(\s*\d+\):|\b[A-Z]\s+AnrManager:|\bAnrManager:)"
 )
 _START_ANR_DUMP_RE = re.compile(r"AnrManager(?:\(\s*\d+\))?\s*:\s*startAnrDump\b", re.IGNORECASE)
-DEFAULT_TIMESTAMP_YEAR = 2026
+DEFAULT_TIMESTAMP_YEAR = datetime.now().year
 
 EVENT_LOG_TAG_PATTERNS = (
     r"\b(am_[A-Za-z0-9_]+)\b",
@@ -232,24 +237,26 @@ class AnrManagerBlock:
 
 
 def parse_log_timestamp(line: str, *, year: int = DEFAULT_TIMESTAMP_YEAR) -> datetime | None:
-    """Parse Android log timestamps that omit the year."""
+    """Parse common Android wall-clock timestamps.
+
+    Threadtime logs usually omit the year, while trace headers and vendor logs
+    may include it and may use sub-millisecond precision.  An explicit year in
+    the input always wins over the caller-provided fallback year.
+    """
 
     match = TIMESTAMP_RE.search(line)
     if not match:
         return None
-    # Manual field parsing instead of strptime: TIMESTAMP_RE already pins the
-    # exact "MM-DD HH:MM:SS.mmm" shape, and strptime dominated profiles when
-    # multi-ANR runs parse hundreds of thousands of log lines.
-    ts = match.group("ts")
+    fraction = (match.group("fraction") or "")[:6].ljust(6, "0")
     try:
         return datetime(
-            year,
-            int(ts[0:2]),
-            int(ts[3:5]),
-            int(ts[6:8]),
-            int(ts[9:11]),
-            int(ts[12:14]),
-            int(ts[15:18]) * 1000,
+            int(match.group("year") or year),
+            int(match.group("month")),
+            int(match.group("day")),
+            int(match.group("hour")),
+            int(match.group("minute")),
+            int(match.group("second")),
+            int(fraction),
         )
     except ValueError:
         return None
@@ -500,16 +507,69 @@ def filter_preceding_anchor_window(
                 [{"code": "missing-anchor-timestamp", "message": "Anchor line had no parseable timestamp; line-count fallback retained."}],
                 matched_anchor=line,
             )
-        start = anchor_dt - timedelta(seconds=spec.before_seconds)
-        selected = [
-            candidate
-            for candidate in lines[: index + 1]
-            if _line_matches_window(candidate, start, anchor_dt, spec, timestamp_parser)
-        ]
-        if line not in selected:
-            selected.append(line)
-        return FilterResult(selected, [], matched_anchor=line)
+        return _filter_known_anchor_lines(
+            lines,
+            anchor_line=line,
+            anchor_dt=anchor_dt,
+            anchor_line_index=index,
+            spec=spec,
+            timestamp_parser=timestamp_parser,
+        )
     return FilterResult([], [{"code": "missing-am-anr", "message": "Event log has no am_anr marker; retaining leading context instead."}])
+
+
+def filter_known_anchor_window(
+    content: str,
+    *,
+    anchor_line: str,
+    anchor_dt: datetime,
+    anchor_line_index: int | None,
+    spec: LogFilterSpec,
+    timestamp_parser: TimestampParser = parse_log_timestamp,
+) -> FilterResult:
+    """Filter the window preceding a caller-selected anchor.
+
+    Unlike :func:`filter_preceding_anchor_window`, this API never discovers or
+    substitutes another anchor, which makes it safe for grouped multi-ANR
+    callers that already resolved the target ``am_anr`` line.
+    """
+
+    # Keep physical source positions aligned with ai_context._event_anchors.
+    lines = list(iter_text_lines(content))
+    index = anchor_line_index
+    if index is None or index < 0 or index >= len(lines) or lines[index].strip() != anchor_line.strip():
+        index = next((i for i, line in enumerate(lines) if line.strip() == anchor_line.strip()), None)
+    if index is None:
+        return FilterResult([], [{"code": "missing-selected-anchor", "message": "The selected anchor line was not found in the EventLog content."}])
+    return _filter_known_anchor_lines(
+        lines,
+        anchor_line=anchor_line,
+        anchor_dt=anchor_dt,
+        anchor_line_index=index,
+        spec=spec,
+        timestamp_parser=timestamp_parser,
+    )
+
+
+def _filter_known_anchor_lines(
+    lines: list[str],
+    *,
+    anchor_line: str,
+    anchor_dt: datetime,
+    anchor_line_index: int,
+    spec: LogFilterSpec,
+    timestamp_parser: TimestampParser,
+) -> FilterResult:
+    start = anchor_dt - timedelta(seconds=spec.before_seconds)
+    selected = [
+        candidate
+        for candidate in lines[: anchor_line_index + 1]
+        if _line_matches_window(candidate, start, anchor_dt, spec, timestamp_parser)
+    ]
+    normalized_anchor = anchor_line.strip()
+    if normalized_anchor not in selected:
+        selected.append(normalized_anchor)
+    return FilterResult(selected, [], matched_anchor=normalized_anchor)
 
 
 def filter_file_preceding_anchor_window(

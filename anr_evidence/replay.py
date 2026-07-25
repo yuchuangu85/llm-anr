@@ -9,14 +9,10 @@ import shutil
 import time
 from typing import Any
 
-from .analyzer import analyze_normalized_package
 from .delivery import render_final_delivery
-from .extractor import extract_evidence_package, load_package_from_archive, load_package_from_directory, load_package_from_fixture
-from .hypothesis import generate_causal_draft
-from .normalizer import normalize_evidence_package
-from .remediation import generate_remediation_drafts
+from .extractor import load_package_from_archive, load_package_from_directory, load_package_from_fixture
+from .pipeline import run_until
 from .reporter import render_analysis_report
-from .root_cause import generate_root_cause_report
 
 SUPPORTED_OPERATIONS = {"extract", "normalize", "analyze", "hypothesize", "root-cause", "remediate", "report", "deliver"}
 
@@ -387,61 +383,24 @@ def _source_metrics(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_operation(payload: dict[str, Any], operation: str) -> dict[str, Any] | str:
-    phase = _payload_phase(payload)
-    if operation == "extract":
-        return payload if phase == 1 else extract_evidence_package(payload)
-    if operation == "normalize":
-        if phase == 2:
-            return payload
-        if phase == 1:
-            return normalize_evidence_package(payload)
-        return normalize_evidence_package(extract_evidence_package(payload))
-    if operation == "analyze":
-        if phase == 3:
-            return payload
-        if phase == 2:
-            return analyze_normalized_package(payload)
-        if phase == 1:
-            return analyze_normalized_package(normalize_evidence_package(payload))
-        return analyze_normalized_package(normalize_evidence_package(extract_evidence_package(payload)))
-    if operation == "hypothesize":
-        if phase == 5:
-            return payload
-        if phase == 3:
-            return generate_causal_draft(payload)
-        return generate_causal_draft(_run_operation(payload, "analyze"))
-    if operation == "root-cause":
-        if phase == 6:
-            return payload
-        if phase == 5:
-            return generate_root_cause_report(payload)
-        return generate_root_cause_report(_run_operation(payload, "hypothesize"))
-    if operation == "remediate":
-        if phase == 7:
-            return payload
-        if phase == 6:
-            return generate_remediation_drafts(payload)
-        return generate_remediation_drafts(_run_operation(payload, "root-cause"))
+    target = {
+        "extract": 1,
+        "normalize": 2,
+        "analyze": 3,
+        "hypothesize": 5,
+        "root-cause": 6,
+        "remediate": 7,
+        "report": 7,
+        "deliver": 7,
+    }.get(operation)
+    if target is None:
+        raise ReplayError(f"Unsupported replay operation `{operation}`.")
+    result = run_until(payload, target)
     if operation == "report":
-        return render_analysis_report(_run_operation(payload, "remediate"))
+        return render_analysis_report(result)
     if operation == "deliver":
-        return render_final_delivery(_run_operation(payload, "remediate"))
-    raise ReplayError(f"Unsupported replay operation `{operation}`.")
-
-
-
-def _payload_phase(payload: dict[str, Any]) -> int:
-    metadata = payload.get("metadata")
-    if not isinstance(metadata, dict):
-        return 0
-    return {
-        "phase1-evidence-extraction-mvp": 1,
-        "phase2-evidence-normalization": 2,
-        "phase3-assisted-analysis": 3,
-        "phase5-causal-draft": 5,
-        "phase6-root-cause-report-v1": 6,
-        "phase7-remediation-draft": 7,
-    }.get(metadata.get("phase"), 0)
+        return render_final_delivery(result)
+    return result
 
 
 def _load_session_summary(session_dir: Path) -> dict[str, Any]:

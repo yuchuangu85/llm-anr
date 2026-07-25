@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 from pathlib import Path
 
@@ -52,6 +53,30 @@ def _multi_anr_package() -> dict:
 
 
 class AiContextTests(unittest.TestCase):
+    def test_anr_to_ai_script_builds_artifacts_from_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'bugreport.zip'
+            out_dir = Path(tmpdir) / 'context'
+            with zipfile.ZipFile(archive_path, 'w') as archive:
+                archive.writestr('data/anr/traces.txt', '04-12 10:00:05.100 ----- pid 100 -----\nCmd line: com.demo\nmain tid=1 Native input dispatching timeout\n')
+                archive.writestr('events/events.txt', '04-12 10:00:05.000 am_anr ANR in com.demo: Input dispatching timed out\n')
+                archive.writestr('logs/logcat.txt', '04-12 10:00:05.050 E InputDispatcher Input dispatching timed out for com.demo\n')
+
+            completed = subprocess.run(
+                [sys.executable, 'scripts/anr_to_ai.py', str(archive_path), '--package', 'com.demo', '--out-dir', str(out_dir)],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=ENV,
+            )
+
+            index = json.loads((out_dir / 'index.json').read_text(encoding='utf-8'))
+            group_dir = out_dir / index['groups'][0]['id']
+            self.assertTrue((group_dir / 'anr_analysis.md').exists())
+            self.assertTrue((group_dir / 'logcat.txt').exists())
+            self.assertIn('1 ANR analysis file(s)', completed.stdout)
+
     def test_staged_anr_skill_docs_exist_and_reference_routes_to_them(self) -> None:
         skills_dir = ROOT / 'skills'
         expected = {

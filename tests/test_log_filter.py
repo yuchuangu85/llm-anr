@@ -8,6 +8,7 @@ from anr_evidence.log_filter import (
     LOGCAT_SIGNAL_PATTERNS,
     LogFilterSpec,
     filter_file_preceding_anchor_window,
+    filter_known_anchor_window,
     filter_preceding_anchor_window,
     filter_timestamp_window,
     parse_log_timestamp,
@@ -16,6 +17,33 @@ from anr_evidence.log_filter import (
 
 
 class LogFilterTests(unittest.TestCase):
+    def test_timestamp_parser_accepts_explicit_year_and_variable_precision(self) -> None:
+        explicit = parse_log_timestamp("2024-04-12 10:00:01.123456 I Tag: message")
+        seconds_only = parse_log_timestamp("04-12 10:00:01 I Tag: message", year=2025)
+
+        self.assertEqual(explicit.isoformat(), "2024-04-12T10:00:01.123456")
+        self.assertEqual(seconds_only.isoformat(), "2025-04-12T10:00:01")
+
+    def test_known_anchor_window_uses_requested_multi_anr_anchor(self) -> None:
+        content = "\n".join([
+            "04-12 10:00:04.000 wm_focus first",
+            "04-12 10:00:05.000 am_anr ANR in com.demo first",
+            "04-12 10:01:04.000 wm_focus second",
+            "04-12 10:01:05.000 am_anr ANR in com.demo second",
+        ])
+        anchor_line = "04-12 10:01:05.000 am_anr ANR in com.demo second"
+        result = filter_known_anchor_window(
+            content,
+            anchor_line=anchor_line,
+            anchor_dt=parse_log_timestamp(anchor_line),
+            anchor_line_index=3,
+            spec=LogFilterSpec("event_log", before_seconds=3, include_patterns=DEFAULT_EVENT_LOG_TAGS),
+        )
+
+        self.assertEqual(result.lines, [
+            "04-12 10:01:04.000 wm_focus second",
+            anchor_line,
+        ])
     def test_event_log_pre_window_keeps_only_tagged_lines(self) -> None:
         content = "\n".join([
             "04-12 10:00:00.000 unrelated_tag com.demo old",

@@ -27,6 +27,7 @@ from .root_cause_hints import (
 from .cross_source_fusion import fuse_cross_source_evidence
 from .pattern_catalog import MAIN_THREAD_PATTERN_CATALOG, evaluate_main_thread_patterns
 from .context_flooding import TruncationConfig, TruncationResult, truncate_evidence, truncation_stats_text
+from .pipeline import PipelineError, payload_phase, run_until
 from .entity_linker import EntityMap, EntityRef, build_entity_map, entity_summary_for_ai
 from .eval import (
     EvalAggregate,
@@ -139,6 +140,9 @@ __all__ = [
     "TruncationConfig",
     "TruncationResult",
     "truncate_evidence",
+    "PipelineError",
+    "payload_phase",
+    "run_until",
     "truncation_stats_text",
     # entity_linker
     "EntityMap",

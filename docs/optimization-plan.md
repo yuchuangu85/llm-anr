@@ -117,44 +117,34 @@ logcat 时间戳解析从 N 次全量降为 1 次。大 bugreport（trace 数 MB
 
 ---
 
-## 三、后续 backlog（按优先级）
+## 三、后续 backlog（2026-07-26 复核后）
 
-### P1（建议下一轮处理）
+原列表中的 phase runner、known-anchor EventLog、时间戳统一、stale private imports、Meminfo window 和
+context flooding 统计问题已经完成。原 O(n²)、随机 trace section 和 AnrManager 双路径判断被代码反证，已删除。
+详细证据见 `docs/design-review-2026-07-25.md` 修订版。
 
-1. **主流程接入 token 防洪**：`scripts/anr_to_ai.py` → `build_ai_context_artifacts` 不经过
-   `context_flooding.truncate_evidence`（目前只有 `run_ai_agent_analysis` 用它）。超大 bugreport 会生成
-   超出 LLM 上下文的 `anr_analysis.md`。方案：`AiContextOptions` 增加可选 `truncation: TruncationConfig`，
-   渲染前按 importance 截断各证据段并在文档中标注 "N 行因预算被截断"。
-2. **过滤路径收敛**：`ai_context._event_window`（`ai_context.py:589-612`）与 `log_filter` 的窗口过滤逻辑
-   平行实现，EventLog 过滤规则改动需要改两处。方案：`_event_window` 改为调用
-   `log_filter.filter_preceding_anchor_window` 后做 anchor 行补插。
-3. **管道编排去重**：`cli._transform_payload`（`cli.py:91-201`）、`replay._payload_phase`（`replay.py:433-444`）、
-   `reporter._coerce_report_input`（`reporter.py:278-286`）各自维护 "phase 级联补跑" 逻辑。方案：抽一个
-   `pipeline.py::run_until(payload, target_phase)`，三处共用；同时把 `reporter` 中隐式补跑上游 phase 的行为
-   显式化（Phase 4 渲染器不应静默执行 Phase 5/6/7）。
-4. **agent 指引文档去重**：`CLAUDE.md`/`GEMINI.md`/`CODEBUDDY.md`/`HERMES.md` 内容几乎相同（本次已同步修复，
-   但长期会再次漂移）。方案：保留 `AGENTS.md` 为唯一事实源，其余改为符号链接或一行引用。
+### P1
 
-### P2（机会性处理）
+1. **脱敏 real-world golden bugreport**：当前已有合成 ZIP/TAR/目录与 archive → `anr_to_ai.py` → artifact
+   全链路测试，但仍需可签入 CI 的脱敏真实多 ANR corpus。
+2. **Cross-source fusion entity scope**：promotion regex 应绑定 package/PID/TID/entity，避免同窗口无关进程
+   信号提升目标 hint 置信度。
 
-5. **大文件拆分**：`ai_context.py`（~1500 行）按 分组/渲染/选项 拆为子模块；`trace_preprocessor.py`
-   （~1671 行）按 解析/锁图/摘要 拆分。注意：拆分也受上述大文件编辑 hook 故障影响。
-6. **`ai_agent` 不再依赖 `ai_context` 私有函数**：`ai_agent.py:23` 导入 `_build_groups`/`_strategy_summary`/
-   `_resolve_options`，应将这三个提升为公开 API 或提供公共封装。
-7. **测试模板参数化**：`tests/test_cli_phase2..8.py` 七个文件结构高度重复（共 533 行），可用
-   `unittest` 参数化基类合并为一个文件。
-8. **时间戳解析统一**：`log_filter.parse_log_timestamp` 是规范实现，但 `normalizer._extract_timestamp`、
-   `trace_preprocessor._parse_timestamp`（硬编码年份）各有一份，应统一到 `log_filter`。
-9. **`extraction/common.dedupe_dicts` 性能**：用 `json.dumps(sort_keys=True)` 做 dict 去重键，证据量大时低效，
-   可改为基于稳定字段（id/sourceKind/content hash）的元组键。
-10. **`filter_preceding_anchor_window` O(n²)**：`log_filter.py:285-316` 对每个锚点重扫全量 EventLog，
-    超大 EventLog + 多锚点时退化，可先按时间排序后用二分定位窗口边界。
+### P2
+
+3. **Agent 指引文档生成**：优先生成脚本或工具原生 include，避免符号链接/Windows checkout 兼容风险。
+4. **CLI 测试 helper**：先抽 subprocess、临时 phase package helper，不强制合并所有 phase 测试文件。
+
+### P3 / 有 profile 或变更热点证据时处理
+
+5. **大文件拆分**：依据变更热点、ownership 和测试隔离收益决定，不按行数直接拆分。
+6. **`dedupe_dicts` 性能**：当前仅用于小规模 warning 去重；只有 profile 证明为瓶颈时再改变键语义。
 
 ---
 
 ## 四、验证结果
 
-- `python3 -m unittest discover -s tests`：**281 个测试全部通过（1 skipped）**；
+- `python3 -m unittest discover -s tests`：**303 个测试全部通过（1 skipped）**；
 - `python3 -m compileall -q anr_evidence tests scripts`：通过；
 - 多 ANR fixture 在 trace/logcat 缓存开启与显式禁用缓存两种路径下，`groups`、`cache_markdown`、
   `ai_prompt_markdown` 对比一致；

@@ -88,14 +88,13 @@ def truncate_evidence(
             ),
         )
 
-        critical_remaining = source_cap
         min_importance_idx = importance_order.get(config.min_importance, 2)
 
         for s in sorted_slices:
             idx = importance_order.get(s.importance, 2)
-            if config.preserve_critical and idx == 0:
+            is_anchor = config.preserve_anchor_lines and s.delta_t_seconds == 0
+            if (config.preserve_critical and idx == 0) or is_anchor:
                 source_retained.append(s)
-                critical_remaining -= 1
                 continue
             if idx > min_importance_idx:
                 source_dropped.append(s)
@@ -129,6 +128,19 @@ def truncate_evidence(
         retained = critical_retained + keep_from
         dropped = dropped + drop_from
 
+    retained_ids = {id(item) for item in retained}
+    for source, source_slices in by_source.items():
+        stats[source] = {
+            "retained": sum(id(item) in retained_ids for item in source_slices),
+            "dropped": sum(id(item) not in retained_ids for item in source_slices),
+        }
+    stats["_global"] = {
+        "retained": len(retained),
+        "dropped": len(dropped),
+        "budget": max_total,
+        "budgetOverflow": max(0, len(retained) - max_total),
+    }
+
     return TruncationResult(
         retained_slices=retained,
         dropped_slices=dropped,
@@ -140,6 +152,8 @@ def truncation_stats_text(result: TruncationResult) -> str:
     """Render a human-readable summary of what was dropped."""
     lines = ["### Context Truncation Summary"]
     for source, counts in sorted(result.stats.items()):
+        if source == "_global":
+            continue
         lines.append(f"- `{source}`: {counts['retained']} retained, {counts['dropped']} dropped")
     total = len(result.retained_slices) + len(result.dropped_slices)
     lines.append(f"- **Total**: {len(result.retained_slices)}/{total} lines retained "
@@ -151,4 +165,10 @@ def truncation_stats_text(result: TruncationResult) -> str:
         lines.append("- Dropped breakdown: " + ", ".join(
             f"`{k}`: {v}" for k, v in sorted(by_source.items())
         ))
+    global_stats = result.stats.get("_global", {})
+    if global_stats.get("budgetOverflow"):
+        lines.append(
+            f"- **Protected evidence overflow**: {global_stats['budgetOverflow']} lines exceed the configured "
+            "budget because critical/anchor evidence is preserved."
+        )
     return "\n".join(lines)

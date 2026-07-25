@@ -24,6 +24,7 @@ from .root_cause_hints import (
 from .log_filter import (
     LogFilterSpec,
     default_patterns_for_source,
+    filter_known_anchor_window,
     filter_timestamp_windows,
     iter_text_lines,
     timestamped_context_before_windows,
@@ -625,27 +626,24 @@ def _anchor_dedupe_key(line: str) -> str:
 def _event_window(content: str, anchor: dict[str, Any], options: AiContextOptions, strategy: AnrTypeStrategy) -> tuple[list[str], list[dict[str, str]]]:
     if not content:
         return [], [{"code": "missing-event-log", "message": "EventLog source is missing."}]
-    anchor_dt = anchor["timestamp"]
-    start = anchor_dt - timedelta(seconds=options.event_before_seconds)
-    selected = []
     # EventLog filtering follows docs/hermes-gemma-algorithm-design.md: anchor on the target
     # ``am_anr`` line, then retain every documented EventLog tag in the
     # preceding 12s window.  The package filter applies to anchor discovery,
     # not to contextual pre-window lines, because lifecycle/focus evidence may
     # belong to system_server, the next app, or other processes.
-    event_tags = default_patterns_for_source("event_log")
-    for index, line in enumerate(iter_text_lines(content)):
-        if index > anchor.get("lineIndex", 0):
-            break
-        ts = parse_log_timestamp(line)
-        if ts is None or not (start <= ts <= anchor_dt):
-            continue
-        lowered = line.lower()
-        if any(tag in lowered for tag in event_tags):
-            selected.append(line)
-    if anchor["line"] not in selected:
-        selected.append(anchor["line"])
-    return selected, []
+    result = filter_known_anchor_window(
+        content,
+        anchor_line=anchor["line"],
+        anchor_dt=anchor["timestamp"],
+        anchor_line_index=anchor.get("lineIndex"),
+        spec=LogFilterSpec(
+            source_kind="event_log",
+            before_seconds=options.event_before_seconds,
+            include_patterns=default_patterns_for_source("event_log"),
+            package_filter_scope="anchor",
+        ),
+    )
+    return result.lines, result.warnings
 
 
 def _trace_context(

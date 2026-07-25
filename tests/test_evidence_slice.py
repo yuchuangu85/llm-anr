@@ -40,6 +40,8 @@ class EvidenceSliceTests(unittest.TestCase):
         annotated = annotate_slices_with_tags(slices)
         tagged = [s for s in annotated if s.tag is not None]
         self.assertGreater(len(tagged), 0)
+        trace = next(s for s in annotated if s.source == "trace")
+        self.assertEqual(trace.importance, "critical")
 
     def test_jsonl_roundtrip(self) -> None:
         slices = build_evidence_slices(self.groups)

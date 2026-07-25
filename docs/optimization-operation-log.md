@@ -2,6 +2,24 @@
 
 > **规则：条目按日期反序排列（最新的在最前面）。新增记录时请插入到标题下方第一条位置，保持反序一致。**
 
+## [2026-07-26] - Fix: Enforce Evidence Windows and Centralize Phase Execution
+- **Context**: 设计回顾复核发现 Meminfo window 是 dead configuration、CLI 会为早期 phase 计算全部后续 phase、
+  EventLog 不能直接复用 first-anchor API，以及 Trace ESS 会被 context truncation 当作 contextual evidence 丢弃。
+- **Status**: Implemented and verified.
+- **Key Changes**:
+    1. Meminfo 按 `[-before,+after]` 窗口选择 snapshot，并优先 anchor 时刻/之前证据。
+    2. `parse_log_timestamp` 支持显式年份和可变小数精度，Trace 复用规范解析器。
+    3. 新增 known-anchor EventLog filter，保持 multi-ANR group 隔离。
+    4. 新增共享 `pipeline.payload_phase/run_until`，CLI/Replay 不再重复维护 phase cascade。
+    5. Context truncation 保留 anchor、报告 critical overflow，并将紧凑 Trace 标为 critical。
+    6. 新增 archive → `scripts/anr_to_ai.py` → artifact 全链路回归测试。
+- **Verification**:
+    - `python3 -m unittest discover -s tests -v` → 303 tests OK, 1 skipped
+    - `python3 -m compileall -q anr_evidence tests` → OK
+    - `git diff --check` → OK
+- **Forward Directive**:
+    - Artifact 若需要硬 token 上限，必须保留完整外部证据并单独生成 compact LLM view；不得静默删除 baseline/critical evidence。
+
 ## [2026-06-17] - Chore: Clean Up Stale Markdown Files
 - **Commit**: `52c3d13`
 - **Context**: 删除不再需要的 markdown 文件。
