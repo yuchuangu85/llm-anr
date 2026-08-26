@@ -77,6 +77,40 @@ class AiContextTests(unittest.TestCase):
             self.assertTrue((group_dir / 'logcat.txt').exists())
             self.assertIn('1 ANR analysis file(s)', completed.stdout)
 
+    def test_anr_to_ai_defaults_context_under_input_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / 'bugreport'
+            (root / 'data/anr').mkdir(parents=True)
+            (root / 'logs').mkdir(parents=True)
+            (root / 'events').mkdir(parents=True)
+            (root / 'data/anr/traces.txt').write_text(
+                '04-12 11:00:03.100 main tid=1 input dispatching timeout\n',
+                encoding='utf-8',
+            )
+            (root / 'logs/logcat.txt').write_text(
+                '04-12 11:00:03.050 E InputDispatcher Input dispatching timed out\n',
+                encoding='utf-8',
+            )
+            (root / 'events/event.log').write_text(
+                '04-12 11:00:03.000 am_anr ANR in com.demo: Input dispatching timed out\n',
+                encoding='utf-8',
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / 'scripts/anr_to_ai.py'), str(root)],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=ENV,
+            )
+
+            out = root / 'anr_ai_context'
+            self.assertTrue((out / 'index.json').exists())
+            self.assertTrue((out / 'anr-20260412-110003-000' / 'anr_analysis.md').exists())
+            self.assertIn(str(out), completed.stdout)
+            self.assertFalse((Path(tmpdir) / 'anr_ai_context').exists())
+
     def test_staged_anr_skill_docs_exist_and_reference_routes_to_them(self) -> None:
         skills_dir = ROOT / 'skills'
         expected = {

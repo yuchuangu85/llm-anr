@@ -64,10 +64,10 @@
 
 Agent 应完成以下步骤：
 
-1. 运行 `python3 scripts/anr_to_ai.py <路径> --package com.example.app` 生成 `anr_ai_context/`。
-2. 打开 `anr_ai_context/index.json`，按索引逐个分析每个 ANR 工作区。
-3. 按顺序填写 `anr_ai_context/<anr-id>/anr_analysis.md` 中的四个分析槽位：Trace → EventLog → Logcat/AnrManager → Final ANR。
-4. Logcat/AnrManager 槽位引用 `logcat.txt` 时，必须读取同目录下的 `logcat.txt`。
+1. 运行 `python3 scripts/anr_to_ai.py <路径> --package com.example.app`；默认在输入日志目录下生成 `anr_ai_context/`（可用 `--out-dir` 覆盖）。
+2. 打开输入日志目录下的 `anr_ai_context/index.json`，按索引逐个分析每个 ANR 工作区。
+3. 按顺序填写输入日志目录下 `anr_ai_context/<anr-id>/anr_analysis.md` 中的四个分析槽位：Trace → EventLog → Logcat/AnrManager → Final ANR。
+4. Logcat/AnrManager 槽位引用 `logcat.txt` 时，必须读取该工作区同目录下的 `logcat.txt`。
 5. 回复前必须把综合结论写回 `Final ANR` 槽位。
 6. 最终输出结构化报告：时间线、直接阻塞点、候选根因链排序、证据质量、修复建议。
 
@@ -81,10 +81,10 @@ python3 scripts/anr_to_ai.py <bugreport_dir_or_archive_or_fixture> \
   [--anr-type input_dispatching_timeout|no_focus_window|broadcast_timeout|service_timeout|content_provider_timeout|job_scheduler_timeout|system_watchdog_swt]
 ```
 
-默认输出目录：
+默认输出目录（输入为日志目录时）：
 
 ```text
-anr_ai_context/
+<输入日志目录>/anr_ai_context/
   index.json
   anr-<timestamp-or-anchor>/
     anr_analysis.md
@@ -284,12 +284,12 @@ python3 -m compileall -q anr_evidence tests scripts
 python3 scripts/anr_to_ai.py bugreport.zip --package com.example.app
 ```
 
-然后打开：
+然后打开输入日志目录下的：
 
 ```text
-anr_ai_context/index.json
-anr_ai_context/<anr-id>/anr_analysis.md
-anr_ai_context/<anr-id>/logcat.txt
+<输入日志目录>/anr_ai_context/index.json
+<输入日志目录>/anr_ai_context/<anr-id>/anr_analysis.md
+<输入日志目录>/anr_ai_context/<anr-id>/logcat.txt
 ```
 
 ### 没有 package name

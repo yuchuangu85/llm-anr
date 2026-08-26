@@ -69,10 +69,10 @@ Analyze the ANR cause for package com.example.app in <log_directory_path>
 
 The agent should:
 
-1. Run `python3 scripts/anr_to_ai.py <path> --package com.example.app` to generate `anr_ai_context/`.
-2. Open `anr_ai_context/index.json` and analyze each listed ANR workspace independently.
-3. Fill the four analysis slots in `anr_ai_context/<anr-id>/anr_analysis.md` in order: Trace → EventLog → Logcat/AnrManager → Final ANR.
-4. Read `anr_ai_context/<anr-id>/logcat.txt` whenever the Logcat/AnrManager slot references it.
+1. Run `python3 scripts/anr_to_ai.py <path> --package com.example.app`; by default it generates `anr_ai_context/` under the input log directory (`--out-dir` overrides this).
+2. Open `anr_ai_context/index.json` under the input log directory and analyze each listed ANR workspace independently.
+3. Fill the four analysis slots in `anr_ai_context/<anr-id>/anr_analysis.md` under the input log directory in order: Trace → EventLog → Logcat/AnrManager → Final ANR.
+4. Read `anr_ai_context/<anr-id>/logcat.txt` in the same workspace whenever the Logcat/AnrManager slot references it.
 5. Write the comprehensive synthesis back into the `Final ANR` slot before replying.
 6. Return a final structured report with timeline, direct blocking point, ranked candidate chains, evidence quality, and remediation suggestions.
 
@@ -86,10 +86,10 @@ python3 scripts/anr_to_ai.py <bugreport_dir_or_archive_or_fixture> \
   [--anr-type input_dispatching_timeout|no_focus_window|broadcast_timeout|service_timeout|content_provider_timeout|job_scheduler_timeout|system_watchdog_swt]
 ```
 
-Default output directory:
+Default output directory (when the input is a log directory):
 
 ```text
-anr_ai_context/
+<input-log-directory>/anr_ai_context/
   index.json
   anr-<timestamp-or-anchor>/
     anr_analysis.md
@@ -289,12 +289,12 @@ Current test suite: 281 tests (1 skipped in the latest local run).
 python3 scripts/anr_to_ai.py bugreport.zip --package com.example.app
 ```
 
-Then open:
+Then open these files under the input log directory:
 
 ```text
-anr_ai_context/index.json
-anr_ai_context/<anr-id>/anr_analysis.md
-anr_ai_context/<anr-id>/logcat.txt
+<input-log-directory>/anr_ai_context/index.json
+<input-log-directory>/anr_ai_context/<anr-id>/anr_analysis.md
+<input-log-directory>/anr_ai_context/<anr-id>/logcat.txt
 ```
 
 ### No package name available
