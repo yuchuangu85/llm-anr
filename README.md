@@ -70,11 +70,12 @@ Analyze the ANR cause for package com.example.app in <log_directory_path>
 The agent should:
 
 1. Run `python3 scripts/anr_to_ai.py <path> --package com.example.app`; by default it generates `anr_ai_context/` under the input log directory (`--out-dir` overrides this).
-2. Open `anr_ai_context/index.json` under the input log directory and analyze each listed ANR workspace independently.
-3. Fill the four analysis slots in `anr_ai_context/<anr-id>/anr_analysis.md` under the input log directory in order: Trace → EventLog → Logcat/AnrManager → Final ANR.
-4. Read `anr_ai_context/<anr-id>/logcat.txt` in the same workspace whenever the Logcat/AnrManager slot references it.
-5. Write the comprehensive synthesis back into the `Final ANR` slot before replying.
-6. Return a final structured report with timeline, direct blocking point, ranked candidate chains, evidence quality, and remediation suggestions.
+2. Read the `docs/anr-ai-analysis-guide.md` path printed by the command; the guide is no longer duplicated in every `anr_analysis.md`.
+3. Open `anr_ai_context/index.json` under the input log directory and analyze each listed ANR workspace independently.
+4. Fill the four analysis slots in `anr_ai_context/<anr-id>/anr_analysis.md` under the input log directory in order: Trace → EventLog → Logcat/AnrManager → Final ANR.
+5. Read `anr_ai_context/<anr-id>/logcat.txt` in the same workspace whenever the Logcat/AnrManager slot references it.
+6. Write the comprehensive synthesis back into the `Final ANR` slot before replying.
+7. Return a final structured report with timeline, direct blocking point, ranked candidate chains, evidence quality, and remediation suggestions.
 
 ## Quick start: generate AI analysis workspaces
 

@@ -103,6 +103,7 @@ def main() -> int:
     summary = build_ai_context_artifacts(package, options)
 
     print(f"[✓] {summary['groupCount']} ANR analysis file(s) written under {out_dir}/")
+    print(f"    Analysis guide — read before analyzing: {REPO_ROOT / 'docs/anr-ai-analysis-guide.md'}")
     print("    index.json — context directory index")
     for group in summary.get("groups", []):
         analysis_path = group.get("artifactPaths", {}).get("analysis")

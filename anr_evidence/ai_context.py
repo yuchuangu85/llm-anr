@@ -164,9 +164,18 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             "analysis": str(analysis_path),
             "logcat": str(logcat_path),
         }
+        # Keep generated workspaces focused on evidence and analysis slots.
+        # The reusable analysis instructions live in docs/anr-ai-analysis-guide.md
+        # and are printed by the script entrypoint instead of being duplicated
+        # before every ``ANR AI Context Cache`` document.
         existing = _read_existing_analyses(analysis_path) if analysis_path.exists() else {}
-        evidence_md = _render_cache_markdown(package, [group_for_render], resolved, strategy, include_analysis_slots=True)
-        anr_analysis_md = _render_ai_prompt(evidence_md, [group], strategy, evidence_analysis_md=evidence_md)
+        anr_analysis_md = _render_cache_markdown(
+            package,
+            [group_for_render],
+            resolved,
+            strategy,
+            include_analysis_slots=True,
+        )
         if existing:
             anr_analysis_md = _merge_analyses(anr_analysis_md, existing)
         analysis_slots = _analysis_slot_statuses_from_text(anr_analysis_md)
@@ -933,6 +942,18 @@ def _render_cache_markdown(
     lines = [
         f"# {document_title}",
         "",
+    ]
+    if include_analysis_slots:
+        lines.extend([
+            "## 分析位置指南",
+            "- Trace 专项分析：填写本文件中的 `#### AI Analysis — Trace 堆栈`。",
+            "- EventLog 专项分析：填写本文件中的 `#### AI Analysis — EventLog 事件日志`。",
+            "- Logcat/AnrManager 专项分析：读取同目录 `logcat.txt` 后，填写 `#### AI Analysis — Logcat / AnrManager`。",
+            "- 最终综合分析：填写本文件中的 `#### AI Analysis — 最终 ANR 综合分析`，并追加结构化 JSON 尾部。",
+            "- 详细分析规范：`docs/anr-ai-analysis-guide.md`（命令输出会提示完整路径）。",
+            "",
+        ])
+    lines.extend([
         "## 运行元数据",
         f"- Package: `{package.get('package_id', 'unknown')}`",
         f"- ANR type strategy: `{strategy.anr_type}` ({strategy.label})",
@@ -941,7 +962,7 @@ def _render_cache_markdown(
         f"- Group tolerance: `{options.group_tolerance_seconds}s`",
         f"- Package filter: `{options.package_name or 'none'}`",
         "",
-    ]
+    ])
     for group in groups:
         anchor = group.get("anchor")
         title = group["id"]

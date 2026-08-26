@@ -65,11 +65,12 @@
 Agent 应完成以下步骤：
 
 1. 运行 `python3 scripts/anr_to_ai.py <路径> --package com.example.app`；默认在输入日志目录下生成 `anr_ai_context/`（可用 `--out-dir` 覆盖）。
-2. 打开输入日志目录下的 `anr_ai_context/index.json`，按索引逐个分析每个 ANR 工作区。
-3. 按顺序填写输入日志目录下 `anr_ai_context/<anr-id>/anr_analysis.md` 中的四个分析槽位：Trace → EventLog → Logcat/AnrManager → Final ANR。
-4. Logcat/AnrManager 槽位引用 `logcat.txt` 时，必须读取该工作区同目录下的 `logcat.txt`。
-5. 回复前必须把综合结论写回 `Final ANR` 槽位。
-6. 最终输出结构化报告：时间线、直接阻塞点、候选根因链排序、证据质量、修复建议。
+2. 先查看命令输出提示的 `docs/anr-ai-analysis-guide.md`；说明不再重复写入每个 `anr_analysis.md`。
+3. 打开输入日志目录下的 `anr_ai_context/index.json`，按索引逐个分析每个 ANR 工作区。
+4. 按顺序填写输入日志目录下 `anr_ai_context/<anr-id>/anr_analysis.md` 中的四个分析槽位：Trace → EventLog → Logcat/AnrManager → Final ANR。
+5. Logcat/AnrManager 槽位引用 `logcat.txt` 时，必须读取该工作区同目录下的 `logcat.txt`。
+6. 回复前必须把综合结论写回 `Final ANR` 槽位。
+7. 最终输出结构化报告：时间线、直接阻塞点、候选根因链排序、证据质量、修复建议。
 
 ## 快速开始：生成 AI 分析工作区
 
