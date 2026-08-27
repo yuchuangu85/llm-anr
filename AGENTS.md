@@ -34,6 +34,17 @@ Output a structured Markdown report covering:
 4. Evidence quality assessment (gaps, contradictions)
 5. Remediation suggestions
 
+## Launcher / Quickstep Recents Animation ANR specialization
+
+Load and follow [`skills/SKILL.md`](skills/SKILL.md) completely before interpreting evidence when either condition is true:
+
+1. The user explicitly asks to analyze a Launcher/Quickstep gesture-navigation or Recents-animation ANR.
+2. The evidence contains both:
+   - an input/focus anchor such as `Input dispatching timed out`, `does not have a focused window`, or an already-drawn target window that remains `NOT_VISIBLE`; and
+   - a Launcher/Quickstep Recents signal such as `recents_animation_input_consumer`, `OtherActivityInputConsumer`, `AbsSwipeUpHandler`, `startRecentsAnimation`, `onTasksAppeared`, `finishRecentsAnimation`, or `mRecentsAnimationStartPending`.
+
+Do not load this specialization for a generic input timeout or no-focus ANR that has no gesture/Recents signal. When it triggers, use it as an additive specialization after the baseline extraction workflow: preserve all baseline evidence, correlate `am_anr` with gesture identity, Recents lifecycle, finish state, and window/focus evidence, then write the source-specific and final conclusions back to the generated `anr_analysis.md` slots.
+
 ### Quick reference: ANR type strategies
 
 | Type | Key signals |
