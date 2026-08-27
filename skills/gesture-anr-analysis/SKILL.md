@@ -415,10 +415,10 @@ new handler h=Y: later ACTION_DOWN/continue -> onRecentsAnimationStart
 
 本仓库内的通用分析参考：
 
-- [`anr-trace-analysis.md`](anr-trace-analysis.md)：Trace 专项边界；
-- [`anr-eventlog-analysis.md`](anr-eventlog-analysis.md)：`am_anr` 与焦点/输入时间线；
-- [`anr-logcat-analysis.md`](anr-logcat-analysis.md)：Logcat、AnrManager 与 window/surface 证据；
-- [`anr-analysis.md`](anr-analysis.md)：最终综合分析与写回契约。
+- [`anr-trace-analysis.md`](../anr-trace-analysis.md)：Trace 专项边界；
+- [`anr-eventlog-analysis.md`](../anr-eventlog-analysis.md)：`am_anr` 与焦点/输入时间线；
+- [`anr-logcat-analysis.md`](../anr-logcat-analysis.md)：Logcat、AnrManager 与 window/surface 证据；
+- [`anr-analysis.md`](../anr-analysis.md)：最终综合分析与写回契约。
 
 以下是 Launcher/Quickstep checkout 中可能存在的条件参考，并非本仓库内置文件。只有用户提供相应 checkout 且路径实际存在时才读取；否则将源码/案例交叉验证记为 evidence gap，不得假装已读取：
 

@@ -135,6 +135,14 @@ class AiContextTests(unittest.TestCase):
         for filename in expected:
             self.assertIn(filename, reference)
 
+        gesture_skill_path = skills_dir / 'gesture-anr-analysis' / 'SKILL.md'
+        gesture_skill = gesture_skill_path.read_text(encoding='utf-8')
+        agents = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
+        self.assertIn('name: gesture-anr-analysis', gesture_skill)
+        self.assertIn('recents_animation_input_consumer', gesture_skill)
+        self.assertIn('skills/gesture-anr-analysis/SKILL.md', agents)
+        self.assertNotIn('skills/SKILL.md', agents)
+
     def test_core_builds_side_effect_free_result_with_progress_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = build_ai_context(_multi_anr_package(), AiContextOptions(out_dir=tmpdir, anr_type='input_dispatching_timeout'))

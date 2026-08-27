@@ -36,7 +36,7 @@ Output a structured Markdown report covering:
 
 ## Launcher / Quickstep Recents Animation ANR specialization
 
-Load and follow [`skills/SKILL.md`](skills/SKILL.md) completely before interpreting evidence when either condition is true:
+Load and follow [`skills/gesture-anr-analysis/SKILL.md`](skills/gesture-anr-analysis/SKILL.md) completely before interpreting evidence when either condition is true:
 
 1. The user explicitly asks to analyze a Launcher/Quickstep gesture-navigation or Recents-animation ANR.
 2. The evidence contains both:
