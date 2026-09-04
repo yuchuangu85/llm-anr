@@ -23,6 +23,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_SIZE_MIB = 13.0
 DEFAULT_GROUPS = 6
 DEFAULT_REPEATS = 5
@@ -50,7 +52,11 @@ def _build_package(size_mib: float, group_count: int) -> dict[str, Any]:
         signal_lines.extend([
             f"{_timestamp(index, 4, 900)} E InputDispatcher: Input dispatching timed out for com.demo group={index}",
             f"{_timestamp(index, 4, 950)} W WindowManager: mCurrentFocus=null for com.demo group={index}",
-            f"{_timestamp(index, 5, 50)} E SurfaceFlinger: fence timeout presenting com.demo group={index}",
+            (
+                f"{_timestamp(index, 5, 50)} E SurfaceFlinger: fence blocked; "
+                "waiting because the touched window has not finished processing "
+                f"for com.demo group={index}"
+            ),
         ])
         trace_lines.extend([
             f"{_timestamp(index, 5, 100)} ----- pid 100 -----",

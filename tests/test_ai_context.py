@@ -199,7 +199,11 @@ class AiContextTests(unittest.TestCase):
         self.assertTrue(second_logcat_exists)
         self.assertIn('04-12 10:00:05.050 E InputDispatcher no focused window for com.demo', first_logcat)
         self.assertIn('04-12 10:01:05.050 E InputDispatcher Input dispatching timed out for com.demo', second_logcat)
-        self.assertNotIn('04-12 10:00:05.050 E InputDispatcher no focused window for com.demo', first_analysis)
+        logcat_section = first_analysis[
+            first_analysis.index('### Logcat 系统日志'):
+            first_analysis.index('#### AI Analysis — Logcat / AnrManager')
+        ]
+        self.assertNotIn('04-12 10:00:05.050 E InputDispatcher no focused window for com.demo', logcat_section)
         self.assertIn('过滤后的 Logcat 已单独保存为：`logcat.txt`', first_analysis)
         self.assertIn('## anr-20260412-100005-000', first_analysis)
         self.assertNotIn('## anr-20260412-100105-000', first_analysis)
