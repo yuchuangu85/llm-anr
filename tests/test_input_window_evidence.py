@@ -141,6 +141,50 @@ class InputWindowEvidenceTests(unittest.TestCase):
         self.assertTrue(all(count <= 4 for count in digest["countsByFamily"].values()))
         self.assertEqual(digest["truncatedCount"], 48)
 
+    def test_todo_acceptance_scale_is_bounded_diverse_and_stable(self) -> None:
+        lines = [
+            (
+                f"04-12 10:00:09.{index % 1000:03d} {1000 + index} 222 "
+                "E InputDispatcher: Input dispatching timed out for com.demo"
+            )
+            for index in range(500)
+        ]
+        lines.extend(
+            f"04-12 10:00:08.{index:03d} W WindowManager: window={index} is NOT_VISIBLE"
+            for index in range(20)
+        )
+        lines.extend(
+            f"04-12 10:00:07.{index:03d} E SurfaceFlinger: present fence {index} timed out"
+            for index in range(20)
+        )
+
+        first = build_input_window_digest(
+            lines,
+            anr_type="input_dispatching_timeout",
+            anchor_timestamp=ANCHOR,
+            package_name="com.demo",
+        )
+        second = build_input_window_digest(
+            lines,
+            anr_type="input_dispatching_timeout",
+            anchor_timestamp=ANCHOR,
+            package_name="com.demo",
+        )
+
+        self.assertEqual(first["candidateLineCount"], 540)
+        self.assertEqual(first["duplicateCount"], 499)
+        self.assertLessEqual(len(first["items"]), 12)
+        self.assertTrue(all(count <= 4 for count in first["countsByFamily"].values()))
+        self.assertTrue(all(first["countsByFamily"][family] >= 1 for family in (
+            "input_trigger",
+            "window_state",
+            "surface_state",
+        )))
+        self.assertEqual(
+            json.dumps(first, ensure_ascii=False, sort_keys=True),
+            json.dumps(second, ensure_ascii=False, sort_keys=True),
+        )
+
     def test_unparseable_direct_trigger_remains_eligible_without_proximity_bonus(self) -> None:
         digest = build_input_window_digest(
             ["E/InputDispatcher: Input dispatching timed out for com.demo"],
