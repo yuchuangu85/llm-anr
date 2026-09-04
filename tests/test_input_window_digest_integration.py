@@ -26,7 +26,10 @@ def _package_with_digest_signals() -> dict:
                     "04-12 10:00:04.700 E InputDispatcher: Input dispatching timed out for com.demo",
                     "04-12 10:00:04.900 E InputDispatcher: Input dispatching timed out for com.demo",
                     "04-12 10:00:04.950 W WindowManager: mCurrentFocus=null for com.demo",
-                    "04-12 10:00:05.050 E SurfaceFlinger: fence timeout while presenting com.demo",
+                    (
+                        "04-12 10:00:05.050 E SurfaceFlinger: fence blocked; "
+                        "waiting because the touched window has not finished processing for com.demo"
+                    ),
                     "04-12 10:00:05.100 I ActivityManager: unrelated retained context for com.demo",
                 ]),
             },
@@ -134,8 +137,9 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
             content = analysis_path.read_text(encoding="utf-8")
             marker = "<!-- AI_ANALYSIS_SLOT:trace -->"
             start = content.index(marker) + len(marker)
+            end = content.index("\n### EventLog 事件日志", start)
             analysis_path.write_text(
-                content[:start] + "\nTrace conclusion retained.\n" + content[start:],
+                content[:start] + "\nTrace conclusion retained.\n" + content[end:],
                 encoding="utf-8",
             )
 
