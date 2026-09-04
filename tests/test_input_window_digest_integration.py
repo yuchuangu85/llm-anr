@@ -187,6 +187,36 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(regenerated["groups"][0]["analysisSlots"]["eventlog"], "filled")
 
+    def test_regeneration_preserves_filled_eventlog_without_digest(self) -> None:
+        package = _package_with_digest_signals()
+        package["sources"]["event_log"]["content"] = (
+            "04-12 10:00:05.000 am_anr ANR in com.demo: executing service timeout"
+        )
+        options = AiContextOptions(
+            package_name="com.demo",
+            anr_type="service_timeout",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options = AiContextOptions(**{**options.__dict__, "out_dir": tmpdir})
+            summary = build_ai_context_artifacts(package, options)
+            analysis_path = Path(summary["groups"][0]["artifactPaths"]["analysis"])
+            content = analysis_path.read_text(encoding="utf-8")
+            marker = "<!-- AI_ANALYSIS_SLOT:eventlog -->"
+            start = content.index(marker) + len(marker)
+            end = content.index("\n### Logcat 系统日志", start)
+            analysis_path.write_text(
+                content[:start] + "\nEventLog service conclusion retained.\n" + content[end:],
+                encoding="utf-8",
+            )
+
+            regenerated = build_ai_context_artifacts(package, options)
+            regenerated_text = analysis_path.read_text(encoding="utf-8")
+
+        self.assertIn("EventLog service conclusion retained.", regenerated_text)
+        self.assertNotIn("Input / Window / Surface evidence digest", regenerated_text)
+        self.assertEqual(regenerated["groups"][0]["analysisSlots"]["eventlog"], "filled")
+
 
 if __name__ == "__main__":
     unittest.main()
