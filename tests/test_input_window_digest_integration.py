@@ -57,8 +57,8 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
             logcat = logcat_path.read_text(encoding="utf-8")
 
             self.assertIn("### Input / Window / Surface evidence digest", analysis)
-            self.assertIn("retrieval relevance, not root-cause confidence", analysis)
-            self.assertIn("not Perfetto or SF scheduling proof", analysis)
+            self.assertIn("retrieval relevance, never causal confidence", analysis)
+            self.assertIn("SF logcat is not Perfetto/SF scheduling proof", analysis)
             self.assertIn("family=`input_trigger`", analysis)
             self.assertIn("family=`window_state`", analysis)
             self.assertIn("family=`surface_state`", analysis)

@@ -540,7 +540,11 @@ def _build_input_window_digest_for_group(
     if anchor_timestamp is None:
         return {
             "items": [],
-            "countsByFamily": {},
+            "countsByFamily": {
+                "input_trigger": 0,
+                "window_state": 0,
+                "surface_state": 0,
+            },
             "candidateLineCount": 0,
             "duplicateCount": 0,
             "truncatedCount": 0,
@@ -1147,8 +1151,8 @@ def _append_input_window_digest_section(lines: list[str], digest: dict[str, Any]
     counts = digest.get("countsByFamily", {})
     lines.extend([
         "### Input / Window / Surface evidence digest",
-        "- `relevanceScore` is retrieval relevance, not root-cause confidence.",
-        "- SurfaceFlinger (SF) logcat evidence is not Perfetto or SF scheduling proof.",
+        "- `relevanceScore` is retrieval relevance, never causal confidence or root-cause confidence.",
+        "- SF logcat is not Perfetto/SF scheduling proof.",
         (
             "- Coverage: "
             f"candidates=`{digest.get('candidateLineCount', 0)}`, "
