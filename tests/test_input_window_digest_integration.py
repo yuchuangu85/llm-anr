@@ -150,6 +150,43 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
         self.assertIn("### Input / Window / Surface evidence digest", regenerated_text)
         self.assertEqual(regenerated["groups"][0]["analysisSlots"]["trace"], "filled")
 
+    def test_regeneration_preserves_filled_eventlog_analysis_and_refreshes_digest(self) -> None:
+        package = _package_with_digest_signals()
+        options = AiContextOptions(
+            package_name="com.demo",
+            anr_type="input_dispatching_timeout",
+        )
+        old_window_line = "04-12 10:00:04.950 W WindowManager: mCurrentFocus=null for com.demo"
+        new_window_line = "04-12 10:00:04.960 W WindowManager: mCurrentFocus=null for com.demo"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options = AiContextOptions(**{**options.__dict__, "out_dir": tmpdir})
+            summary = build_ai_context_artifacts(package, options)
+            analysis_path = Path(summary["groups"][0]["artifactPaths"]["analysis"])
+            content = analysis_path.read_text(encoding="utf-8")
+            marker = "<!-- AI_ANALYSIS_SLOT:eventlog -->"
+            start = content.index(marker) + len(marker)
+            end = content.index("\n### Input / Window / Surface evidence digest", start)
+            analysis_path.write_text(
+                content[:start] + "\nEventLog conclusion retained.\n" + content[end:],
+                encoding="utf-8",
+            )
+
+            package["sources"]["logcat"]["content"] = package["sources"]["logcat"][
+                "content"
+            ].replace(old_window_line, new_window_line)
+            regenerated = build_ai_context_artifacts(package, options)
+            regenerated_text = analysis_path.read_text(encoding="utf-8")
+
+        self.assertIn("EventLog conclusion retained.", regenerated_text)
+        self.assertNotIn(old_window_line, regenerated_text)
+        self.assertIn(new_window_line, regenerated_text)
+        self.assertEqual(
+            regenerated_text.count("### Input / Window / Surface evidence digest"),
+            1,
+        )
+        self.assertEqual(regenerated["groups"][0]["analysisSlots"]["eventlog"], "filled")
+
 
 if __name__ == "__main__":
     unittest.main()
