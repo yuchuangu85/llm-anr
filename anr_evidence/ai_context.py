@@ -547,6 +547,7 @@ def _build_input_window_digest_for_group(
         }
     return build_input_window_digest(
         logcat_lines,
+        anr_type=strategy.anr_type,
         anchor_timestamp=anchor_timestamp,
         package_name=package_name,
         target_pid=target_pid,
@@ -1080,6 +1081,9 @@ def _render_cache_markdown(
                     "输出 Anchor/am_anr、pre-ANR sequence、state-machine interpretation、EventLog-only conclusion、gaps、confidence。",
                 ],
             )
+        input_window_digest = group.get("inputWindowDigest")
+        if input_window_digest is not None:
+            _append_input_window_digest_section(lines, input_window_digest)
         logcat_artifact = group["logcat"].get("artifactFilename")
         if include_analysis_slots and logcat_artifact:
             _append_logcat_artifact_reference(
@@ -1134,6 +1138,41 @@ def _render_cache_markdown(
                 ],
             )
     return "\n".join(lines).rstrip()
+
+
+def _append_input_window_digest_section(lines: list[str], digest: dict[str, Any]) -> None:
+    """Render bounded retrieval candidates without implying causal confidence."""
+
+    items = digest.get("items", [])
+    counts = digest.get("countsByFamily", {})
+    lines.extend([
+        "### Input / Window / Surface evidence digest",
+        "- `relevanceScore` is retrieval relevance, not root-cause confidence.",
+        "- SurfaceFlinger (SF) logcat evidence is not Perfetto or SF scheduling proof.",
+        (
+            "- Coverage: "
+            f"candidates=`{digest.get('candidateLineCount', 0)}`, "
+            f"retained=`{len(items)}`, duplicates=`{digest.get('duplicateCount', 0)}`, "
+            f"truncated=`{digest.get('truncatedCount', 0)}`, "
+            f"families=`{json.dumps(counts, sort_keys=True, ensure_ascii=False)}`"
+        ),
+    ])
+    if not items:
+        lines.extend(["- No digest signals retained.", ""])
+        return
+
+    for item in items:
+        delta_t = item.get("deltaTSeconds")
+        delta_text = "unparsed" if delta_t is None else f"{delta_t:+.3f}s"
+        reasons = ", ".join(item.get("scoreReasons", [])) or "none"
+        lines.extend([
+            (
+                f"- ΔT=`{delta_text}` family=`{item.get('family', 'unknown')}` "
+                f"relevanceScore=`{item.get('relevanceScore', 0)}` scoreReasons=`{reasons}`"
+            ),
+            f"  - Raw: {item.get('rawLine', '')}",
+        ])
+    lines.append("")
 
 
 def _append_logcat_artifact_reference(
