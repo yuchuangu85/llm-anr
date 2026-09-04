@@ -73,6 +73,23 @@ _TAG_PREFIX_RE = re.compile(
     r"^[\w.$/-]+(?:\(\s*\d+\))?\s*:\s*",
     re.IGNORECASE,
 )
+_LOGCAT_THREADTIME_IDENTITY_RE = re.compile(
+    r"^\s*(?:(?:\d{4}-)?\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)\s+"
+    r"(?:(?:\S+)\s+)?(?P<pid>\d+)\s+\d+\s+[VDIWEF]\s+",
+    re.IGNORECASE,
+)
+_LOGCAT_TAG_PID_RE = re.compile(
+    r"^[VDIWEF](?:/|\s+)[\w.$/-]+\(\s*(?P<pid>\d+)\s*\)\s*:",
+    re.IGNORECASE,
+)
+_EXPLICIT_PID_RE = re.compile(r"\bpid\s*[:=]\s*(?P<pid>\d+)\b", re.IGNORECASE)
+_PROCESS_RECORD_PID_RE = re.compile(
+    r"\bProcessRecord\{[^}\n]*?\b(?P<pid>\d+):",
+    re.IGNORECASE,
+)
+_PID_PROCESS_NAME_RE = re.compile(
+    r"(?<!\d)(?P<pid>\d+)/[A-Za-z][A-Za-z0-9_.]*(?::[A-Za-z0-9_.-]+)?(?=:|\s|$)"
+)
 
 
 @dataclass(frozen=True)
@@ -283,11 +300,40 @@ def _contains_target_identity(
     package_name: str | None,
     target_pid: str | None,
 ) -> bool:
-    if package_name and package_name.casefold() in line.casefold():
+    if package_name and _contains_exact_package(line, package_name):
         return True
-    if target_pid and re.search(rf"(?<!\d){re.escape(target_pid)}(?!\d)", line):
+    if target_pid and target_pid.isdigit() and target_pid in _structured_pids(line):
         return True
     return False
+
+
+def _contains_exact_package(line: str, package_name: str) -> bool:
+    package = package_name.strip()
+    if not package:
+        return False
+    return bool(re.search(
+        rf"(?<![A-Za-z0-9_.]){re.escape(package)}(?![A-Za-z0-9_.])",
+        line,
+        re.IGNORECASE,
+    ))
+
+
+def _structured_pids(line: str) -> set[str]:
+    pids: set[str] = set()
+
+    threadtime = _LOGCAT_THREADTIME_IDENTITY_RE.match(line)
+    if threadtime:
+        pids.add(threadtime.group("pid"))
+
+    without_timestamp = _TIMESTAMP_PREFIX_RE.sub("", line, count=1)
+    tag_pid = _LOGCAT_TAG_PID_RE.match(without_timestamp)
+    if tag_pid:
+        pids.add(tag_pid.group("pid"))
+
+    for pattern in (_EXPLICIT_PID_RE, _PROCESS_RECORD_PID_RE, _PID_PROCESS_NAME_RE):
+        pids.update(match.group("pid") for match in pattern.finditer(line))
+
+    return pids
 
 
 def _normalized_payload(line: str) -> str:

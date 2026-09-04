@@ -50,6 +50,7 @@ INPUT_LOGCAT_PATTERNS = frozenset(
         "no focus window",
         "windowmanager",
         "activitymanager",
+        "fence",
         "waiting because the touched window has not finished processing",
         "not responding",
     }

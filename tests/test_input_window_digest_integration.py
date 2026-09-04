@@ -72,12 +72,10 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
             self.assertIn("10:00:05.050 E SurfaceFlinger: present fence timed out", logcat)
             self.assertEqual(logcat.count("Input dispatching timed out for com.demo"), 2)
 
-            digest = summary["groups"][0]["inputWindowDigest"]
-            self.assertEqual(digest["countsByFamily"]["surface_state"], 1)
-            self.assertTrue(any(
-                "present fence timed out" in item["rawLine"]
-                for item in digest["items"]
-            ))
+            self.assertIn(
+                "Raw: 04-12 10:00:05.050 E SurfaceFlinger: present fence timed out",
+                analysis,
+            )
 
             self.assertEqual(index["artifactPaths"], {"index": str(Path(tmpdir, "index.json"))})
             self.assertEqual(
@@ -97,6 +95,10 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
             self.assertEqual(digest_events[0]["details"]["candidateLineCount"], 4)
             self.assertEqual(digest_events[0]["details"]["retainedItemCount"], 3)
             self.assertEqual(digest_events[0]["details"]["duplicateCount"], 1)
+            self.assertEqual(
+                digest_events[0]["details"]["countsByFamily"]["surface_state"],
+                1,
+            )
 
     def test_no_focus_strategy_builds_digest_and_exposes_it_on_core_result(self) -> None:
         result = build_ai_context(
