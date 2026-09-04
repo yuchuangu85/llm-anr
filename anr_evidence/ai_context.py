@@ -907,11 +907,14 @@ def _completeness(
 
 
 _ANALYSIS_SLOT_BOUNDARIES = {
-    "trace": "\n### EventLog 事件日志",
-    "eventlog": "\n### Logcat 系统日志",
-    "logcat": "\n### 完整性检查",
-    "logcat-anrmanager": "\n### 完整性检查",
-    "final-anr": None,
+    "trace": ("\n### EventLog 事件日志",),
+    "eventlog": (
+        "\n### Input / Window / Surface evidence digest",
+        "\n### Logcat 系统日志",
+    ),
+    "logcat": ("\n### 完整性检查",),
+    "logcat-anrmanager": ("\n### 完整性检查",),
+    "final-anr": (),
 }
 _ANALYSIS_SLOT_IDS = ("trace", "eventlog", "logcat-anrmanager", "final-anr")
 
@@ -924,12 +927,13 @@ def _analysis_slot_body_span(text: str, slot_id: str) -> tuple[int, int] | None:
     start = marker_index + len(marker)
     if start < len(text) and text[start] == "\n":
         start += 1
-    boundary = _ANALYSIS_SLOT_BOUNDARIES.get(slot_id)
-    if boundary is None:
-        end = len(text)
-    else:
-        boundary_index = text.find(boundary, start)
-        end = boundary_index if boundary_index >= 0 else len(text)
+    boundaries = _ANALYSIS_SLOT_BOUNDARIES.get(slot_id, ())
+    boundary_indexes = [
+        index
+        for boundary in boundaries
+        if (index := text.find(boundary, start)) >= 0
+    ]
+    end = min(boundary_indexes, default=len(text))
     return start, end
 
 
