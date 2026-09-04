@@ -26,10 +26,7 @@ def _package_with_digest_signals() -> dict:
                     "04-12 10:00:04.700 E InputDispatcher: Input dispatching timed out for com.demo",
                     "04-12 10:00:04.900 E InputDispatcher: Input dispatching timed out for com.demo",
                     "04-12 10:00:04.950 W WindowManager: mCurrentFocus=null for com.demo",
-                    (
-                        "04-12 10:00:05.050 E SurfaceFlinger: fence blocked; "
-                        "waiting because the touched window has not finished processing for com.demo"
-                    ),
+                    "04-12 10:00:05.050 E SurfaceFlinger: present fence timed out",
                     "04-12 10:00:05.100 I ActivityManager: unrelated retained context for com.demo",
                 ]),
             },
@@ -72,7 +69,15 @@ class InputWindowDigestIntegrationTests(unittest.TestCase):
             # trigger occurrences remain in the full filtered logcat artifact.
             self.assertIn("10:00:04.700 E InputDispatcher", logcat)
             self.assertIn("10:00:04.900 E InputDispatcher", logcat)
+            self.assertIn("10:00:05.050 E SurfaceFlinger: present fence timed out", logcat)
             self.assertEqual(logcat.count("Input dispatching timed out for com.demo"), 2)
+
+            digest = summary["groups"][0]["inputWindowDigest"]
+            self.assertEqual(digest["countsByFamily"]["surface_state"], 1)
+            self.assertTrue(any(
+                "present fence timed out" in item["rawLine"]
+                for item in digest["items"]
+            ))
 
             self.assertEqual(index["artifactPaths"], {"index": str(Path(tmpdir, "index.json"))})
             self.assertEqual(

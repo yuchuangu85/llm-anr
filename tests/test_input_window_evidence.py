@@ -198,6 +198,49 @@ class InputWindowEvidenceTests(unittest.TestCase):
         self.assertIsNone(item["timestamp"])
         self.assertIsNone(item["deltaTSeconds"])
 
+    def test_target_identity_uses_exact_package_and_structured_pid_fields(self) -> None:
+        digest = build_input_window_digest(
+            [
+                (
+                    "04-12 10:00:09.000 777 321 E SurfaceFlinger: "
+                    "fence timeout marker=tid-only owner=com.demo.extra"
+                ),
+                (
+                    "04-12 10:00:09.100 321 777 E SurfaceFlinger: "
+                    "fence timeout marker=process-pid"
+                ),
+                (
+                    "04-12 10:00:09.200 777 778 E SurfaceFlinger: "
+                    "fence timeout marker=exact-package owner=com.demo"
+                ),
+                (
+                    "04-12 10:00:09.300 777 779 E SurfaceFlinger: "
+                    "fence timeout marker=message-number code=321"
+                ),
+            ],
+            anr_type="input_dispatching_timeout",
+            anchor_timestamp=ANCHOR,
+            package_name="com.demo",
+            target_pid=321,
+        )
+
+        items = {
+            marker: next(item for item in digest["items"] if marker in item["rawLine"])
+            for marker in ("tid-only", "process-pid", "exact-package", "message-number")
+        }
+        self.assertNotIn("target_identity", items["tid-only"]["scoreReasons"])
+        self.assertIn("target_identity", items["process-pid"]["scoreReasons"])
+        self.assertIn("target_identity", items["exact-package"]["scoreReasons"])
+        self.assertNotIn("target_identity", items["message-number"]["scoreReasons"])
+
+        date_only = build_input_window_digest(
+            ["04-12 10:00:09.000 E SurfaceFlinger: fence timeout marker=date-only"],
+            anr_type="input_dispatching_timeout",
+            anchor_timestamp=ANCHOR,
+            target_pid=12,
+        )
+        self.assertNotIn("target_identity", date_only["items"][0]["scoreReasons"])
+
     def test_ties_use_anchor_distance_then_line_index_and_are_deterministic(self) -> None:
         lines = [
             "04-12 10:00:08.000 E InputDispatcher: Input dispatching timed out token=first",
