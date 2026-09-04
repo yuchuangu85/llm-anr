@@ -38,6 +38,23 @@ class InputWindowEvidenceTests(unittest.TestCase):
             ["direct_trigger", "target_identity", "anchor_proximity_1s"],
         )
 
+    def test_classifies_input_window_and_surface_failure_families(self) -> None:
+        digest = build_input_window_digest(
+            [
+                "04-12 10:00:09.000 I am_anr: ANR in com.demo",
+                "04-12 10:00:08.000 W WindowManager: target is NOT_VISIBLE",
+                "04-12 10:00:07.000 E BufferQueue: dequeueBuffer timed out",
+            ],
+            anr_type="no_focus_window",
+            anchor_timestamp=ANCHOR,
+        )
+
+        self.assertEqual(
+            {item["family"] for item in digest["items"]},
+            {"input_trigger", "window_state", "surface_state"},
+        )
+        self.assertTrue(all(item["scoreReasons"] for item in digest["items"]))
+
     def test_diversity_preserves_every_present_family(self) -> None:
         lines = [
             (
@@ -177,6 +194,22 @@ class InputWindowEvidenceTests(unittest.TestCase):
 
         self.assertEqual(digest["items"], [])
         self.assertEqual(digest["candidateLineCount"], 0)
+        self.assertEqual(
+            digest["countsByFamily"],
+            {"input_trigger": 0, "window_state": 0, "surface_state": 0},
+        )
+
+    def test_irrelevant_input_log_returns_stable_empty_shape(self) -> None:
+        digest = build_input_window_digest(
+            ["04-12 10:00:09.000 I SurfaceFlinger: transaction committed"],
+            anr_type="input_dispatching_timeout",
+            anchor_timestamp=ANCHOR,
+        )
+
+        self.assertEqual(digest["items"], [])
+        self.assertEqual(digest["candidateLineCount"], 0)
+        self.assertEqual(digest["duplicateCount"], 0)
+        self.assertEqual(digest["truncatedCount"], 0)
 
 
 if __name__ == "__main__":

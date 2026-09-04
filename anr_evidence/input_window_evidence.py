@@ -24,8 +24,8 @@ _DIRECT_TRIGGER_RE = re.compile(
     r"input\s+dispatch(?:ing)?\s+time(?:d\s*out|out)"
     r"|does\s+not\s+have\s+a\s+focused\s+window"
     r"|no\s+focus(?:ed)?\s+window"
-    r"|application\s+not\s+responding.*(?:input|focus)"
-    r"|(?:input|focus).*(?:application\s+not\s+responding|\banr\b)"
+    r"|application\s+not\s+responding"
+    r"|\banr\s+in\s+\S+"
     r")",
     re.IGNORECASE,
 )
@@ -41,7 +41,7 @@ _WINDOW_FAILURE_RE = re.compile(
     r"|not[_\s-]?visible|visibility\s*(?:=|:)\s*(?:false|gone|invisible)"
     r"|not[_\s-]?drawn|drawn\s*(?:=|:)\s*false|waiting\s+(?:for|to\s+be)\s+drawn"
     r"|not[_\s-]?resumed|resumed\s*(?:=|:)\s*false"
-    r"|focus(?:ed)?\s+window|focus\s+(?:changed|lost|request|transfer)"
+    r"|focus(?:ed)?(?:\s+window)?\s+(?:changed|lost|request|transfer)"
     r")",
     re.IGNORECASE,
 )
@@ -67,6 +67,10 @@ _THREADTIME_PREFIX_RE = re.compile(
 )
 _BRIEF_PREFIX_RE = re.compile(
     r"^[VDIWEF]/[\w.$/-]+(?:\(\s*\d+\))?\s*:\s*",
+    re.IGNORECASE,
+)
+_TAG_PREFIX_RE = re.compile(
+    r"^[\w.$/-]+(?:\(\s*\d+\))?\s*:\s*",
     re.IGNORECASE,
 )
 
@@ -132,7 +136,7 @@ def build_input_window_digest(
     item_limit = min(max_items, 12)
     family_limit = min(max_per_family, 4)
     anchor = _parse_anchor(anchor_timestamp)
-    target_pid_text = str(target_pid).strip() if target_pid is not None else None
+    target_pid_text = (str(target_pid).strip() or None) if target_pid is not None else None
 
     candidates: list[_Candidate] = []
     for line_index, raw_line in enumerate(logcat_lines):
@@ -165,7 +169,7 @@ def build_input_window_digest(
 
     selected: list[_Candidate] = []
     selected_indexes: set[int] = set()
-    family_counts = {family: 0 for family in present_families}
+    family_counts = {family: 0 for family in FAMILIES}
 
     for family in present_families:
         best = next(candidate for candidate in ranked if candidate.family == family)
@@ -197,7 +201,7 @@ def build_input_window_digest(
 def _empty_digest() -> dict[str, Any]:
     return {
         "items": [],
-        "countsByFamily": {},
+        "countsByFamily": {family: 0 for family in FAMILIES},
         "candidateLineCount": 0,
         "duplicateCount": 0,
         "truncatedCount": 0,
@@ -290,4 +294,5 @@ def _normalized_payload(line: str) -> str:
     payload = _TIMESTAMP_PREFIX_RE.sub("", line, count=1)
     payload = _THREADTIME_PREFIX_RE.sub("", payload, count=1)
     payload = _BRIEF_PREFIX_RE.sub("", payload, count=1)
+    payload = _TAG_PREFIX_RE.sub("", payload, count=1)
     return payload.strip()
