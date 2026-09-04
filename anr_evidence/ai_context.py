@@ -15,6 +15,7 @@ from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .constants import TIME_ANCHOR_PRECEDENCE
 from .cross_source_fusion import fuse_cross_source_evidence
+from .input_window_evidence import build_input_window_digest
 from .root_cause_hints import (
     infer_root_cause_pattern_hints_from_ids,
     infer_root_cause_pattern_hints_from_texts,
@@ -33,6 +34,9 @@ from .log_filter import (
 )
 from .sources import MeminfoFilterOptions, SourceFilterContext, SourceFilterOptions, filter_logcat_anrmanager_block, filter_meminfo_source
 from .trace_preprocessor import preprocess_trace_content
+
+
+_INPUT_WINDOW_DIGEST_STRATEGIES = frozenset({"input_dispatching_timeout", "no_focus_window"})
 
 ANRMANAGER_PRE_CONTEXT_SECONDS = 12
 
@@ -304,6 +308,15 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "logcat": {"lines": [], "warnings": [warning]},
             "completeness": _completeness(sources, trace.get("lines", []), [], None),
         }
+        input_window_digest = _build_input_window_digest_for_group(
+            strategy,
+            [],
+            anchor_timestamp=None,
+            package_name=options.package_name,
+            target_pid=None,
+        )
+        if input_window_digest is not None:
+            group["inputWindowDigest"] = input_window_digest
         events.extend(_group_step_events(group))
         return [group], events
 
@@ -393,6 +406,13 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             anrmanager_lines,
             logcat_result.lines,
         )
+        input_window_digest = _build_input_window_digest_for_group(
+            strategy,
+            merged_logcat_lines,
+            anchor_timestamp=anchor_dt,
+            package_name=effective_package_name,
+            target_pid=anrmanager_summary.get("anrPid") if anrmanager_summary else None,
+        )
         logcat_metadata = {
             "anrManagerPreContextSeconds": ANRMANAGER_PRE_CONTEXT_SECONDS,
             "anrManagerPreContextAnchor": timestamp_to_raw(anrmanager_pre_context_anchor) if anrmanager_pre_context_anchor else None,
@@ -449,6 +469,8 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             },
             "completeness": _completeness(sources, trace.get("lines", []), merged_logcat_lines, event_lines, meminfo_result.lines if meminfo_result else []),
         }
+        if input_window_digest is not None:
+            group["inputWindowDigest"] = input_window_digest
         groups.append(group)
         events.extend(_group_step_events(group))
     return groups, events
@@ -481,13 +503,54 @@ def _root_cause_pattern_hints_for_group(
 
 
 def _group_step_events(group: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
+    events = [
         _event("trace_filtered", "completed", groupId=group["id"], retainedLineCount=len(group["trace"].get("lines", [])), warningCount=len(group["trace"].get("warnings", []))),
         _event("event_log_filtered", "completed", groupId=group["id"], retainedLineCount=len(group["eventLog"].get("lines", [])), warningCount=len(group["eventLog"].get("warnings", []))),
         _event("logcat_filtered", "completed", groupId=group["id"], retainedLineCount=len(group["logcat"].get("lines", [])), warningCount=len(group["logcat"].get("warnings", []))),
         _event("meminfo_filtered", "completed", groupId=group["id"], retainedLineCount=len(group.get("meminfo", {}).get("lines", [])), warningCount=len(group.get("meminfo", {}).get("warnings", []))),
         _event("completeness_checked", "completed", groupId=group["id"], complete=group["completeness"].get("complete")),
     ]
+    digest = group.get("inputWindowDigest")
+    if digest is not None:
+        events.insert(-1, _event(
+            "input_window_digest_built",
+            "completed",
+            groupId=group["id"],
+            candidateLineCount=digest.get("candidateLineCount", 0),
+            retainedItemCount=len(digest.get("items", [])),
+            countsByFamily=digest.get("countsByFamily", {}),
+            duplicateCount=digest.get("duplicateCount", 0),
+            truncatedCount=digest.get("truncatedCount", 0),
+        ))
+    return events
+
+
+def _build_input_window_digest_for_group(
+    strategy: AnrTypeStrategy,
+    logcat_lines: list[str],
+    *,
+    anchor_timestamp: datetime | None,
+    package_name: str | None,
+    target_pid: int | None,
+) -> dict[str, Any] | None:
+    """Build the optional input-family digest without changing baseline evidence."""
+
+    if strategy.anr_type not in _INPUT_WINDOW_DIGEST_STRATEGIES:
+        return None
+    if anchor_timestamp is None:
+        return {
+            "items": [],
+            "countsByFamily": {},
+            "candidateLineCount": 0,
+            "duplicateCount": 0,
+            "truncatedCount": 0,
+        }
+    return build_input_window_digest(
+        logcat_lines,
+        anchor_timestamp=anchor_timestamp,
+        package_name=package_name,
+        target_pid=target_pid,
+    )
 
 
 def _anrmanager_pre_context_anchor(metadata: dict[str, Any]) -> datetime | None:
