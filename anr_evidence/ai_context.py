@@ -14,7 +14,8 @@ from .am_anr import package_name_from_am_anr_line
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .constants import TIME_ANCHOR_PRECEDENCE
-from .cross_source_fusion import fuse_cross_source_evidence
+from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
+from .log_identity import parse_line_identity
 from .input_window_evidence import build_input_window_digest
 from .root_cause_hints import (
     infer_root_cause_pattern_hints_from_ids,
@@ -424,11 +425,29 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         # log signals (e.g. MAIN_BINDER_WAIT_REPLY + "Slow binder
         # transaction" -> critical).
         if trace.get("traceHints"):
+            target_pid, identity_conflict = _fusion_target_identity(
+                anchor, anrmanager_lines,
+                before_seconds=options.logcat_before_seconds,
+                after_seconds=options.logcat_after_seconds,
+            )
+            trace_metadata = trace.get("metadata", {})
             trace["traceHints"] = fuse_cross_source_evidence(
                 trace["traceHints"],
                 logcat_text="\n".join(merged_logcat_lines),
                 event_log_text="\n".join(event_lines),
                 kernel_log_text=kernel_log_content,
+                scope=FusionScope(
+                    group_id=_group_id(anchor_dt),
+                    target_pid=target_pid,
+                    target_process=anchor.get("packageName"),
+                    trace_pid=trace_metadata.get("pid"),
+                    trace_process=trace_metadata.get("processName"),
+                    anchor_timestamp=anchor_dt,
+                    trace_timestamp=_trace_selected_timestamp(trace),
+                    before_seconds=options.logcat_before_seconds,
+                    after_seconds=options.logcat_after_seconds,
+                    identity_conflict=identity_conflict,
+                ),
             )
 
         root_cause_hints = _root_cause_pattern_hints_for_group(
@@ -643,17 +662,43 @@ def _collapse_nearby_anchors(anchors: list[dict[str, Any]], tolerance_seconds: i
     return collapsed
 
 
+def _fusion_target_identity(
+    anchor: dict[str, Any], anrmanager_lines: list[str], *,
+    before_seconds: float, after_seconds: float,
+) -> tuple[str | None, bool]:
+    """Cross-check ANR target records, never the diagnostic emitter PID.
+
+    The selected AnrManager block may extend outside the event window. Only
+    timestamped diagnostic records for this exact process within the window
+    may supplement a legacy anchor or contradict its PID. Keep every raw line.
+    """
+    pids = set(parse_line_identity(anchor["line"]).target_pids)
+    for line in anrmanager_lines:
+        if "AnrDumpRecord" not in line:
+            continue
+        timestamp = parse_log_timestamp(line, year=anchor["timestamp"].year)
+        if timestamp is None:
+            continue
+        delta = (timestamp - anchor["timestamp"]).total_seconds()
+        if not -before_seconds <= delta <= after_seconds:
+            continue
+        identity = parse_line_identity(line)
+        if identity.target_processes == (anchor.get("packageName"),):
+            pids.update(identity.target_pids)
+    return (next(iter(pids)) if len(pids) == 1 else None, len(pids) > 1)
+
+
 def _event_anchors(content: str, package_name: str | None) -> list[dict[str, Any]]:
     anchors = []
     for index, line in enumerate(iter_text_lines(content)):
         if "am_anr" not in line.lower():
             continue
-        if package_name and package_name not in line:
+        inferred_package_name = package_name_from_am_anr_line(line)
+        if package_name and package_name != inferred_package_name:
             continue
         ts = parse_log_timestamp(line)
         if ts is None:
             continue
-        inferred_package_name = package_name_from_am_anr_line(line)
         anchors.append({
             "sourceKind": "event_log",
             "timestamp": ts,
@@ -1634,7 +1679,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "",
         "## 死锁检测速查表",
         "- 每个 `## anr-*` 分组下若存在 `### 死锁检测` 小节，则其内容为程序化锁图分析（基于 Tarjan SCC）的结论，可信度高于对栈帧的自由解读。",
-        "- `[DEADLOCK_CYCLE / strong / critical]` = 等锁环成立且环上节点全部 Blocked，符合 Coffman 四要件，可直接作为根因。",
+        "- `[DEADLOCK_CYCLE / strong / critical]` 表示采样中的锁等待环候选；仍须校验 PID、dump 时间、本次 ANR 归属、直接阻塞点与反证，不能仅凭 trace 定根因。",
         "- `[DEADLOCK_LIKELY / medium / warning]` = 环存在但部分节点不在 Blocked，建议跨 trace 复核再下结论。",
         "- `[DEADLOCK_SELF / medium / warning]` = 同一线程等待自己已持有的锁，多见于 reentrant / unmatched unlock。",
         "- `[LOCK_OWNER_BLOCKED / strong / warning]` = 链式阻塞（≥2 跳但未成环），先解链末端 owner，链上其它锁会依次释放。",
@@ -1655,7 +1700,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "  - `MAIN_RENDER_WAIT_FENCE` = 主线程在 ThreadedRenderer 同步 GPU 帧 / 等 fence。",
         "  - 一条主线程可同时命中多个 MAIN_* hint，没有互斥要求；按 confidence 优先级综合。",
         "- 若分组下有 `### AnrManager Summary` 小节，里面的 `Reason` / `Load` / `PSI memory|cpu|io` / `CPU TOTAL` / `CPU >90% processes` / `Top CPU processes` 是 AOSP 端权威字段，比从 trace 自由推断更可靠：",
-        "  - AnrManager 负载归因顺序必须是：先看 `Load` 与 PSI 判断系统 CPU/IO/内存压力；再看 `CPU TOTAL`/`iowait`，若 `CPU TOTAL >=90%` 必须标记**整机/任务负载重**；再列出所有 `CPU >90% processes`。若这些进程包含目标包，必须明确标记为**目标应用自身极高负载**并联动目标包 meminfo/ANR metadata/PSI/GC/LMK/OOM 证据；若目标包 CPU `>85%`（例如 114%），即使 TOTAL 未到 90%，也要明确标记为**应用自身负载过高**。若 PSS/RSS/Anon RSS 偏高或 trace 出现 GC 等待，应把它归为应用负载问题，**大概率为内存泄漏或内存膨胀导致的 GC/分配抖动**（仍需 heap/GC 证据最终确认）。若其它进程 `>90%` 或高负载，则同样检查该进程内存/IO 证据，并把它归为外部系统压力或跨进程影响候选。",
+        "  - AnrManager 负载归因顺序必须是：先看 `Load` 与 PSI 判断系统 CPU/IO/内存压力；再看 `CPU TOTAL`/`iowait`，若 `CPU TOTAL >=90%` 必须标记**整机/任务负载重**；再列出所有 `CPU >90% processes`。若这些进程包含目标包，必须明确标记为**目标应用自身极高负载**并联动目标包 meminfo/ANR metadata/PSI/GC/LMK/OOM 证据；若目标包 CPU `>85%`（例如 114%），即使 TOTAL 未到 90%，也要明确标记为**应用自身负载过高**。CPU/RSS 偏高或一次 GC 等待不能单独证明内存泄漏，也不能证明其导致了本次 ANR；只作为资源压力线索，须以连续 heap/GC 趋势和 retained-object 证据验证机制。若其它进程 `>90%` 或高负载，则同样检查该进程内存/IO 证据，并把它归为外部系统压力或跨进程影响候选。",
         "  - 没有目标包/其它高负载进程的内存证据时，不能直接下“内存泄漏”或“OOM”结论，只能标记为待确认缺口。",
         "  - `[ANR_REASON_CLASSIFIED]` 的 `anrType` 字段是 AOSP 给出的 ANR 类型，应作为分析分支判定的首选依据。",
         "  - `[SYSTEM_CPU_SATURATED / strong / warning]` 出现时，主线程「卡」更可能是被调度饿死，而非应用代码问题。",
@@ -1767,7 +1812,8 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "- `primaryRootCauseHintId` 必须引用 `### Deadlock Detection` 或 `### Trace Hints` 或 `### AnrManager 摘要` 中真实出现过的 hint id；若证据不足请置为 `null`。",
         "- `supportingHintIds` 列表中的元素必须出现在本上下文中。",
         "- `candidateChains[*].confidence` 必须按照本上下文标注（critical/strong/weak），如果你下调了某 hint 的可信度请显式说明。",
-        "- `finalJudgment / notRootCauseYet / requiresHumanConfirmation` 三个字段保持上述默认值（保守策略），除非证据极其充分。",
+        "- `finalJudgment=false / notRootCauseYet=true / requiresHumanConfirmation=true` 为固定保守契约，不得因证据或 hint 置信度提升而修改。",
+        "- `contextEvidence` 仅是未通过身份/时间门禁的背景线索；`corroboratingEvidence` 仅支持 hint，不自动证明 ANR 根因。lineIndex 属于传入的过滤视图，不是原始文件字节引用。",
         "",
         "## 完整性摘要",
         *completeness_summary,

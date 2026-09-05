@@ -26,6 +26,7 @@ from .ai_context import AiContextOptions, AiContextResult, build_ai_context
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .context_flooding import TruncationConfig, truncate_evidence
 from .entity_linker import EntityMap, build_entity_map, entity_summary_for_ai
+from .log_identity import parse_line_identity
 from .evidence_slice import (
     EvidenceSlice,
     annotate_slices_with_tags,
@@ -436,10 +437,48 @@ MANAGER_SYSTEM_PROMPT = """你是一个 Android ANR 根因分析的总协调专�
 如果不需要 re-probe，设置 reProbeRequest 为 null。"""
 
 
+def _group_entity_maps(package: dict[str, Any], groups: list[dict[str, Any]]) -> dict[str, EntityMap]:
+    """Keep each selected dump and filtered source view in its ANR scope.
+
+    Pass the full trace to the resolver so compaction cannot discard thread
+    identities. Unmapped kernel clocks are not borrowed into a group map.
+    These maps are inventories, not a substitute for dump-quality validation.
+    """
+    maps: dict[str, EntityMap] = {}
+    for group in groups:
+        if group["id"] in maps:
+            raise ValueError(f"Cannot resolve duplicate ANR group id: {group['id']}")
+        metadata = group.get("trace", {}).get("metadata") or {}
+        anchor = group.get("anchor") or {}
+        anchor_pids = parse_line_identity(anchor.get("line", "")).target_pids
+        if ((anchor.get("packageName") and anchor["packageName"] != metadata.get("processName"))
+                or (anchor_pids and anchor_pids != (str(metadata.get("pid")),))):
+            metadata = {}  # Do not attribute a mismatched selected dump to the target.
+        scoped_package = {
+            "package_id": str(package.get("package_id", "unknown")),
+            "sources": {
+                "trace": package.get("sources", {}).get("trace", {}),
+                "event_log": {"content": "\n".join(group.get("eventLog", {}).get("lines", []))},
+                "logcat": {"content": "\n".join(group.get("logcat", {}).get("lines", []))},
+            },
+        }
+        maps[group["id"]] = build_entity_map(scoped_package, trace_preprocessed=metadata)
+    return maps
+
+
+def _render_entity_maps(entity_map: EntityMap | dict[str, EntityMap]) -> str:
+    if isinstance(entity_map, EntityMap):
+        return entity_summary_for_ai(entity_map)
+    return "\n\n".join(
+        entity_summary_for_ai(value).replace("## Entity Map", f"## Entity Map — {group_id}", 1)
+        for group_id, value in entity_map.items()
+    )
+
+
 def _build_sub_agent_prompt(
     spec: SubAgentSpec,
     slices: list[EvidenceSlice],
-    entity_map: EntityMap | None,
+    entity_map: EntityMap | dict[str, EntityMap] | None,
 ) -> str:
     """Build the user prompt for a sub-agent from focused evidence slices."""
     grouped = group_slices_by_source(slices)
@@ -459,12 +498,12 @@ def _build_sub_agent_prompt(
         for s in source_slices:
             tag_info = f" [{s.tag}]" if s.tag else ""
             delta_info = f" (Δ{s.delta_t_seconds:.1f}s)" if s.delta_t_seconds is not None else ""
-            lines.append(f"{s.content}{tag_info}{delta_info}")
+            lines.append(f"[group={s.group_id or 'unknown'}] {s.content}{tag_info}{delta_info}")
         lines.append("```")
         lines.append("")
 
     if entity_map:
-        lines.append(entity_summary_for_ai(entity_map))
+        lines.append(_render_entity_maps(entity_map))
         lines.append("")
 
     lines.append("## 要求")
@@ -623,7 +662,7 @@ def run_ai_agent_analysis(
         event_tags=frozenset(strategy.event_tags),
         logcat_patterns=frozenset(strategy.logcat_patterns),
     )
-    entity_map = build_entity_map(package)
+    entity_map = _group_entity_maps(package, groups)
 
     # Apply context flooding prevention
     trunc_result = truncate_evidence(slices, agent_cfg.truncation)
@@ -719,7 +758,7 @@ def run_ai_agent_analysis(
 def _build_manager_prompt(
     sub_results: dict[str, AgentTurn],
     groups: list[dict[str, Any]],
-    entity_map: EntityMap | None,
+    entity_map: EntityMap | dict[str, EntityMap] | None,
     strategy: AnrTypeStrategy,
 ) -> str:
     """Build the user prompt for the manager agent."""
@@ -745,7 +784,7 @@ def _build_manager_prompt(
 
     # Entity map
     if entity_map:
-        lines.append(entity_summary_for_ai(entity_map))
+        lines.append(_render_entity_maps(entity_map))
         lines.append("")
 
     # Group summary

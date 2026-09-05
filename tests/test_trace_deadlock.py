@@ -409,7 +409,7 @@ class CrossProcessDeadlockTests(unittest.TestCase):
 
 
 class CrossTraceConsistencyTests(unittest.TestCase):
-    """Phase C — multi-trace cycle consistency upgrades to CONFIRMED."""
+    """Phase C — identity-bound multi-trace cycles can be corroborated."""
 
     @staticmethod
     def _two_thread_cycle_trace(*, ts: str) -> str:
@@ -424,12 +424,17 @@ class CrossTraceConsistencyTests(unittest.TestCase):
             '  - locked <0xAAAA> (a LB)',
         ])
 
-    def test_two_consistent_traces_produce_confirmed_hint(self) -> None:
+    def test_two_consistent_traces_produce_corroborated_hint(self) -> None:
         traces = [
             self._two_thread_cycle_trace(ts="0.000"),
             self._two_thread_cycle_trace(ts="2.000"),
         ]
-        report = consolidate_deadlock_across_traces(traces)
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:01.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+        )
         self.assertEqual(report["traceCount"], 2)
         self.assertEqual(len(report["consistentCycles"]), 1)
         cycle = report["consistentCycles"][0]
@@ -438,9 +443,179 @@ class CrossTraceConsistencyTests(unittest.TestCase):
         self.assertEqual(cycle["occurrences"], 2)
         self.assertEqual(len(report["upgradedHints"]), 1)
         upgraded = report["upgradedHints"][0]
-        self.assertEqual(upgraded["id"], "DEADLOCK_CYCLE_CONFIRMED")
-        self.assertEqual(upgraded["confidence"], "confirmed")
+        self.assertEqual(upgraded["id"], "DEADLOCK_CYCLE_CORROBORATED")
+        self.assertEqual(upgraded["confidence"], "strong")
         self.assertEqual(upgraded["severity"], "critical")
+        self.assertTrue(upgraded["requiresHumanConfirmation"])
+        self.assertNotIn("不再需要进一步复核", upgraded["message"])
+        self.assertNotIn("不再需要进一步复核", " ".join(upgraded["nextActions"]))
+
+    def test_same_tid_cycle_from_wrong_pid_is_not_upgraded(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="2.000").replace("pid 100", "pid 200"),
+        ]
+
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:01.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+        )
+
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertEqual(len(report["cycleObservations"]), 2)
+        self.assertIn("wrong_pid", {item["status"] for item in report["cycleObservations"]})
+
+    def test_same_pid_parent_and_subprocess_are_distinct_processes(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="2.000").replace(
+                "Cmd line: com.demo", "Cmd line: com.demo:remote"
+            ),
+        ]
+
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:01.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+        )
+
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertIn("wrong_process", {
+            item["status"] for item in report["cycleObservations"]
+        })
+
+    def test_same_tid_cycle_outside_anchor_window_is_not_upgraded(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="9.000"),
+        ]
+
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:00.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+        )
+
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertIn(
+            "outside_anchor_window",
+            {item["status"] for item in report["cycleObservations"]},
+        )
+        self.assertNotIn("stale", {item["status"] for item in report["cycleObservations"]})
+
+    def test_anchor_window_and_sampling_interval_are_independent(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="9.000"),
+        ]
+
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:04.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+            max_dump_distance_seconds=10.0,
+            max_sampling_interval_seconds=3.0,
+        )
+
+        self.assertEqual(
+            {item["status"] for item in report["dumpIdentities"]},
+            {"eligible"},
+        )
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertEqual(
+            {item["status"] for item in report["cycleObservations"]},
+            {"outside_sampling_interval"},
+        )
+
+    def test_late_third_dump_does_not_invalidate_nearby_corroborating_pair(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="2.000"),
+            self._two_thread_cycle_trace(ts="9.000"),
+        ]
+
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:04.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+            max_dump_distance_seconds=10.0,
+            max_sampling_interval_seconds=3.0,
+        )
+
+        self.assertEqual(report["consistentCycles"][0]["traceIndices"], [0, 1])
+        self.assertEqual(report["upgradedHints"][0]["traceIndices"], [0, 1])
+        observations = {item["traceIndex"]: item for item in report["cycleObservations"]}
+        self.assertEqual(observations[2]["status"], "outside_sampling_interval")
+
+    def test_invalid_windows_are_rejected(self) -> None:
+        trace = self._two_thread_cycle_trace(ts="0.000")
+        for value in (-1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(parameter="max_dump_distance_seconds", value=value):
+                with self.assertRaises(ValueError):
+                    consolidate_deadlock_across_traces(
+                        [trace], max_dump_distance_seconds=value
+                    )
+            with self.subTest(parameter="max_sampling_interval_seconds", value=value):
+                with self.assertRaises(ValueError):
+                    consolidate_deadlock_across_traces(
+                        [trace], max_sampling_interval_seconds=value
+                    )
+
+    def test_same_tids_with_different_lock_objects_are_separate_observations(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="2.000").replace("0xAAAA", "0xCCCC"),
+        ]
+
+        report = consolidate_deadlock_across_traces(
+            traces,
+            anchor_timestamp="04-12 10:00:01.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+        )
+
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertEqual(len(report["cycleObservations"]), 2)
+        self.assertNotEqual(
+            report["cycleObservations"][0]["edges"],
+            report["cycleObservations"][1]["edges"],
+        )
+
+    def test_duplicate_tid_cycle_without_anr_identity_is_only_observed(self) -> None:
+        traces = [
+            self._two_thread_cycle_trace(ts="0.000"),
+            self._two_thread_cycle_trace(ts="2.000"),
+        ]
+
+        report = consolidate_deadlock_across_traces(traces)
+
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertEqual(len(report["cycleObservations"]), 2)
+        self.assertEqual(
+            {item["status"] for item in report["cycleObservations"]},
+            {"unknown_anr_identity"},
+        )
+
+    def test_duplicate_dump_timestamp_is_not_a_second_observation(self) -> None:
+        trace = self._two_thread_cycle_trace(ts="0.000")
+
+        report = consolidate_deadlock_across_traces(
+            [trace, trace],
+            anchor_timestamp="04-12 10:00:00.000",
+            anr_pid="100",
+            anr_process_name="com.demo",
+        )
+
+        self.assertEqual(report["upgradedHints"], [])
+        self.assertIn("duplicate_dump_timestamp", {
+            item["status"] for item in report["cycleObservations"]
+        })
 
     def test_inconsistent_traces_do_not_upgrade(self) -> None:
         """Cycle in trace 0 (1↔2) is gone in trace 1 (only worker still blocked) → not consistent."""
@@ -465,6 +640,13 @@ class CrossTraceConsistencyTests(unittest.TestCase):
         self.assertEqual(report["traceCount"], 0)
         self.assertEqual(report["consistentCycles"], [])
         self.assertEqual(report["upgradedHints"], [])
+
+    def test_single_dump_hint_does_not_offer_confirmed_upgrade(self) -> None:
+        result = preprocess_trace_content(self._two_thread_cycle_trace(ts="0.000"))
+        hint = next(item for item in result["deadlockHints"] if item["id"] == "DEADLOCK_CYCLE")
+
+        self.assertNotIn("CONFIRMED_DEADLOCK", " ".join(hint["nextActions"]))
+        self.assertIn("CORROBORATED", " ".join(hint["nextActions"]))
 
 
 class HintMarkerInjectionTests(unittest.TestCase):

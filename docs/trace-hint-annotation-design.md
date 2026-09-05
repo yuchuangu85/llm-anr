@@ -433,10 +433,13 @@ for tid in topological_order(G):
 
 **单帧 trace 是「快照」，存在采样误差**。MTK 工程实践要求：
 
-> 若同一次 ANR 抓到 ≥2 份 trace（间隔 1–3s），且锁图环路在两份 trace 中**节点集合一致**，则可定级为 `CONFIRMED_DEADLOCK`；只有 1 份 trace，最高定级为 `DEADLOCK_CYCLE` (strong) — 字面意义已经成立，但工程上仍鼓励复核。
+> 若同一次 ANR 抓到 ≥2 份 trace，且参与 corroboration 的 dump 均通过 PID、精确进程名、ANR 锚点归属窗口门禁，在允许的多 dump 采样间隔内出现**相同 TID、相同有向锁边和相同锁对象**，则可输出 `DEADLOCK_CYCLE_CORROBORATED`。它表示跨采样旁证（strong），不是 `CONFIRMED_DEADLOCK`，仍须人工核对 trigger、主线程直接阻塞点、栈与反证。
 
 实现上：
-- `replay/` 目录已支持多次 dump 比对；可在 Phase 5 增加 `lock_graph_consistency_check(trace_a, trace_b)`，命中后把 `confidence` 升级为 `confirmed`，并在 hint 上注明 `consistency_passed=true`。
+- `consolidate_deadlock_across_traces(...)` 保留每个 dump 的 `cycleObservations`，门禁失败只阻止 corroboration，不删除单 dump 的原始锁图或 hint。
+- `max_dump_distance_seconds` 是 dump 与 ANR anchor 的**归属检索窗口**；`max_sampling_interval_seconds` 是参与 corroboration 的 dump 之间的**采样跨度**。后者省略时沿用前者的值以保持旧调用行为；两个值都必须是有限非负数。
+- `outside_anchor_window` 只表示超出调用方配置的归属窗口，`outside_sampling_interval` 只表示未进入有效的多 dump 采样簇；二者都不证明文件/版本“陈旧”。只有外部来源提供可验证的新旧关系时，才可另行声明 freshness/staleness。
+- 兼容迁移：调用方可继续只传 `max_dump_distance_seconds`；需要不同归属范围和采样节奏时，应显式传 `max_sampling_interval_seconds`。消费端应从旧 `DEADLOCK_CYCLE_CONFIRMED` / `confidence=confirmed` 迁移到 `DEADLOCK_CYCLE_CORROBORATED` / `confidence=strong` / `evidenceStatus=corroborated`，并保留 `requiresHumanConfirmation=true`。
 
 #### G. 旁证（提升置信度但非必需）
 
@@ -646,7 +649,7 @@ priority = (
 | `LOCK_OWNER_SLEEPING` | main_block | strong | `_emit_deadlock_hints` | `eval_lock_owner_sleeping.json` |
 | `LOCK_CONTENTION_BLOCKED` | main_block | strong | `_emit_deadlock_hints` | （文档预留） |
 | `CROSS_PROCESS_DEADLOCK_SUSPECTED` | binder | weak | `_emit_deadlock_hints` | （文档预留：需 binder_wait_reply + 本地死锁组合） |
-| `DEADLOCK_CYCLE_CONFIRMED` | main_block | critical | `consolidate_deadlock_across_traces` | （需 ≥2 trace dump） |
+| `DEADLOCK_CYCLE_CORROBORATED` | main_block | strong（severity=critical，仍需人工确认） | `consolidate_deadlock_across_traces` | `tests/test_trace_deadlock.py::CrossTraceConsistencyTests`（需 ≥2 份同归属、同锁边/对象且采样间隔合格的 trace dump） |
 
 ### 10.2 NativePollOnce 真假判定（trace_preprocessor.py）
 

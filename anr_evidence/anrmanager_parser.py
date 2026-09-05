@@ -302,12 +302,10 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
     if anr_package:
         anr_process = next((proc for proc in top_processes if proc.get("processName") == anr_package), None)
-        # Target-process overload: when the ANR process itself is above 85%,
-        # even a non-saturated TOTAL line should be treated as an app-side load
-        # problem first.  The next mandatory step is to correlate target
-        # PSS/RSS/heap/GC evidence; high app CPU plus high app memory is a
-        # strong memory-leak / memory-bloat candidate, not merely generic
-        # scheduler pressure.
+        # Target-process overload is an app-side pressure clue. CPU, PSS and
+        # RSS are aggregate observations; even when all are high they do not
+        # establish retained-object growth or a memory leak without heap/GC
+        # trend evidence.
         if anr_process and anr_process.get("totalPct", 0) > 90:
             hints.append({
                 "id": "ANR_PROCESS_CPU_CRITICAL",
@@ -318,6 +316,8 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
                 "thresholdPct": 90,
                 "process": anr_process,
                 "requiresMemoryCorrelation": True,
+                "evidenceStatus": "pressure_clue",
+                "requiresHumanConfirmation": True,
                 "suspectedIssue": "target_process_critical_load",
                 "message": (
                     f"目标进程 {anr_package} CPU={anr_process['totalPct']}% (>90%)："
@@ -339,18 +339,20 @@ def _derive_hints(summary: dict[str, Any]) -> list[dict[str, Any]]:
                 "thresholdPct": 85,
                 "process": anr_process,
                 "requiresMemoryCorrelation": True,
-                "suspectedIssue": "app_load_high_possible_memory_leak",
+                "evidenceStatus": "pressure_clue",
+                "requiresHumanConfirmation": True,
+                "suspectedIssue": "app_load_high",
                 "message": (
                     f"目标进程 {anr_package} CPU={anr_process['totalPct']}% (>85%)："
                     "应用自身负载过高。必须结合目标包 meminfo/ANR metadata/GC 证据；"
-                    "若同时存在 PSS/RSS/Anon RSS 偏高或 GC 等待，应判为应用负载问题，"
-                    "大概率为内存泄漏或内存膨胀导致的 GC/分配抖动。"
+                    "CPU 与 PSS/RSS/Anon RSS 即使同时偏高也只能支持资源压力线索，"
+                    "不能单独证明内存泄漏或其导致了本次 ANR。"
                 ),
                 "wikiRefs": ["wiki/AnrManager.md"],
                 "nextActions": [
                     "查看目标进程 trace 中 main/RenderThread/高 CPU 线程的栈，确认是否 GC/分配或 busy loop",
-                    "进入 meminfo 跟进目标进程 PSS/RSS/heap/Anon RSS；高内存时优先按内存泄漏/内存膨胀方向排查",
-                    "抓取 HProf、GC log、heap histogram 验证泄漏对象或大对象分配来源",
+                    "进入 meminfo 跟进目标进程 PSS/RSS/heap/Anon RSS，明确它们仅是压力观测",
+                    "抓取连续 heap/GC 趋势、HProf 或 heap histogram，验证是否存在 retained-object 增长",
                 ],
             })
 

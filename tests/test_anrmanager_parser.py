@@ -102,9 +102,10 @@ class AnrManagerParserTests(unittest.TestCase):
         self.assertIsNotNone(app_hint)
         self.assertEqual(app_hint["thresholdPct"], 85)
         self.assertTrue(app_hint["requiresMemoryCorrelation"])
-        self.assertEqual(app_hint["suspectedIssue"], "app_load_high_possible_memory_leak")
+        self.assertEqual(app_hint["suspectedIssue"], "app_load_high")
         self.assertIn("应用自身负载过高", app_hint["message"])
-        self.assertIn("内存泄漏", app_hint["message"])
+        self.assertNotIn("大概率为内存泄漏", app_hint["message"])
+        self.assertIn("不能单独证明内存泄漏", app_hint["message"])
 
     def test_target_cpu_over_85_in_two_pid_threadtime_marks_app_load_high(self) -> None:
         lines = [
@@ -124,7 +125,24 @@ class AnrManagerParserTests(unittest.TestCase):
         self.assertEqual(app_hint["process"]["totalPct"], 114.0)
         self.assertEqual(app_hint["process"]["processName"], "com.tcl.android.launcher")
         self.assertIn("CPU=114.0% (>85%)", app_hint["message"])
-        self.assertIn("大概率为内存泄漏或内存膨胀", app_hint["message"])
+        self.assertIn("不能单独证明内存泄漏", app_hint["message"])
+
+    def test_cpu_and_rss_followup_are_pressure_clues_not_memory_leak_proof(self) -> None:
+        lines = [
+            "04-22 02:34:38.785  1485  7148 I AnrManager: ANR in com.demo, time=17659496",
+            "04-22 02:34:38.785  1485  7148 I AnrManager:   114% 6039/com.demo: 92% user + 22% kernel",
+            "04-22 02:34:38.785  1485  7148 I AnrManager: 72% TOTAL: 43% user + 26% kernel",
+        ]
+
+        summary = parse_anrmanager_block(lines)
+        hint = _hint(summary, "ANR_PROCESS_CPU_HIGH")
+
+        self.assertIsNotNone(hint)
+        self.assertEqual(hint["evidenceStatus"], "pressure_clue")
+        self.assertTrue(hint["requiresHumanConfirmation"])
+        rendered = " ".join([hint["message"], *hint["nextActions"]])
+        self.assertNotIn("大概率为内存泄漏", rendered)
+        self.assertIn("heap", rendered.lower())
 
     def test_processes_over_90_are_collected_and_target_gets_critical_hint(self) -> None:
         lines = [

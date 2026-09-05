@@ -188,6 +188,62 @@ class SubAgentDispatchTests(unittest.TestCase):
 
 
 class AgentIntegrationTests(unittest.TestCase):
+    def test_ambiguous_group_ids_fail_before_sending_any_prompt(self) -> None:
+        package = {"provided_type": "input_dispatching_timeout", "sources": {
+            "event_log": {"content": "\n".join([
+                "2026-04-12 10:00:05.000 I am_anr: [0,456,com.first,1,Input dispatching timed out]",
+                "2026-04-12 10:00:05.000 I am_anr: [0,789,com.second,1,Input dispatching timed out]",
+            ])},
+        }}
+        response = json.dumps({"content": [{"type": "text", "text": self.MOCK_MANAGER_RESPONSE}]}).encode()
+        config = ProviderConfig(kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key")
+        with patch("urllib.request.urlopen", side_effect=self._make_mock_urlopen([response])) as http:
+            with self.assertRaisesRegex(ValueError, "duplicate ANR group"):
+                run_ai_agent_analysis(package, provider_config=config,
+                                      agent_config=AgentConfig(provider=config, max_iterations=1))
+        http.assert_not_called()
+
+    def test_actual_provider_prompts_keep_selected_entity_maps_per_anr(self) -> None:
+        trace_lines = []
+        for timestamp, pid, tid, process in (
+            ("09:00:00", 123, 321, "com.other"),
+            ("10:00:05", 456, 654, "com.first"),
+            ("10:01:05", 789, 987, "com.second"),
+        ):
+            trace_lines.extend([
+                f"----- pid {pid} at 2026-04-12 {timestamp} -----",
+                f"Cmd line: {process}", '"main" prio=5 tid=1 Native',
+                f" | sysTid={tid}", " at example.Work.run(Work.java:1)",
+            ])
+        package = {"provided_type": "input_dispatching_timeout", "sources": {
+            "trace": {"content": "\n".join(trace_lines)},
+            "event_log": {"content": "\n".join([
+                "2026-04-12 10:00:05.000 I am_anr: [0,456,com.first,1,Input dispatching timed out] uid=101",
+                "2026-04-12 10:01:05.000 I am_anr: [0,789,com.second,1,Input dispatching timed out] uid=202",
+            ])},
+        }}
+        response = json.dumps({"content": [{"type": "text", "text": self.MOCK_MANAGER_RESPONSE}]}).encode()
+        config = ProviderConfig(kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key")
+        with patch("urllib.request.urlopen", side_effect=self._make_mock_urlopen([response])) as http:
+            run_ai_agent_analysis(package, provider_config=config,
+                                  agent_config=AgentConfig(provider=config, max_iterations=1))
+        self.assertEqual(http.call_count, 4)
+        for call in http.call_args_list:
+            prompt = json.loads(call.args[0].data)["messages"][-1]["content"]
+            for group, process, pid, tid, uid, other_pid in (
+                ("anr-20260412-100005-000", "com.first", "456", "654", "101", "789"),
+                ("anr-20260412-100105-000", "com.second", "789", "987", "202", "456"),
+            ):
+                heading = f"## Entity Map — {group}\n"
+                self.assertIn(heading, prompt)
+                section = prompt.split(heading, 1)[1].split("\n## ", 1)[0]
+                self.assertIn(f"- Process: `{process}`", section)
+                self.assertIn(f"- PIDs: ['{pid}']", section)
+                self.assertIn(f"- TIDs: ['{tid}']", section)
+                self.assertIn(f"- UIDs: ['{uid}']", section)
+                self.assertNotIn(other_pid, section)
+                self.assertNotIn("com.other", section)
+
     MOCK_CPU_RESPONSE = json.dumps({
         "findings": [{"category": "memory_pressure", "confidence": "medium", "summary": "moderate memory pressure", "anr_relevance": "may amplify blocking"}],
         "overall_assessment": "moderate pressure"

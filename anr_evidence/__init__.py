@@ -24,7 +24,7 @@ from .root_cause_hints import (
     merge_root_cause_pattern_hints,
     root_cause_hint_details,
 )
-from .cross_source_fusion import fuse_cross_source_evidence
+from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
 from .pattern_catalog import MAIN_THREAD_PATTERN_CATALOG, evaluate_main_thread_patterns
 from .context_flooding import TruncationConfig, TruncationResult, truncate_evidence, truncation_stats_text
 from .pipeline import PipelineError, payload_phase, run_until
@@ -136,6 +136,7 @@ __all__ = [
     "evaluate_main_thread_patterns",
     # cross_source_fusion
     "fuse_cross_source_evidence",
+    "FusionScope",
     # context_flooding
     "TruncationConfig",
     "TruncationResult",

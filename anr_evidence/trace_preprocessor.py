@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import re
 from typing import Any
 
@@ -1015,7 +1016,7 @@ def _emit_deadlock_hints(
                 ],
                 "nextActions": [
                     "按环顺序追溯各 tid 的 Java 栈，定位加锁顺序冲突",
-                    "在另一份 trace dump 上复核以升级为 CONFIRMED_DEADLOCK",
+                    "在同一 ANR 归属与采样间隔门禁内，用另一份 trace dump 复核为 CORROBORATED",
                 ],
             })
         else:
@@ -1183,74 +1184,218 @@ def consolidate_deadlock_across_traces(
     trace_contents: list[str],
     *,
     anchor_timestamp: str | None = None,
+    anr_pid: str | int | None = None,
+    anr_process_name: str | None = None,
+    max_dump_distance_seconds: float = 3.0,
+    max_sampling_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Cross-trace consistency check for deadlock cycles (MTK SOP).
+    """Corroborate deadlock cycles across identity-bound, nearby dumps.
 
-    A single trace is a sampling snapshot, so even a perfect ``DEADLOCK_CYCLE``
-    is technically a single observation. When ANR collection captures ≥2
-    traces 1–3s apart, this helper runs ``preprocess_trace_content`` on each,
-    compares the cycle node-sets, and emits a ``DEADLOCK_CYCLE_CONFIRMED``
-    hint for any cycle whose tid-set appears in ≥2 of the traces.
+    A tid is process-local and reusable. Matching lock cycles therefore count
+    as corroboration only when the contributing dumps match the ANR
+    pid/process, fall within the configured anchor-association window, and are
+    sampled close enough to each other. This is an attribution gate, not proof
+    that a dump is the newest available version. Raw per-dump observations are
+    retained when a gate fails.
+
+    ``max_dump_distance_seconds`` remains the anchor-association window for
+    compatibility. ``max_sampling_interval_seconds`` independently controls
+    the span between corroborating samples; when omitted it inherits the
+    former value to preserve prior call behavior.
 
     Returns a structured report — does NOT mutate any trace's own hints.
     """
+
+    _validate_nonnegative_finite_seconds(
+        "max_dump_distance_seconds", max_dump_distance_seconds
+    )
+    sampling_interval_seconds = (
+        max_dump_distance_seconds
+        if max_sampling_interval_seconds is None
+        else max_sampling_interval_seconds
+    )
+    _validate_nonnegative_finite_seconds(
+        "max_sampling_interval_seconds", sampling_interval_seconds
+    )
 
     if not trace_contents:
         return {
             "traceCount": 0,
             "perTraceLockGraphs": [],
             "perTraceDeadlockHints": [],
+            "dumpIdentities": [],
+            "cycleObservations": [],
             "consistentCycles": [],
             "upgradedHints": [],
         }
 
     per_trace = [
-        preprocess_trace_content(content, anchor_timestamp=anchor_timestamp)
+        preprocess_trace_content(
+            content,
+            anchor_timestamp=anchor_timestamp,
+            process_name=anr_process_name,
+        )
         for content in trace_contents
     ]
     per_trace_graphs = [t.get("lockGraph") for t in per_trace]
     per_trace_hints = [t.get("deadlockHints", []) or [] for t in per_trace]
 
-    occurrence_index: dict[tuple[frozenset[str], bool], list[int]] = {}
+    anchor_dt = _parse_timestamp(anchor_timestamp)
+    expected_pid = str(anr_pid) if anr_pid is not None else None
+    dump_identities: list[dict[str, Any]] = []
+    for trace_index, (content, trace_result) in enumerate(zip(trace_contents, per_trace)):
+        lines = [line for line in content.splitlines() if line.strip()]
+        sections = split_trace_sections(lines)
+        selected_index = trace_result.get("selectedSectionIndex")
+        selected_section = (
+            sections[selected_index]
+            if isinstance(selected_index, int) and 0 <= selected_index < len(sections)
+            else lines
+        )
+        dump_dt = next(
+            (_extract_timestamp(line) for line in selected_section if _extract_timestamp(line) is not None),
+            None,
+        )
+        pid = trace_result.get("pid")
+        process_name = trace_result.get("processName")
+        status = "eligible"
+        if expected_pid is None or not anr_process_name:
+            status = "unknown_anr_identity"
+        elif pid != expected_pid:
+            status = "wrong_pid"
+        elif not _same_process_identity(process_name, anr_process_name):
+            status = "wrong_process"
+        elif anchor_dt is None or dump_dt is None:
+            status = "missing_timestamp"
+        elif abs((dump_dt - anchor_dt).total_seconds()) > max_dump_distance_seconds:
+            status = "outside_anchor_window"
+        dump_identities.append({
+            "traceIndex": trace_index,
+            "pid": pid,
+            "processName": process_name,
+            "timestamp": _timestamp_to_raw(dump_dt) if dump_dt else None,
+            "status": status,
+        })
+
+    occurrence_index: dict[
+        tuple[frozenset[str], bool, tuple[tuple[str, str, str | None], ...]],
+        list[int],
+    ] = {}
+    cycle_observations: list[dict[str, Any]] = []
+    seen_cycle_samples: set[
+        tuple[
+            frozenset[str],
+            bool,
+            tuple[tuple[str, str, str | None], ...],
+            str | None,
+            str | None,
+            str | None,
+        ]
+    ] = set()
     for trace_index, trace_result in enumerate(per_trace):
         graph = trace_result.get("lockGraph") or {}
         for cycle in graph.get("cycles", []) or []:
             tid_set = frozenset(cycle.get("tids", []) or [])
             if not tid_set:
                 continue
-            key = (tid_set, bool(cycle.get("selfLoop", False)))
+            edge_signature = _cycle_edge_signature(graph, tid_set)
+            observation_edges = [
+                {
+                    "waiterTid": waiter_tid,
+                    "ownerTid": owner_tid,
+                    "lockObject": lock_object,
+                }
+                for waiter_tid, owner_tid, lock_object in edge_signature
+            ]
+            identity = dump_identities[trace_index]
+            observation = {
+                "traceIndex": trace_index,
+                "tids": sorted(tid_set, key=_tid_sort_key),
+                "selfLoop": bool(cycle.get("selfLoop", False)),
+                "edges": observation_edges,
+                "pid": identity["pid"],
+                "processName": identity["processName"],
+                "timestamp": identity["timestamp"],
+                "status": identity["status"],
+            }
+            cycle_observations.append(observation)
+            if identity["status"] != "eligible":
+                continue
+            key = (tid_set, bool(cycle.get("selfLoop", False)), edge_signature)
+            sample_key = (
+                key[0],
+                key[1],
+                key[2],
+                identity["pid"],
+                identity["processName"],
+                identity["timestamp"],
+            )
+            if sample_key in seen_cycle_samples:
+                observation["status"] = "duplicate_dump_timestamp"
+                continue
+            seen_cycle_samples.add(sample_key)
             occurrence_index.setdefault(key, []).append(trace_index)
 
     consistent_cycles: list[dict[str, Any]] = []
     upgraded_hints: list[dict[str, Any]] = []
-    for (tid_set, self_loop), indices in occurrence_index.items():
+    for (tid_set, self_loop, edge_signature), indices in occurrence_index.items():
         unique_indices = sorted(set(indices))
         if len(unique_indices) < 2:
+            continue
+        corroborating_indices = _largest_sampling_cluster(
+            unique_indices,
+            dump_identities,
+            sampling_interval_seconds,
+        )
+        if len(corroborating_indices) < 2:
+            corroborating_indices = []
+        excluded_indices = set(unique_indices) - set(corroborating_indices)
+        for observation in cycle_observations:
+            if (
+                observation["traceIndex"] in excluded_indices
+                and frozenset(observation["tids"]) == tid_set
+                and _observation_edge_signature(observation) == edge_signature
+                and observation["status"] == "eligible"
+            ):
+                observation["status"] = "outside_sampling_interval"
+        if not corroborating_indices:
             continue
         sorted_tids = sorted(tid_set, key=_tid_sort_key)
         consistent_cycles.append({
             "tids": sorted_tids,
             "selfLoop": self_loop,
-            "traceIndices": unique_indices,
-            "occurrences": len(unique_indices),
+            "edges": [
+                {
+                    "waiterTid": waiter_tid,
+                    "ownerTid": owner_tid,
+                    "lockObject": lock_object,
+                }
+                for waiter_tid, owner_tid, lock_object in edge_signature
+            ],
+            "traceIndices": corroborating_indices,
+            "occurrences": len(corroborating_indices),
         })
         upgraded_hints.append({
-            "id": "DEADLOCK_CYCLE_CONFIRMED",
+            "id": "DEADLOCK_CYCLE_CORROBORATED",
             "category": "main_block",
             "severity": "critical",
-            "confidence": "confirmed",
+            "confidence": "strong",
             "scope": "global",
+            "evidenceStatus": "corroborated",
+            "requiresHumanConfirmation": True,
             "tids": sorted_tids,
             "selfLoop": self_loop,
-            "traceIndices": unique_indices,
-            "occurrences": len(unique_indices),
+            "edges": consistent_cycles[-1]["edges"],
+            "traceIndices": corroborating_indices,
+            "occurrences": len(corroborating_indices),
             "message": (
-                f"在 {len(unique_indices)} 份 trace（dump #{unique_indices}）中检测到相同的锁等待环 "
-                f"{sorted_tids}，节点集合一致 → 跨 trace 一致性检查通过，升级为 CONFIRMED_DEADLOCK。"
+                f"在 {len(corroborating_indices)} 份 trace（dump #{corroborating_indices}）中检测到相同的锁等待环 "
+                f"{sorted_tids}；PID、进程、锁边/对象、ANR 归属窗口与多 dump 采样间隔一致，"
+                "支持持续死锁候选，但不证明 dump 版本新鲜度，仍需结合 ANR 触发与栈证据复核。"
             ),
             "wikiRefs": ["wiki/MTK/swt/17.Deadlock.md"],
             "nextActions": [
-                "可作为根因结论提交，不再需要进一步复核",
+                "结合 ANR trigger、主线程直接阻塞点和反证，人工确认该锁环是否构成本次 ANR 根因",
                 "按环顺序追溯各 tid 的 Java 栈，给出加锁顺序冲突的修复建议",
             ],
         })
@@ -1259,9 +1404,97 @@ def consolidate_deadlock_across_traces(
         "traceCount": len(per_trace),
         "perTraceLockGraphs": per_trace_graphs,
         "perTraceDeadlockHints": per_trace_hints,
+        "dumpIdentities": dump_identities,
+        "cycleObservations": cycle_observations,
         "consistentCycles": consistent_cycles,
         "upgradedHints": upgraded_hints,
     }
+
+
+def _validate_nonnegative_finite_seconds(name: str, value: float) -> None:
+    try:
+        valid = math.isfinite(value) and value >= 0
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a finite, non-negative number") from exc
+    if not valid:
+        raise ValueError(f"{name} must be a finite, non-negative number")
+
+
+def _cycle_edge_signature(
+    graph: dict[str, Any],
+    tid_set: frozenset[str],
+) -> tuple[tuple[str, str, str | None], ...]:
+    edges = [
+        (
+            str(edge.get("waiterTid")),
+            str(edge.get("ownerTid")),
+            str(edge["lockObject"]) if edge.get("lockObject") is not None else None,
+        )
+        for edge in graph.get("edges", []) or []
+        if edge.get("waiterTid") in tid_set and edge.get("ownerTid") in tid_set
+    ]
+    return tuple(sorted(
+        edges,
+        key=lambda edge: (
+            _tid_sort_key(edge[0]),
+            _tid_sort_key(edge[1]),
+            edge[2] or "",
+        ),
+    ))
+
+
+def _observation_edge_signature(
+    observation: dict[str, Any],
+) -> tuple[tuple[str, str, str | None], ...]:
+    return tuple(
+        (
+            edge["waiterTid"],
+            edge["ownerTid"],
+            edge.get("lockObject"),
+        )
+        for edge in observation.get("edges", [])
+    )
+
+
+def _largest_sampling_cluster(
+    indices: list[int],
+    dump_identities: list[dict[str, Any]],
+    max_interval_seconds: float,
+) -> list[int]:
+    timestamped = sorted(
+        (
+            (_parse_timestamp(dump_identities[index]["timestamp"]), index)
+            for index in indices
+        ),
+        key=lambda item: item[0] or datetime.min,
+    )
+    if any(timestamp is None for timestamp, _index in timestamped):
+        return []
+
+    best: list[int] = []
+    left = 0
+    for right, (right_timestamp, _right_index) in enumerate(timestamped):
+        assert right_timestamp is not None
+        while left < right:
+            left_timestamp = timestamped[left][0]
+            assert left_timestamp is not None
+            if (right_timestamp - left_timestamp).total_seconds() <= max_interval_seconds:
+                break
+            left += 1
+        candidate = sorted(index for _timestamp, index in timestamped[left:right + 1])
+        if len(candidate) > len(best):
+            best = candidate
+    return best
+
+
+def _same_process_identity(actual: str | None, expected: str) -> bool:
+    """Match one exact Linux process identity; subprocesses stay distinct."""
+
+    if not actual:
+        return False
+    actual_value = actual.strip()
+    expected_value = expected.strip()
+    return actual_value == expected_value
 
 
 def _resolve_owner_thread(threads: list[dict[str, Any]], primary_thread: dict[str, Any] | None) -> dict[str, Any] | None:

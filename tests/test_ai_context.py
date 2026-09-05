@@ -295,8 +295,8 @@ class AiContextTests(unittest.TestCase):
                 'event_log': {
                     'path': 'events.log',
                     'content': '\n'.join([
-                        '04-12 10:00:05.000 am_anr ANR in com.demo first',
-                        '04-12 10:01:05.000 am_anr ANR in com.demo second',
+                        '04-12 10:00:05.000 I am_anr: [0,100,com.demo,1,first]',
+                        '04-12 10:01:05.000 I am_anr: [0,100,com.demo,1,second]',
                     ]),
                 },
                 # One trace section means both ANR anchors share the same
@@ -305,7 +305,7 @@ class AiContextTests(unittest.TestCase):
                 'trace': {
                     'path': 'trace.txt',
                     'content': '\n'.join([
-                        '04-12 10:00:05.100 ----- pid 100 -----',
+                        '04-12 10:01:05.100 ----- pid 100 -----',
                         'Cmd line: com.demo',
                         '"main" prio=5 tid=1 Native',
                         '  | sysTid=100',
@@ -318,7 +318,7 @@ class AiContextTests(unittest.TestCase):
                     'path': 'logcat.txt',
                     'content': '\n'.join([
                         '04-12 10:00:05.000 E InputDispatcher first ANR for com.demo',
-                        '04-12 10:01:04.900 W BinderProxy Slow operation: slow binder transaction took 5000ms for com.demo',
+                        '04-12 10:01:04.900 100 100 W BinderProxy: Slow operation: slow binder transaction took 5000ms for com.demo',
                         '04-12 10:01:05.000 E InputDispatcher second ANR for com.demo',
                     ]),
                 },
