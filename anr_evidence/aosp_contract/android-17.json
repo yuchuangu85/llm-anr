@@ -1,0 +1,85 @@
+{
+  "profileId": "aosp-android-17.0.0_r1-input",
+  "androidRelease": 17,
+  "releaseTag": "android-17.0.0_r1",
+  "sources": {
+    "base": {
+      "repository": "platform/frameworks/base",
+      "revision": "94b4c163b7dfe5ce3607f7bb8456f9573f7de57d",
+      "path": "core/java/com/android/internal/os/TimeoutRecord.java",
+      "sha256": "e2f14dbc125ba7e3d2f5de4f9d8a5bfdaf5980a1a9a4f1013cc8088be3116832",
+      "symbol": "TimeoutRecord.TimeoutKind",
+      "url": "https://android.googlesource.com/platform/frameworks/base/+/94b4c163b7dfe5ce3607f7bb8456f9573f7de57d/core/java/com/android/internal/os/TimeoutRecord.java"
+    },
+    "native": {
+      "repository": "platform/frameworks/native",
+      "revision": "ae266dcb706d083868578cfedce381ef44488a07",
+      "path": "services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "sha256": "4598e3a96e0196a5965be2a4232736ba7e14616c8435b201ab6d394e44b762c9",
+      "symbol": "InputDispatcher::onAnrLocked",
+      "url": "https://android.googlesource.com/platform/frameworks/native/+/ae266dcb706d083868578cfedce381ef44488a07/services/inputflinger/dispatcher/InputDispatcher.cpp"
+    }
+  },
+  "kinds": {
+    "INPUT_DISPATCH_NO_FOCUSED_WINDOW": {
+      "value": 1,
+      "status": "mapped",
+      "trigger": "input.no_focused_window",
+      "ruleId": "aosp17.input.no_focused_window",
+      "sourceRefs": [
+        "base",
+        "native"
+      ]
+    },
+    "INPUT_DISPATCH_WINDOW_UNRESPONSIVE": {
+      "value": 2,
+      "status": "mapped",
+      "trigger": "input.window_unresponsive",
+      "ruleId": "aosp17.input.window_unresponsive",
+      "sourceRefs": [
+        "base",
+        "native"
+      ]
+    },
+    "BROADCAST_RECEIVER": {
+      "value": 3,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "SERVICE_START": {
+      "value": 4,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "SERVICE_EXEC": {
+      "value": 5,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "CONTENT_PROVIDER": {
+      "value": 6,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "APP_REGISTERED": {
+      "value": 7,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "SHORT_FGS_TIMEOUT": {
+      "value": 8,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "JOB_SERVICE": {
+      "value": 9,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    },
+    "APP_START": {
+      "value": 10,
+      "status": "unsupported",
+      "reason": "Producer semantics and recognition not implemented in this increment"
+    }
+  }
+}

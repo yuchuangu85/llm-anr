@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .aosp_contract import resolve_timeout
+
 from .extraction import (
     AnchorCandidate,
     apply_type_template,
@@ -96,6 +98,7 @@ def extract_evidence_package(package: dict[str, Any]) -> dict[str, Any]:
             "fallbackMode": classification["fallback_mode"],
             "rootCausePatternHints": classification.get("root_cause_pattern_hints", []),
             "isSilentAnr": classification.get("is_silent_anr", False),
+            "timeoutOntology": resolve_timeout(normalized),
         },
         "anchors": {
             "primaryAnchor": anchor_summary["primary_anchor"],

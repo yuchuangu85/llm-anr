@@ -1,19 +1,19 @@
 # 未完成任务与验收清单
 
-> 复核日期：2026-09-05；本轮实施前代码基线：`a7a1347`（R2/R1）；摘要基线：`4d266e2`；本提交包含 group ID / S1 首批改动。本文件是当前可版本管理的 backlog。
+> 复核日期：2026-09-05；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`；本提交包含 B1/C1 首批开发增量（待验证）。本文件是当前可版本管理的 backlog。
 > G001、R2、R1 已完成并提交；其余任务按下表区分“未实现”和“已有基础但未完成”，不把局部能力当作整项验收。
 > `存在` 表示已有能力，`优化` 表示补强，`新增` 表示新增能力，`验收` 表示检查；`[x]` 只用于已有或已验证完成的条目。
 
 ## 1. 当前状态总览
 
-**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 18 个已勾选、34 个未勾选条目；复选框同时包含实现与验收，不能把 34 个复选框当成 37 个独立功能。
+**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 18 个已勾选、34 个未勾选条目；复选框同时包含实现与验收，不能把 34 个复选框当成 34 个独立功能。
 
 | 任务 | 当前状态 | 本次核对的剩余缺口 / 证据 |
 | --- | --- | --- |
 | G001 / R2 / R1 | 已完成、已提交 | 摘要已存在；`a7a1347` 包含结构化实体匹配、真实 Agent 按组隔离、完整 selected-trace 库存、scope/conflict 门禁、保守 hint 与回归 |
 | S1 | 首批门禁已实现，整体未完成（P0） | 已有归档预算、默认外发拒绝、合成测试路径敏感标记检查、HTTP 字节/次数预算及 manager 结构/保守字段校验；引用保真脱敏和完整安全验收仍待完成 |
-| B1 / B2 | 未实现 | 无 `anr_evidence/aosp_contract/`、ontology 测试和 source-map；现有类型/正则不等于已核验 AOSP profile 或 OEM overlay |
-| C1 | ID 冲突已修复，引用 store 未实现 | 同毫秒多 ANR 使用稳定唯一 ID，普通 ID 兼容；仍无 SQLite artifact/span/group store、原文件 hash+byte-range 回读 |
+| B1 / B2 | B1 首批已实现、待验证；B2 未实现 | 已增加 Android 17 双仓库固定 revision manifest、两类 Input reason resolver 和 Phase 1 additive 字段；其余八类明确 unsupported。离线完整 provenance 校验、回归和其他版本尚未完成 |
+| C1 | ID 冲突已修复；store 首批已实现、待验证 | 新增 SQLite 原始字节快照、artifact/span/group、显式归属、hash/byte-range 回读；尚未接入 loader/ESS/导出主路径，也未执行回归验收 |
 | C2 | 已有流式过滤/归档有界读，未完成 | 归档已加预算并有界读取，目录 loader/package 仍保留或合并全量字符串；单归档预算不是跨输入共享预算，也不证明端到端 100 MiB/1 GiB 内存目标 |
 | V1 | S1 结构门禁已有，引用/因果校验未完成 | manager 不再直接接受任意解析结果；仍缺不可变引用归属、引用有效性、矛盾与高因果置信资格校验 |
 | E1 / Q1 | 已有 hint eval，未完成 | 当前 13 个 eval 用例只验证 hint；机制、引用、跨版本语料准入、冻结评测集和正式性能/成本门禁尚未闭环 |
@@ -30,7 +30,7 @@
 - [FusionScope](../anr_evidence/cross_source_fusion.py)、[dump 锁环门禁](../anr_evidence/trace_preprocessor.py)、[压力线索](../anr_evidence/anrmanager_parser.py)；旧“无 scope 升级 / CONFIRMED 根因 / CPU 推断泄漏”问题已修复，不再作为未完成项。
 - [分类器](../anr_evidence/extraction/classification.py)、[source kinds](../anr_evidence/constants.py)、[loader](../anr_evidence/loaders/core.py)、[package 合并](../anr_evidence/loaders/package.py)、[ESS](../anr_evidence/evidence_slice.py)、[现有 eval](../anr_evidence/eval.py)、[模板 remediation](../anr_evidence/remediation.py)。
 
-运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。G002 在当前检出无实现，不能按运行标签宣称已经落地。本轮 P0 实施不改写原运行账本、不启动旧大目标、不推断其他工作树状态；也未重新核验外部 AOSP SHA/版本事实。
+运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。G002 在当前检出已有 B1 首批未验证实现，不能按运行标签宣称整项目标已经落地。本轮 B1/C1 开发不改写原运行账本、不启动旧大目标、不推断其他工作树状态；开发前已核验本次采用的 Android 17 官方来源，代码验收仍未执行。
 
 ## 2. 已存在，保留而非重做
 
@@ -62,6 +62,8 @@
 
 ### B1 · P1 · 单 profile 本体与旧分类兼容（G002 第一部分）
 
+开发状态：首批代码已实现、待验证（本提交）。新增 `aosp_contract`、固定 Android 17 base/native revision manifest、两类 Input reason 识别及 Phase 1 `classification.timeoutOntology`；旧分类字段保留。其余八类显式 unsupported；无版本、未知版本、revision/类型冲突、多 ANR reason 均降级，不推断 directBlocker。按本轮要求尚未运行测试/验证，以下验收复选框不勾选。详见 [来源与开发边界](aosp-anr-source-map.md)。
+
 - [ ] 新增：先核验一个 AOSP profile（原计划优先 Android 17）的不可变 revision/path/symbol，提交可离线验证的规则 manifest/source-map；分别输出 trigger、directBlocker、evidenceStatus，不从 trigger 推导 blocker。
 - [ ] 验收：每个核验的 TimeoutKind 映射或明确 unsupported；legacy public type 不变；未知/矛盾/缺少 build version 安全降级；每条规则有 provenance 与匹配输入位置。原始 hash+byte-range 在 C1 补齐，不能把过滤行号伪称不可变引用。
 - [ ] 验收：正例、歧义、unknown、provided_type 兼容测试独立通过；源码不能核验时记录缺口，不虚构 SHA，也不声称 Android 14–17 全覆盖。
@@ -72,6 +74,8 @@
 - [ ] 验收：版本差异逐项测试；没有已核验 profile 的输入明确 unsupported；overlay 冲突 fail closed。合成 fixture 只能证明规则行为，不证明真实设备兼容。
 
 ### C1 · P1 · 最小证据引用契约（G003 第一部分；V1/D1 前置）
+
+开发状态：`anr_evidence/evidence_store.py` 已写入、待验证。基础 API 保留原始 bytes、区分 archive container/member、显式关联 group，回读检查 hash/source/group/range；尚未接入 loader/ESS，也未实现流式 ingestion 或验收测试。不得把 SQLite 文件基础实现等同于 C1 完成。
 
 - [ ] 新增：以 stdlib `sqlite3` 实现 artifact + span + group 及原始回读；按实际需求映射 ESS，暂不预建完整 finding/probe/图数据库。保留旧 package API。
 - [ ] 验收：引用解析到原始 artifact hash + byte range，覆盖 UTF-8 多字节、CRLF、无末尾换行、同名 shard、重复内容、文件变更与越界；写明归档引用指向容器还是解压后的成员，不混淆两者。
@@ -154,7 +158,7 @@
 - R1：fusion 要求目标与 trace 的身份、时间、group 一致；同组 AnrManager 可补充 legacy anchor PID，冲突则只保留 context。记录具体原始行、拒绝理由及过滤视图位置，每条规则/来源的旁证与 context 各有上限。
 - 旧结论旁路：高 CPU/RSS 仅作为 pressure clue；修复生成提示残留的泄漏推断；跨 dump 相同 TID 还须匹配锁边/对象，区分 anchor 窗口与采样间隔，NaN/inf/负窗口拒绝。超出配置窗口不等于已证明 stale。
 - 兼容变化：`consolidate_deadlock_across_traces` 的旧无身份调用保留单 dump 观察但不升级；远程 Agent 遇到重复 group ID 会在发送前明确拒绝，避免默默覆盖实体 map；消费端需从 `DEADLOCK_CYCLE_CONFIRMED` / `confidence=confirmed` 迁移为 `DEADLOCK_CYCLE_CORROBORATED` / `confidence=strong`，仍须人工确认。详见 [trace hint 迁移说明](trace-hint-annotation-design.md)。
-- 没有修改原始 baseline、CLI 入口或四槽位布局；未新增第三方依赖，未修改 `.omx/ultragoal` 运行时状态；上述实现/测试及原 TODO 已提交为 `a7a1347`。后续 TODO 同步及本轮 P0 改动包含在本提交中；提交不代表已推送。
+- 没有修改原始 baseline、CLI 入口或四槽位布局；未新增第三方依赖，未修改 `.omx/ultragoal` 运行时状态；上述实现/测试及原 TODO 已提交为 `a7a1347`。后续 TODO 同步及 P0 首批改动已提交为 `37cd8d1`；提交不代表已推送。
 
 ### 验证证据
 
@@ -170,7 +174,7 @@
 
 前次只读复现：两个不同进程的同时间 `am_anr` 曾生成 2 个 group、仅 1 个不同 ID；本轮已修复，详见下一节。
 
-### 本轮 P0 实施结果（本提交）
+### 前轮 P0 实施结果（`37cd8d1`）
 
 - group ID：同毫秒冲突采用稳定后缀，单组旧 ID 不变；生成端、FusionScope、事件、索引/目录和远程 map 使用相同 ID。
 - S1：单归档成员/数据/元数据门禁、默认外发拒绝及合成测试边界、有限 HTTP 调用、manager 结构/保守字段强制校验已接入主路径；不是仅增加提示文字。

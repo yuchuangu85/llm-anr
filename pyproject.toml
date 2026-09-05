@@ -15,3 +15,6 @@ anr-evidence = "anr_evidence.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["anr_evidence*"]
+
+[tool.setuptools.package-data]
+"anr_evidence.aosp_contract" = ["*.json"]
