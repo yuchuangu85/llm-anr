@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import contextmanager, ExitStack
+import bz2
+import gzip
+import lzma
 from datetime import datetime
 import json
 from pathlib import Path
+import stat
 import shutil
 import subprocess
 import tarfile
@@ -21,6 +26,18 @@ from .package import build_package_from_entries
 
 class ArchiveLoadError(ValueError):
     """Raised when an archive cannot be read or does not contain usable log sources."""
+
+
+class ArchivePolicyError(ArchiveLoadError):
+    """A safety rejection, which directory fallback must not silently ignore."""
+
+
+# These limits apply to the uncompressed archive view.  Keeping them centralized
+# preserves the public loader API and lets tests exercise each gate with tiny
+# fixtures.
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def load_package_from_fixture(path: str | Path) -> dict[str, Any]:
@@ -110,30 +127,73 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None)
     if suffixes and suffixes[-1] == ".zip":
         try:
             with zipfile.ZipFile(archive_path) as archive:
-                for member in sorted(archive.infolist(), key=lambda item: item.filename):
-                    if member.is_dir():
-                        continue
+                members = archive.infolist()
+                _validate_archive_member_count(archive_path, len(members))
+                for member in members:
+                    _validate_archive_member_name(archive_path, member.filename)
+                    if _zip_member_is_link(member):
+                        raise ArchivePolicyError(
+                            f"Archive `{archive_path.name}` contains unsupported link member `{member.filename}`."
+                        )
+                files = [member for member in members if not member.is_dir()]
+                _validate_archive_metadata_sizes(
+                    archive_path,
+                    ((member.filename, member.file_size) for member in files),
+                )
+                actual_total = 0
+                for member in sorted(files, key=lambda item: item.filename):
                     try:
-                        content, readable = _read_archive_member(archive.open(member), member.filename)
+                        with archive.open(member) as extracted:
+                            content, readable, actual_size = _read_archive_member(
+                                extracted,
+                                member.filename,
+                                max_bytes=min(MAX_ARCHIVE_MEMBER_BYTES, MAX_ARCHIVE_TOTAL_BYTES - actual_total),
+                            )
                     except OSError as exc:
                         raise ArchiveLoadError(f"Failed to read zip member `{member.filename}` from `{archive_path.name}`: {exc}") from exc
+                    actual_total += actual_size
                     entries.append({"path": member.filename, "content": content, "readable": readable})
         except zipfile.BadZipFile as exc:
             raise ArchiveLoadError(f"Archive `{archive_path.name}` is not a readable zip file or is corrupted.") from exc
     elif any(suffix in {".tar", ".gz", ".tgz", ".bz2", ".xz"} for suffix in suffixes):
         try:
-            with tarfile.open(archive_path) as archive:
-                members = [member for member in archive.getmembers() if member.isfile()]
-                for member in sorted(members, key=lambda item: item.name):
+            with _open_bounded_tar(archive_path) as archive:
+                actual_total = 0
+                declared_total = 0
+                for count, member in enumerate(archive, 1):
+                    _validate_archive_member_count(archive_path, count)
+                    _validate_archive_member_name(archive_path, member.name)
+                    if member.issym() or member.islnk():
+                        raise ArchivePolicyError(
+                            f"Archive `{archive_path.name}` contains unsupported link member `{member.name}`."
+                        )
+                    if not member.isfile() and not member.isdir():
+                        raise ArchivePolicyError(
+                            f"Archive `{archive_path.name}` contains unsupported special member `{member.name}`."
+                        )
+                    if not member.isfile():
+                        continue
+                    # Check before advancing to the next header: in compressed
+                    # TARs, skipping an unchecked payload still decompresses it.
+                    _validate_archive_metadata_sizes(archive_path, [(member.name, member.size)])
+                    declared_total += member.size
+                    _validate_archive_total_size(archive_path, declared_total)
                     extracted = archive.extractfile(member)
                     if extracted is None:
-                        continue
+                        raise ArchiveLoadError("Unable to read declared TAR file member")
                     try:
-                        content, readable = _read_archive_member(extracted, member.name)
+                        with extracted:
+                            content, readable, actual_size = _read_archive_member(
+                                extracted,
+                                member.name,
+                                max_bytes=min(MAX_ARCHIVE_MEMBER_BYTES, MAX_ARCHIVE_TOTAL_BYTES - actual_total),
+                            )
                     except OSError as exc:
                         raise ArchiveLoadError(f"Failed to read tar member `{member.name}` from `{archive_path.name}`: {exc}") from exc
+                    actual_total += actual_size
                     entries.append({"path": member.name, "content": content, "readable": readable})
-        except tarfile.TarError as exc:
+                entries.sort(key=lambda entry: entry["path"])
+        except (tarfile.TarError, OSError, EOFError, lzma.LZMAError) as exc:
             raise ArchiveLoadError(f"Archive `{archive_path.name}` is not a readable tar archive or is corrupted.") from exc
     else:
         raise ArchiveLoadError(f"Unsupported archive type: `{archive_path.name}`. Supported formats: .zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz.")
@@ -207,6 +267,8 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
         for archive_path in archives:
             try:
                 package = load_package_from_archive(archive_path, package_name=package_name)
+            except ArchivePolicyError:
+                raise
             except ArchiveLoadError:
                 continue
             sources = package.get("sources", {})
@@ -368,9 +430,111 @@ def _event_anr_search_command(root: Path) -> list[str] | None:
     return commands[0] if commands else None
 
 
-def _read_archive_member(handle, name: str) -> tuple[str, bool]:
-    data = handle.read()
+class _BoundedTarStream:
+    """Limit decompressed bytes including PAX/GNU headers, not only file data."""
+
+    def __init__(self, source, limit: int):
+        self.source = source
+        self.remaining = limit
+
+    def read(self, size: int) -> bytes:
+        data = self.source.read(min(size, self.remaining + 1))
+        self.remaining -= len(data)
+        if self.remaining < 0:
+            raise ArchivePolicyError("TAR decompressed stream exceeds byte budget (including metadata)")
+        return data
+
+
+@contextmanager
+def _open_bounded_tar(path: Path):
+    with ExitStack() as stack:
+        raw = stack.enter_context(path.open("rb"))
+        magic = raw.read(6)
+        raw.seek(0)
+        if magic.startswith(b"\x1f\x8b"):
+            source = stack.enter_context(gzip.GzipFile(fileobj=raw))
+        elif magic.startswith(b"BZh"):
+            source = stack.enter_context(bz2.BZ2File(raw))
+        elif magic.startswith(b"\xfd7zXZ\x00"):
+            source = stack.enter_context(lzma.LZMAFile(raw))
+        else:
+            source = raw
+        # Allow normal headers/padding in addition to the declared data budget.
+        # Oversized extension metadata is rejected even before TarInfo exists.
+        limit = MAX_ARCHIVE_TOTAL_BYTES + MAX_ARCHIVE_MEMBERS * 1024 + 10240
+        bounded = _BoundedTarStream(source, limit)
+        archive = stack.enter_context(tarfile.open(fileobj=bounded, mode="r|"))
+        yield archive
+
+
+def _validate_archive_member_count(archive_path: Path, count: int) -> None:
+    if count > MAX_ARCHIVE_MEMBERS:
+        raise ArchivePolicyError(
+            f"Archive `{archive_path.name}` member count {count} exceeds limit {MAX_ARCHIVE_MEMBERS}."
+        )
+
+
+def _validate_archive_member_name(archive_path: Path, name: str) -> None:
+    normalized = name.replace("\\", "/")
+    parts = normalized.split("/")
+    has_drive_prefix = bool(parts and len(parts[0]) >= 2 and parts[0][1] == ":")
+    if (
+        not normalized
+        or "\x00" in normalized
+        or normalized.startswith("/")
+        or has_drive_prefix
+        or any(part == ".." for part in parts)
+    ):
+        raise ArchivePolicyError(
+            f"Archive `{archive_path.name}` contains unsafe member name `{name}`."
+        )
+
+
+def _zip_member_is_link(member: zipfile.ZipInfo) -> bool:
+    if member.create_system != 3:
+        return False
+    return stat.S_IFMT(member.external_attr >> 16) == stat.S_IFLNK
+
+
+def _validate_archive_metadata_sizes(archive_path: Path, members: Iterable[tuple[str, int]]) -> None:
+    total = 0
+    for name, size in members:
+        if size < 0:
+            raise ArchivePolicyError(
+                f"Archive `{archive_path.name}` member `{name}` has invalid negative uncompressed size {size}."
+            )
+        if size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ArchivePolicyError(
+                f"Archive `{archive_path.name}` member `{name}` is {size} bytes uncompressed, "
+                f"exceeding per-member limit {MAX_ARCHIVE_MEMBER_BYTES}."
+            )
+        total += size
+        _validate_archive_total_size(archive_path, total)
+
+
+def _validate_archive_total_size(archive_path: Path, total: int) -> None:
+    if total > MAX_ARCHIVE_TOTAL_BYTES:
+        raise ArchivePolicyError(
+            f"Archive `{archive_path.name}` total uncompressed size {total} bytes exceeds limit "
+            f"{MAX_ARCHIVE_TOTAL_BYTES}."
+        )
+
+
+def _read_archive_member(handle, name: str, *, max_bytes: int) -> tuple[str, bool, int]:
+    chunks: list[bytes] = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        chunk = handle.read(min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    data = b"".join(chunks)
+    if len(data) > max_bytes:
+        raise ArchivePolicyError(
+            f"Archive member `{name}` actual data exceeds bounded-read limit {max_bytes}."
+        )
     try:
-        return data.decode("utf-8"), True
+        return data.decode("utf-8"), True, len(data)
     except UnicodeDecodeError:
-        return data.decode("utf-8", errors="replace"), False
+        return data.decode("utf-8", errors="replace"), False, len(data)

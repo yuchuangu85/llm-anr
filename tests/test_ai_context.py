@@ -52,6 +52,28 @@ def _multi_anr_package() -> dict:
     }
 
 
+def _same_millisecond_anr_package() -> dict:
+    return {
+        'package_id': 'AICTX-SAME-MS',
+        'sources': {
+            'event_log': {
+                'path': 'events.log',
+                'content': '\n'.join([
+                    '2026-04-12 10:00:05.000 I am_anr: [0,456,com.first,1,Input dispatching timed out]',
+                    '2026-04-12 10:00:05.000 I am_anr: [0,789,com.second,1,Input dispatching timed out]',
+                ]),
+            },
+            'logcat': {
+                'path': 'logcat.txt',
+                'content': '\n'.join([
+                    '2026-04-12 10:00:05.050 E InputDispatcher Input dispatching timed out for com.first',
+                    '2026-04-12 10:00:05.050 E InputDispatcher Input dispatching timed out for com.second',
+                ]),
+            },
+        },
+    }
+
+
 class AiContextTests(unittest.TestCase):
     def test_anr_to_ai_script_builds_artifacts_from_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -259,6 +281,40 @@ class AiContextTests(unittest.TestCase):
         self.assertIn('NATIVE_POLL_BUT_BUSY', guide)
         self.assertIn('MAIN_BINDER_WAIT_REPLY', guide)
 
+    def test_same_millisecond_anrs_get_stable_unique_isolated_group_ids(self) -> None:
+        package = _same_millisecond_anr_package()
+
+        first = build_ai_context(package, AiContextOptions(anr_type='input_dispatching_timeout'))
+        second = build_ai_context(package, AiContextOptions(anr_type='input_dispatching_timeout'))
+        first_ids = [group['id'] for group in first.groups]
+        second_ids = [group['id'] for group in second.groups]
+
+        self.assertEqual(first_ids, second_ids)
+        self.assertEqual(len(first_ids), 2)
+        self.assertEqual(len(set(first_ids)), 2)
+        self.assertTrue(all(group_id.startswith('anr-20260412-100005-000') for group_id in first_ids))
+        self.assertEqual(
+            {event['details']['groupId'] for event in first.events if event['details'].get('groupId')},
+            set(first_ids),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index = build_ai_context_artifacts(
+                package,
+                AiContextOptions(out_dir=tmpdir, anr_type='input_dispatching_timeout'),
+            )
+            indexed_ids = [group['id'] for group in index['groups']]
+            analysis_paths = [Path(group['artifactPaths']['analysis']) for group in index['groups']]
+
+            self.assertEqual(indexed_ids, first_ids)
+            self.assertEqual(len(set(analysis_paths)), 2)
+            for group_id, analysis_path in zip(indexed_ids, analysis_paths):
+                self.assertEqual(analysis_path.parent.name, group_id)
+                self.assertTrue(analysis_path.exists())
+                analysis = analysis_path.read_text(encoding='utf-8')
+                self.assertIn(f'## {group_id}', analysis)
+                other_headings = [f'## {other_id}' for other_id in indexed_ids if other_id != group_id]
+                self.assertFalse(any(heading in analysis for heading in other_headings))
 
     def test_artifact_builder_renders_each_group_without_monolithic_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

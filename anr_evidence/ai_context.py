@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -321,7 +322,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         events.extend(_group_step_events(group))
         return [group], events
 
-    anchors = _collapse_nearby_anchors(anchors, options.group_tolerance_seconds)
+    anchors = _assign_group_ids(_collapse_nearby_anchors(anchors, options.group_tolerance_seconds))
     events.append(_event("grouped", "completed", groupCount=len(anchors), fallbackUsed=fallback_used))
     groups = []
     # Anchor-independent work hoisted out of the per-anchor loop.  Trace
@@ -437,7 +438,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 event_log_text="\n".join(event_lines),
                 kernel_log_text=kernel_log_content,
                 scope=FusionScope(
-                    group_id=_group_id(anchor_dt),
+                    group_id=anchor["groupId"],
                     target_pid=target_pid,
                     target_process=anchor.get("packageName"),
                     trace_pid=trace_metadata.get("pid"),
@@ -460,7 +461,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         )
 
         group = {
-            "id": _group_id(anchor_dt),
+            "id": anchor["groupId"],
             "anchor": {
                 "sourceKind": anchor["sourceKind"],
                 "timestamp": timestamp_to_raw(anchor_dt),
@@ -660,6 +661,38 @@ def _collapse_nearby_anchors(anchors: list[dict[str, Any]], tolerance_seconds: i
             continue
         collapsed.append(anchor)
     return collapsed
+
+
+def _assign_group_ids(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Assign deterministic path-safe IDs without changing legacy singleton IDs."""
+
+    base_counts: dict[str, int] = {}
+    for anchor in anchors:
+        base = _group_id(anchor["timestamp"])
+        base_counts[base] = base_counts.get(base, 0) + 1
+
+    assigned: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for anchor in anchors:
+        base = _group_id(anchor["timestamp"])
+        candidate = base
+        if base_counts[base] > 1:
+            identity = "\0".join((
+                str(anchor.get("sourceKind") or ""),
+                str(anchor.get("packageName") or ""),
+                str(anchor.get("dedupeKey") or ""),
+                str(anchor.get("line") or ""),
+            ))
+            suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
+            candidate = f"{base}-{suffix}"
+        unique = candidate
+        ordinal = 2
+        while unique in used:
+            unique = f"{candidate}-{ordinal}"
+            ordinal += 1
+        used.add(unique)
+        assigned.append({**anchor, "groupId": unique})
+    return assigned
 
 
 def _fusion_target_identity(

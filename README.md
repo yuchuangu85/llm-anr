@@ -229,7 +229,12 @@ index = build_ai_context_artifacts(
 print(index["artifactPaths"]["index"])
 ```
 
-Multi-agent AI analysis entrypoint (requires configured provider/API key):
+Multi-agent AI analysis entrypoint (synthetic test data only; requires configured provider/API key):
+
+Remote requests are denied by default. Real/private logs must stay offline until
+reference-preserving redaction is verified. The opt-in below is a caller
+attestation for synthetic fixtures, not automatic PII detection or permission to
+send real logs. See [safety boundaries and migration notes](docs/safety-boundaries.md).
 
 ```python
 from anr_evidence import (
@@ -241,7 +246,11 @@ from anr_evidence import (
 )
 
 package = load_package_from_fixture("tests/fixtures/nfw_01.json")
-provider = ProviderConfig(kind=ProviderKind.ANTHROPIC, model="claude-sonnet-4-20250514")
+provider = ProviderConfig(
+    kind=ProviderKind.ANTHROPIC,
+    model="claude-sonnet-4-20250514",
+    outbound_policy="synthetic_only",  # Only for confirmed synthetic test data.
+)
 result = run_ai_agent_analysis(
     package,
     provider_config=provider,

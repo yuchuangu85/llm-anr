@@ -27,7 +27,7 @@ from anr_evidence.ai_agent import (
     run_ai_agent_analysis,
 )
 from anr_evidence.evidence_slice import EvidenceSlice, annotate_slices_with_tags, build_evidence_slices
-from anr_evidence.ai_context import AiContextOptions
+from anr_evidence.ai_context import AiContextOptions, build_ai_context
 
 
 class _MockHTTPError(urllib.error.HTTPError):
@@ -91,7 +91,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertIsNone(_parse_re_probe_request({}))
 
     def test_post_json_retries_retryable_http_error_and_passes_timeout(self) -> None:
-        config = ProviderConfig(kind=ProviderKind.OPENAI, model="test", api_key="key", timeout_seconds=3.5, max_retries=1)
+        config = ProviderConfig(outbound_policy="synthetic_only", kind=ProviderKind.OPENAI, model="test", api_key="key", timeout_seconds=3.5, max_retries=1)
         client = LlmClient(config)
         success = self._mock_http_response({"ok": True})
 
@@ -105,7 +105,7 @@ class LlmClientTests(unittest.TestCase):
         sleep_mock.assert_called_once_with(1)
 
     def test_post_json_does_not_retry_non_retryable_http_error(self) -> None:
-        config = ProviderConfig(kind=ProviderKind.OPENAI, model="test", api_key="key", max_retries=3)
+        config = ProviderConfig(outbound_policy="synthetic_only", kind=ProviderKind.OPENAI, model="test", api_key="key", max_retries=3)
         client = LlmClient(config)
 
         with patch("time.sleep") as sleep_mock, patch("urllib.request.urlopen") as urlopen_mock:
@@ -117,7 +117,7 @@ class LlmClientTests(unittest.TestCase):
         sleep_mock.assert_not_called()
 
     def test_post_json_retries_url_error_until_exhausted(self) -> None:
-        config = ProviderConfig(kind=ProviderKind.OPENAI, model="test", api_key="key", max_retries=2)
+        config = ProviderConfig(outbound_policy="synthetic_only", kind=ProviderKind.OPENAI, model="test", api_key="key", max_retries=2)
         client = LlmClient(config)
 
         with patch("time.sleep") as sleep_mock, patch("urllib.request.urlopen") as urlopen_mock:
@@ -196,12 +196,35 @@ class AgentIntegrationTests(unittest.TestCase):
             ])},
         }}
         response = json.dumps({"content": [{"type": "text", "text": self.MOCK_MANAGER_RESPONSE}]}).encode()
-        config = ProviderConfig(kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key")
-        with patch("urllib.request.urlopen", side_effect=self._make_mock_urlopen([response])) as http:
+        config = ProviderConfig(outbound_policy="synthetic_only", kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key")
+        duplicate_groups = [{"id": "duplicate"}, {"id": "duplicate"}]
+        with patch("anr_evidence.ai_agent.build_ai_context", return_value=MagicMock(groups=duplicate_groups)), \
+                patch("anr_evidence.ai_agent.build_evidence_slices", return_value=[]), \
+                patch("urllib.request.urlopen", side_effect=self._make_mock_urlopen([response])) as http:
             with self.assertRaisesRegex(ValueError, "duplicate ANR group"):
                 run_ai_agent_analysis(package, provider_config=config,
                                       agent_config=AgentConfig(provider=config, max_iterations=1))
         http.assert_not_called()
+
+    def test_same_time_groups_reach_http_with_unique_ids(self) -> None:
+        package = {"sources": {"event_log": {"content": "\n".join([
+            "2026-04-12 10:00:05.000 I am_anr: [0,456,com.first,1,Input dispatching timed out]",
+            "2026-04-12 10:00:05.000 I am_anr: [0,789,com.second,1,Input dispatching timed out]",
+        ])}}}
+        ids = [g["id"] for g in build_ai_context(package, AiContextOptions()).groups]
+        self.assertEqual(len(set(ids)), 2)
+        response = json.dumps({"content": [{"type": "text", "text": self.MOCK_MANAGER_RESPONSE}]}).encode()
+        cfg = ProviderConfig(kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key",
+                             outbound_policy="synthetic_only")
+        with patch("urllib.request.urlopen", side_effect=self._make_mock_urlopen([response])) as http:
+            result = run_ai_agent_analysis(package, provider_config=cfg,
+                                           agent_config=AgentConfig(provider=cfg, max_iterations=1))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(http.call_count, 4)
+        for call in http.call_args_list:
+            prompt = json.loads(call.args[0].data)["messages"][-1]["content"]
+            for group_id in ids:
+                self.assertIn(f"## Entity Map — {group_id}", prompt)
 
     def test_actual_provider_prompts_keep_selected_entity_maps_per_anr(self) -> None:
         trace_lines = []
@@ -223,7 +246,7 @@ class AgentIntegrationTests(unittest.TestCase):
             ])},
         }}
         response = json.dumps({"content": [{"type": "text", "text": self.MOCK_MANAGER_RESPONSE}]}).encode()
-        config = ProviderConfig(kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key")
+        config = ProviderConfig(outbound_policy="synthetic_only", kind=ProviderKind.ANTHROPIC, model="test", api_key="test-key")
         with patch("urllib.request.urlopen", side_effect=self._make_mock_urlopen([response])) as http:
             run_ai_agent_analysis(package, provider_config=config,
                                   agent_config=AgentConfig(provider=config, max_iterations=1))
@@ -257,6 +280,7 @@ class AgentIntegrationTests(unittest.TestCase):
         "overall_assessment": "binder contributing"
     })
     MOCK_MANAGER_RESPONSE = json.dumps({
+        "finalJudgment": False, "notRootCauseYet": True, "requiresHumanConfirmation": True,
         "candidateChains": [
             {"title": "锁竞争导致ANR", "rank": 1, "score": 85, "confidenceLevel": "high",
              "signalCategory": "scheduler_pressure", "rationale": "main waiting on lock", "limitations": [],
@@ -311,6 +335,7 @@ class AgentIntegrationTests(unittest.TestCase):
             kind=ProviderKind.ANTHROPIC,
             model="claude-sonnet-4-20250514",
             api_key="test-key",
+            outbound_policy="synthetic_only",
         )
         agent_config = AgentConfig(provider=provider_config, max_iterations=1, verbose=False)
 
