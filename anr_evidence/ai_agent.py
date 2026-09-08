@@ -755,7 +755,11 @@ def run_ai_agent_analysis(
     # Step 1: Build AI context
     ctx_result = build_ai_context(package, ai_opts)
     groups = ctx_result.groups
-    result.dump_quality = {group["id"]: group["dumpQuality"] for group in groups}
+    result.dump_quality = {
+        group["id"]: group["dumpQuality"]
+        for group in groups
+        if group.get("dumpQuality") is not None
+    }
 
     # Step 2: Build ESS + EntityMap + Truncation
     slices = annotate_slices_with_tags(

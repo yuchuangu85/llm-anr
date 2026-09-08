@@ -1,18 +1,18 @@
 # 未完成任务与验收清单
 
-> 复核日期：2026-09-05；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`；本提交包含 B1/C1 首批开发增量（待验证）。本文件是当前可版本管理的 backlog。
-> G001、R2、R1 已完成并提交；其余任务按下表区分“未实现”和“已有基础但未完成”，不把局部能力当作整项验收。
+> 复核日期：2026-09-08；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`。Android 17 B1 已实现并完成本地验证；C1 等其他增量仍按各节状态管理。本文件是当前可版本管理的 backlog。
+> G001、R2、R1 已完成并提交；Android 17 B1 已完成本地验证，可在 dev 上作窄范围 checkpoint 提交。其余任务按下表区分“未实现”和“已有基础但未完成”，不把局部能力当作整项验收。
 > `存在` 表示已有能力，`优化` 表示补强，`新增` 表示新增能力，`验收` 表示检查；`[x]` 只用于已有或已验证完成的条目。
 
 ## 1. 当前状态总览
 
-**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 18 个已勾选、34 个未勾选条目；复选框同时包含实现与验收，不能把 34 个复选框当成 34 个独立功能。
+**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 21 个已勾选、31 个未勾选条目；复选框同时包含实现与验收，不能把 31 个复选框当成 31 个独立功能。
 
 | 任务 | 当前状态 | 本次核对的剩余缺口 / 证据 |
 | --- | --- | --- |
 | G001 / R2 / R1 | 已完成、已提交 | 摘要已存在；`a7a1347` 包含结构化实体匹配、真实 Agent 按组隔离、完整 selected-trace 库存、scope/conflict 门禁、保守 hint 与回归 |
 | S1 | 首批门禁已实现，整体未完成（P0） | 已有归档预算、默认外发拒绝、合成测试路径敏感标记检查、HTTP 字节/次数预算及 manager 结构/保守字段校验；引用保真脱敏和完整安全验收仍待完成 |
-| B1 / B2 | B1 首批已实现、待验证；B2 未实现 | 已增加 Android 17 双仓库固定 revision manifest、两类 Input reason resolver 和 Phase 1 additive 字段；其余八类明确 unsupported。离线完整 provenance 校验、回归和其他版本尚未完成 |
+| B1 / B2 | B1 Android 17 已实现并本地验证；B2 未完成 | B1 已增加双仓库固定 revision manifest、两类 Input reason resolver 和 Phase 1 additive 字段，其余八类明确 unsupported；14 项 ontology 专项、18 项 ontology+legacy 专项、全量 unittest discovery 运行 418 项并整体通过（1 项跳过），compileall/diff 检查均通过。B2 的 Android 14–16 profiles 与 OEM overlays 仍未完成；B1 provenance 校验仅覆盖 manifest 自洽性与 canonical source URL，不会重新下载并重算上游源码 blob，也不证明设备兼容 |
 | C1 | ID 冲突已修复；store 首批已实现、待验证 | 新增 SQLite 快照；directory/archive/mixed loader 已开发显式原始字节捕获及来源传递；context 可选导出 store、逐组引用和带 span 的 ESS。smart 路径在 capture 模式下绕开；Agent/V1 引用消费已开发，批次验证待执行，完整因果资格仍未完成 |
 | C2 | 已有流式过滤/归档有界读，未完成 | 归档已加预算并有界读取，目录 loader/package 仍保留或合并全量字符串；单归档预算不是跨输入共享预算，也不证明端到端 100 MiB/1 GiB 内存目标 |
 | V1 | S1 结构门禁已有，引用/因果校验未完成 | manager 不再直接接受任意解析结果；仍缺不可变引用归属、引用有效性、矛盾与高因果置信资格校验 |
@@ -30,7 +30,7 @@
 - [FusionScope](../anr_evidence/cross_source_fusion.py)、[dump 锁环门禁](../anr_evidence/trace_preprocessor.py)、[压力线索](../anr_evidence/anrmanager_parser.py)；旧“无 scope 升级 / CONFIRMED 根因 / CPU 推断泄漏”问题已修复，不再作为未完成项。
 - [分类器](../anr_evidence/extraction/classification.py)、[source kinds](../anr_evidence/constants.py)、[loader](../anr_evidence/loaders/core.py)、[package 合并](../anr_evidence/loaders/package.py)、[ESS](../anr_evidence/evidence_slice.py)、[现有 eval](../anr_evidence/eval.py)、[模板 remediation](../anr_evidence/remediation.py)。
 
-运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。G002 在当前检出已有 B1 首批未验证实现，不能按运行标签宣称整项目标已经落地。本轮 B1/C1 开发不改写原运行账本、不启动旧大目标、不推断其他工作树状态；开发前已核验本次采用的 Android 17 官方来源，代码验收仍未执行。
+运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。当前检出的 Android 17 B1 已实现并完成本地验证，但 G002 仍包含未完成的 B2 Android 14–16 profiles 与 OEM overlays，不能宣称 G002 完成。本轮文档更新不改写原运行账本、不启动旧大目标，也不推断其他工作树状态。
 
 ## 2. 已存在，保留而非重做
 
@@ -42,7 +42,7 @@
 
 ## 3. 推荐执行顺序与最小故事
 
-**R2 → R1 已完成**；下一条确定性实现链为 **B1 → C1 → V1 → DQ1 → D1**。group ID 冲突已作为独立 P0 小修完成；S1 首批门禁已落地，但整体 P0 仍未完成，后续脱敏/安全验收不能被 B1 长期挤后。S1/E1 从首个相关改动开始贯穿；当前默认拒绝外发，仅允许显式声明的合成测试数据；完整脱敏验收前不得将真实私有日志送入远程 Agent，离线确定性路径继续可用。B2、C2、D2 和后续扩展分别按需要交付，不阻塞第一条可靠 Input 闭环。优先级表示风险/价值，不代表所有 P1 项必须串行完成。
+**R2 → R1 → B1 已完成**；下一条确定性实现链为 **C1 → V1 → DQ1 → D1**。group ID 冲突已作为独立 P0 小修完成；S1 首批门禁已落地，但整体 P0 仍未完成，后续脱敏/安全验收不能被 B1 长期挤后。S1/E1 从首个相关改动开始贯穿；当前默认拒绝外发，仅允许显式声明的合成测试数据；完整脱敏验收前不得将真实私有日志送入远程 Agent，离线确定性路径继续可用。B2、C2、D2 和后续扩展分别按需要交付，不阻塞第一条可靠 Input 闭环。优先级表示风险/价值，不代表所有 P1 项必须串行完成。
 
 ### R1 · 已完成 · 跨源 promotion 与保守输出（`a7a1347`；原 P0）
 
@@ -60,13 +60,13 @@
 - [x] 验收：PID `123` 不匹配 `1234`、耗时或时间戳；`com.demo` 不匹配 `com.demo.other`；子进程名称采用明确规则；同号 PID/TID/UID 不覆盖彼此类型；重复运行排序一致。
 - [x] 验收：复用摘要已有身份语义与测试案例，不直接把私有评分 helper 变成全局 resolver；跨组/多进程负例覆盖真实调用路径。
 
-### B1 · P1 · 单 profile 本体与旧分类兼容（G002 第一部分）
+### B1 · 已完成 · 单 profile 本体与旧分类兼容（G002 第一部分）
 
-开发状态：首批代码已实现、待验证（本提交）。新增 `aosp_contract`、固定 Android 17 base/native revision manifest、两类 Input reason 识别及 Phase 1 `classification.timeoutOntology`；旧分类字段保留。其余八类显式 unsupported；无版本、未知版本、revision/类型冲突、多 ANR reason 均降级，不推断 directBlocker。按本轮要求尚未运行测试/验证，以下验收复选框不勾选。详见 [来源与开发边界](aosp-anr-source-map.md)。
+开发状态：Android 17 B1 已实现并完成本地验证。新增 `aosp_contract`、固定 Android 17 base/native revision manifest、两类 Input reason 识别及 Phase 1 `classification.timeoutOntology`；旧分类字段保留。其余八类显式 unsupported；无版本、未知版本、revision/类型冲突、多 ANR reason 均降级，不推断 directBlocker。验证覆盖 14 项 ontology 专项、18 项 ontology+legacy 专项、全量 unittest discovery 运行 418 项并整体通过（1 项跳过）、compileall 和 diff 检查。该结论只完成 G002 的 B1 部分；B2 仍未完成。详见 [来源与开发边界](aosp-anr-source-map.md)。
 
-- [ ] 新增：先核验一个 AOSP profile（原计划优先 Android 17）的不可变 revision/path/symbol，提交可离线验证的规则 manifest/source-map；分别输出 trigger、directBlocker、evidenceStatus，不从 trigger 推导 blocker。
-- [ ] 验收：每个核验的 TimeoutKind 映射或明确 unsupported；legacy public type 不变；未知/矛盾/缺少 build version 安全降级；每条规则有 provenance 与匹配输入位置。原始 hash+byte-range 在 C1 补齐，不能把过滤行号伪称不可变引用。
-- [ ] 验收：正例、歧义、unknown、provided_type 兼容测试独立通过；源码不能核验时记录缺口，不虚构 SHA，也不声称 Android 14–17 全覆盖。
+- [x] 新增：已核验 Android 17 AOSP profile 的固定 revision/path/symbol，并提供可本地校验的规则 manifest/source-map；分别输出 trigger、directBlocker、evidenceStatus，不从 trigger 推导 blocker。这里的 provenance 校验只验证 manifest 自洽性与 canonical source URL，不重新下载或重算上游源码 blob。
+- [x] 验收：每个核验的 TimeoutKind 已映射或明确 unsupported；legacy public type 不变；未知/矛盾/缺少 build version 安全降级；每条已映射规则有 provenance 与匹配输入位置。原始 hash+byte-range 仍由 C1 补齐，不能把过滤行号伪称不可变引用。
+- [x] 验收：正例、歧义、unknown、provided_type 兼容测试已独立通过；不虚构 SHA，也不声称 Android 14–17 全覆盖或真实设备兼容。
 
 ### B2 · P2 · 多版本与 OEM 扩展（G002 余项）
 
@@ -184,7 +184,15 @@
 - 不改变 baseline/四槽位布局，不新增依赖，不修改运行账本。README 与安全迁移说明同步；完整脱敏、V1 不可变引用/因果校验、跨输入流式预算仍未完成。
 - 新验证：`python3 -m unittest discover -s tests -q` 运行 391 项（390 通过、1 跳过）；`compileall` 通过；hint eval 13/13；文档链接/复选框统计与 `git diff --check` 通过。未运行外部 LLM、真实私有日志、设备测试或大输入 benchmark。
 
-后续仍按 **B1 → C1 → V1 → DQ1 → D1** 推进；S1/E1 的前置约束不变，不得将 R1 的提示修复等同于 S1 已具备出站安全保证。
+### Android 17 B1 本地验证（2026-09-08）
+
+- `python3 -m unittest tests.test_aosp_timeout_ontology -q`：14 项 ontology 专项通过。
+- `python3 -m unittest tests.test_aosp_timeout_ontology tests.test_cli_phase2 -q`：18 项 ontology + legacy Phase 2 兼容专项通过。
+- `python3 -m unittest discover -s tests -q`：运行 418 项，结果 `OK (skipped=1)`。
+- `python3 -m compileall -q anr_evidence tests scripts` 与 `git diff --check`：通过。
+- 验证范围只证明当前检出的 Android 17 B1 规则、manifest 约束和 legacy 兼容行为；未重新下载/重算固定 URL 对应的上游源码 blob，未执行 Android 14–16/OEM overlay 验收，也未执行真实设备兼容性验证。因此 G002 仍未完成。
+
+后续仍按 **C1 → V1 → DQ1 → D1** 推进；S1/E1 的前置约束不变，不得将 R1 的提示修复等同于 S1 已具备出站安全保证。
 
 - [ ] 验收：每个后续代码故事先补针对性回归，再实现，执行专项 → 全量 unittest → compileall → diff 检查；适用时补 eval/benchmark/真实样本，明确 skip 与外部门禁。
 - [ ] 验收：baseline、CLI/产物兼容、四槽位保留、三项保守字段持续成立；只有证据与复核齐全才更新任务完成状态。
