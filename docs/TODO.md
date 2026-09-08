@@ -1,21 +1,21 @@
 # 未完成任务与验收清单
 
-> 复核日期：2026-09-08；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`。Android 17 B1 已实现并完成本地验证；C1 等其他增量仍按各节状态管理。本文件是当前可版本管理的 backlog。
-> G001、R2、R1 已完成并提交；Android 17 B1 已完成本地验证，可在 dev 上作窄范围 checkpoint 提交。其余任务按下表区分“未实现”和“已有基础但未完成”，不把局部能力当作整项验收。
+> 复核日期：2026-09-08；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`。Android 17 B1 与 C1 最小证据引用契约均已实现并完成本地验证；其余增量仍按各节状态管理。本文件是当前可版本管理的 backlog。
+> G001、R2、R1 已完成并提交；Android 17 B1 与 C1 最小证据引用契约已完成本地验证。G002/B2 与 G003 整体仍未完成；其余任务按下表区分“未实现”和“已有基础但未完成”，不把局部能力当作整项验收。
 > `存在` 表示已有能力，`优化` 表示补强，`新增` 表示新增能力，`验收` 表示检查；`[x]` 只用于已有或已验证完成的条目。
 
 ## 1. 当前状态总览
 
-**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 21 个已勾选、31 个未勾选条目；复选框同时包含实现与验收，不能把 31 个复选框当成 31 个独立功能。
+**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 24 个已勾选、28 个未勾选条目；复选框同时包含实现与验收，不能把 28 个复选框当成 28 个独立功能。
 
 | 任务 | 当前状态 | 本次核对的剩余缺口 / 证据 |
 | --- | --- | --- |
 | G001 / R2 / R1 | 已完成、已提交 | 摘要已存在；`a7a1347` 包含结构化实体匹配、真实 Agent 按组隔离、完整 selected-trace 库存、scope/conflict 门禁、保守 hint 与回归 |
 | S1 | 首批门禁已实现，整体未完成（P0） | 已有归档预算、默认外发拒绝、合成测试路径敏感标记检查、HTTP 字节/次数预算及 manager 结构/保守字段校验；引用保真脱敏和完整安全验收仍待完成 |
 | B1 / B2 | B1 Android 17 已实现并本地验证；B2 未完成 | B1 已增加双仓库固定 revision manifest、两类 Input reason resolver 和 Phase 1 additive 字段，其余八类明确 unsupported；14 项 ontology 专项、18 项 ontology+legacy 专项、全量 unittest discovery 运行 418 项并整体通过（1 项跳过），compileall/diff 检查均通过。B2 的 Android 14–16 profiles 与 OEM overlays 仍未完成；B1 provenance 校验仅覆盖 manifest 自洽性与 canonical source URL，不会重新下载并重算上游源码 blob，也不证明设备兼容 |
-| C1 | ID 冲突已修复；store 首批已实现、待验证 | 新增 SQLite 快照；directory/archive/mixed loader 已开发显式原始字节捕获及来源传递；context 可选导出 store、逐组引用和带 span 的 ESS。smart 路径在 capture 模式下绕开；Agent/V1 引用消费已开发，批次验证待执行，完整因果资格仍未完成 |
+| C1 | 最小证据引用契约已实现并本地验证 | `2a757f2` 覆盖 mixed archive+loose winner provenance、重生成清理 SQLite/WAL/SHM 与 refs/ESS 且保留用户分析/四槽位/baseline logcat，以及发布失败回滚后可重试；全量 424 项通过、1 项跳过，compileall/diff 检查通过。G003 仍因 C2 共享流式/预算及 100 MiB/1 GiB 验证未完成而保持 pending |
 | C2 | 已有流式过滤/归档有界读，未完成 | 归档已加预算并有界读取，目录 loader/package 仍保留或合并全量字符串；单归档预算不是跨输入共享预算，也不证明端到端 100 MiB/1 GiB 内存目标 |
-| V1 | S1 结构门禁已有，引用/因果校验未完成 | manager 不再直接接受任意解析结果；仍缺不可变引用归属、引用有效性、矛盾与高因果置信资格校验 |
+| V1 | 引用门禁已有基础，因果资格未完成 | C1 已验证当前组 span 回读与错误引用 fail-closed 基础；仍缺完整矛盾、身份/时间/direct-blocker 与高因果置信资格校验，不宣称 V1 完成 |
 | E1 / Q1 | 已有 hint eval，未完成 | 当前 13 个 eval 用例只验证 hint；机制、引用、跨版本语料准入、冻结评测集和正式性能/成本门禁尚未闭环 |
 | DQ1 | 已有局部门禁，未完成 | R1 已校验 PID/进程/窗口/采样锁环；尚未抽成带统一引用、缺口与 provenance 的共享 dump auditor，不能把窗口外等同于 stale |
 | D1 / D2 | 已有分类/报告/专项指引，未完成 | no-focus/Input 分类和四槽位已有；尚缺结构化 target/blame/lifecycle 闭环、dumpsys adapter 与 WMS/AMS/Recents 状态校验 |
@@ -30,7 +30,7 @@
 - [FusionScope](../anr_evidence/cross_source_fusion.py)、[dump 锁环门禁](../anr_evidence/trace_preprocessor.py)、[压力线索](../anr_evidence/anrmanager_parser.py)；旧“无 scope 升级 / CONFIRMED 根因 / CPU 推断泄漏”问题已修复，不再作为未完成项。
 - [分类器](../anr_evidence/extraction/classification.py)、[source kinds](../anr_evidence/constants.py)、[loader](../anr_evidence/loaders/core.py)、[package 合并](../anr_evidence/loaders/package.py)、[ESS](../anr_evidence/evidence_slice.py)、[现有 eval](../anr_evidence/eval.py)、[模板 remediation](../anr_evidence/remediation.py)。
 
-运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。当前检出的 Android 17 B1 已实现并完成本地验证，但 G002 仍包含未完成的 B2 Android 14–16 profiles 与 OEM overlays，不能宣称 G002 完成。本轮文档更新不改写原运行账本、不启动旧大目标，也不推断其他工作树状态。
+运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。当前检出的 Android 17 B1 与 C1 最小证据引用契约已实现并完成本地验证；但 G002 仍包含未完成的 B2 Android 14–16 profiles 与 OEM overlays，G003 仍包含未完成的 C2 共享流式/预算及 100 MiB/1 GiB 验证，均不能宣称完成。本轮文档更新不改写原运行账本、不启动旧大目标，也不推断其他工作树状态。
 
 ## 2. 已存在，保留而非重做
 
@@ -42,7 +42,7 @@
 
 ## 3. 推荐执行顺序与最小故事
 
-**R2 → R1 → B1 已完成**；下一条确定性实现链为 **C1 → V1 → DQ1 → D1**。group ID 冲突已作为独立 P0 小修完成；S1 首批门禁已落地，但整体 P0 仍未完成，后续脱敏/安全验收不能被 B1 长期挤后。S1/E1 从首个相关改动开始贯穿；当前默认拒绝外发，仅允许显式声明的合成测试数据；完整脱敏验收前不得将真实私有日志送入远程 Agent，离线确定性路径继续可用。B2、C2、D2 和后续扩展分别按需要交付，不阻塞第一条可靠 Input 闭环。优先级表示风险/价值，不代表所有 P1 项必须串行完成。
+**R2 → R1 → B1 → C1 最小契约已完成**；下一条确定性实现链为 **V1 → DQ1 → D1**。group ID 冲突已作为独立 P0 小修完成；S1 首批门禁已落地，但整体 P0 仍未完成，后续脱敏/安全验收不能被 B1/C1 长期挤后。S1/E1 从首个相关改动开始贯穿；当前默认拒绝外发，仅允许显式声明的合成测试数据；完整脱敏验收前不得将真实私有日志送入远程 Agent，离线确定性路径继续可用。B2、C2、D2 和后续扩展分别按需要交付，不阻塞第一条可靠 Input 闭环。优先级表示风险/价值，不代表所有 P1 项必须串行完成。
 
 ### R1 · 已完成 · 跨源 promotion 与保守输出（`a7a1347`；原 P0）
 
@@ -75,16 +75,16 @@
 
 ### C1 · P1 · 最小证据引用契约（G003 第一部分；V1/D1 前置）
 
-开发状态：`anr_evidence/evidence_store.py` 已写入、待验证。基础 API 保留原始 bytes、区分 archive container/member、显式关联 group，回读检查 hash/source/group/range。已开发 directory loader 的 `capture_originals=True` 及 context writer 的 `build_evidence_store=True` 接入，生成 SQLite/逐组引用 sidecar；只映射唯一精确原始行，缺失/重复/转换行明确 unresolved。新增 ZIP/TAR 成员捕获、混合目录来源透传及 ESS span 绑定/JSONL 导出；绑定会回读 group/source/content，不信任传入 JSONL 引用。Agent 已开发可选 store/sidecar 消费与当前轮引用回读门禁；JSONL 默认清空未验证引用。流式 ingestion、完整因果资格及验收仍未完成。不得把 SQLite 文件基础实现等同于 C1 完成。
+开发状态：C1 最小证据引用契约已实现，并由 `2a757f2` 的生命周期回归及全量验证确认。基础 API 保留原始 bytes、区分 archive container/member、显式关联 group，回读检查 hash/source/group/range；directory/ZIP/TAR/mixed loader 透传获胜来源，context 可选生成 SQLite、逐组引用 sidecar 与带 span 的 ESS。已验证 mixed archive+loose 输入只保留最终 winner provenance；关闭 store/ESS 后重生成会清理 `evidence.sqlite3`、WAL/SHM、refs 与 ESS，同时保留用户分析、四个分析槽位和 baseline `logcat.txt`；发布中途失败会回滚到上一代完整产物，随后重试成功。全量测试 424 项通过、1 项跳过，`compileall` 与 `git diff --check` 通过。该结论仅完成 C1 最小契约：G003 仍因 C2 共享流式/预算及 100 MiB/1 GiB 验证未完成而保持 pending，也不代表 V1 因果资格、S1 引用保真脱敏或 G002/B2 完成。
 
-- [ ] 新增：以 stdlib `sqlite3` 实现 artifact + span + group 及原始回读；按实际需求映射 ESS，暂不预建完整 finding/probe/图数据库。保留旧 package API。
-- [ ] 验收：引用解析到原始 artifact hash + byte range，覆盖 UTF-8 多字节、CRLF、无末尾换行、同名 shard、重复内容、文件变更与越界；写明归档引用指向容器还是解压后的成员，不混淆两者。
-- [ ] 验收：source/group 校验阻止跨 ANR 引用；旧产物/字段兼容，`logcat.txt` 和四槽位重生成不损坏。这个阶段不宣称达到大输入内存目标。
+- [x] 新增：以 stdlib `sqlite3` 实现 artifact + span + group 及原始回读；按实际需求映射 ESS，暂不预建完整 finding/probe/图数据库。保留旧 package API。
+- [x] 验收：引用解析到原始 artifact hash + byte range，覆盖 UTF-8 多字节、CRLF、无末尾换行、同名 shard、重复内容、文件变更与越界；归档引用明确区分 container/member，mixed archive+loose 输入只保留获胜来源。
+- [x] 验收：source/group 校验阻止跨 ANR 引用；旧产物/字段兼容；重生成清理 SQLite/WAL/SHM、refs/ESS 时保留用户分析、`logcat.txt` 和四槽位，发布失败可回滚并重试。这个阶段不宣称达到大输入内存目标。
 - [x] 优化：同毫秒多 ANR 的 group ID 已追加稳定哈希后缀；普通非冲突 ID 保持不变。回归覆盖目录、index、事件引用及真实 HTTP mock 中的按组 map；远程入口重复 ID 防御保留。此项作为独立 P0 小修完成，不代表 C1 store 完成。
 
 ### V1 · P1 · 确定性输出/引用验证（G008/G009 前置；依赖 C1）
 
-开发增量：显式 store 模式已接入当前轮/当前组 span 目录与原始字节回读；chain/conclusion 均要求 groupId 和非空 span 引用。伪造/跨组/未提供/变化引用拒绝；因果资格尚未接入，严格路径暂不接受 high。旧路径标记 structure_only，不声称引用验证。完整矛盾、身份/时间/blocker 门禁待后续；批次验证待执行。
+开发增量：显式 store 模式已接入当前轮/当前组 span 目录与原始字节回读；chain/conclusion 均要求 groupId 和非空 span 引用。伪造/跨组/未提供/变化引用拒绝；相关回归已随 C1 全量验证通过。因果资格尚未接入，严格路径暂不接受 high；旧路径标记 structure_only。完整矛盾、身份/时间/blocker 门禁仍待后续，不宣称 V1 完成。
 
 - [ ] 优化：在当前 Agent 结果接受边界验证结构、引用归属、保守字段和矛盾；不等八类 specialist 或 Perfetto 完成后再加入。
 - [ ] 验收：非法 JSON/类型、伪造/越界/跨组引用、将日志中的指令当规则、提升保守字段均拒绝或输出明确 invalid 状态；原始证据保留。mock LLM 测试无需 API key。
@@ -192,7 +192,7 @@
 - `python3 -m compileall -q anr_evidence tests scripts` 与 `git diff --check`：通过。
 - 验证范围只证明当前检出的 Android 17 B1 规则、manifest 约束和 legacy 兼容行为；未重新下载/重算固定 URL 对应的上游源码 blob，未执行 Android 14–16/OEM overlay 验收，也未执行真实设备兼容性验证。因此 G002 仍未完成。
 
-后续仍按 **C1 → V1 → DQ1 → D1** 推进；S1/E1 的前置约束不变，不得将 R1 的提示修复等同于 S1 已具备出站安全保证。
+C1 最小证据引用契约已完成；后续按 **V1 → DQ1 → D1** 推进，C2 另行完成 G003 的共享流式/预算与 100 MiB/1 GiB 验证。S1/E1 的前置约束不变，不得将 C1 引用契约等同于 V1 因果资格或 S1 已具备完整脱敏/出站安全保证。
 
 - [ ] 验收：每个后续代码故事先补针对性回归，再实现，执行专项 → 全量 unittest → compileall → diff 检查；适用时补 eval/benchmark/真实样本，明确 skip 与外部门禁。
 - [ ] 验收：baseline、CLI/产物兼容、四槽位保留、三项保守字段持续成立；只有证据与复核齐全才更新任务完成状态。
