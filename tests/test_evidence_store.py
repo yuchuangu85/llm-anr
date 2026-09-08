@@ -4,6 +4,7 @@ import copy
 from datetime import datetime
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -118,6 +119,133 @@ class StoreTests(unittest.TestCase):
                 analysis = Path(paths['analysis']).read_text()
                 self.assertEqual(sum(line.startswith('#### AI Analysis — ') for line in analysis.splitlines()), 4)
                 self.assertTrue(Path(paths['logcat']).is_file())
+
+    def test_mixed_archive_and_loose_capture_keeps_only_selected_provenance(self):
+        archive_event = (LINE + "\r\narchive-superseded\r\n").encode()
+        loose_event = (LINE + "\r\nloose-selected\r\n").encode()
+        archive_trace = (
+            "----- pid 1234 at 2026-04-12 10:00:05.100000000+0000 -----\r\n"
+            "Cmd line: com.demo\r\n"
+            '"main" prio=5 tid=1 Native\r\n'
+            "  at android.os.BinderProxy.transactNative(Native method)\r\n"
+        ).encode()
+        archive_logcat = (
+            "04-12 10:00:05.050 E InputDispatcher: Input dispatching timed out for com.demo\r\n"
+        ).encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "mixed"
+            root.mkdir()
+            archive_path = root / "partial.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("events/archive_events.txt", archive_event)
+                archive.writestr("data/anr/traces.txt", archive_trace)
+                archive.writestr("logs/logcat.txt", archive_logcat)
+            (root / "events.txt").write_bytes(loose_event)
+
+            package = load_package_from_path(root, package_name="com.demo", capture_originals=True)
+            legacy = load_package_from_path(root, package_name="com.demo")
+            self.assertEqual(set(package["sources"]), set(legacy["sources"]))
+            for source_kind in package["sources"]:
+                self.assertEqual(package["sources"][source_kind]["content"],
+                                 legacy["sources"][source_kind]["content"])
+                self.assertNotIn("originalArtifacts", legacy["sources"][source_kind])
+            self.assertIn("loose-selected", package["sources"]["event_log"]["content"])
+            self.assertNotIn("archive-superseded", package["sources"]["event_log"]["content"])
+            event_origins = [item["origin"] for item in package["sources"]["event_log"]["originalArtifacts"]]
+            self.assertEqual({origin["type"] for origin in event_origins}, {"file"})
+            self.assertEqual({Path(origin["path"]).name for origin in event_origins}, {"events.txt"})
+            for source_kind in ("trace", "logcat"):
+                origins = [item["origin"] for item in package["sources"][source_kind]["originalArtifacts"]]
+                self.assertTrue(origins)
+                self.assertEqual({origin["type"] for origin in origins}, {"archive_member"})
+                self.assertEqual({origin["container"] for origin in origins}, {str(archive_path.absolute())})
+
+            index = build_ai_context_artifacts(package, AiContextOptions(
+                out_dir=Path(tmp) / "output", package_name="com.demo",
+                build_evidence_store=True, build_ess=True,
+            ))
+            group = index["groups"][0]
+            sidecar = json.loads(Path(group["artifactPaths"]["evidenceRefs"]).read_text())
+            resolved = [row for row in sidecar["references"] if row["status"] == "resolved"]
+            self.assertTrue(resolved)
+            with EvidenceStore(index["artifactPaths"]["evidenceStore"]) as store:
+                readbacks = [store.read_span(row["spanId"], group_id=group["id"],
+                                             source_kind=row["sourceKind"]) for row in resolved]
+            event_readbacks = [row for row in readbacks if row["sourceKind"] == "event_log"]
+            self.assertTrue(event_readbacks)
+            self.assertEqual({row["origin"]["type"] for row in event_readbacks}, {"file"})
+            archive_readbacks = [row for row in readbacks if row["sourceKind"] in ("trace", "logcat")]
+            self.assertTrue(archive_readbacks)
+            self.assertEqual({row["origin"]["type"] for row in archive_readbacks}, {"archive_member"})
+            self.assertNotIn("archive-superseded", "".join(row["content"].decode() for row in readbacks))
+
+    def test_repeated_generation_disables_store_and_ess_without_losing_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "output"
+            first = build_ai_context_artifacts(captured_package(), AiContextOptions(
+                out_dir=out, build_evidence_store=True, build_ess=True,
+            ))
+            group_id = first["groups"][0]["id"]
+            group_dir = out / group_id
+            analysis_path = group_dir / "anr_analysis.md"
+            analysis = analysis_path.read_text()
+            marker = "<!-- AI_ANALYSIS_SLOT:trace -->"
+            start = analysis.index(marker) + len(marker)
+            end = analysis.index("\n### EventLog 事件日志", start)
+            user_analysis = "\nUSER-WRITTEN TRACE ANALYSIS\n"
+            analysis_path.write_text(analysis[:start] + user_analysis + analysis[end:])
+            for suffix in ("-wal", "-shm"):
+                (out / ("evidence.sqlite3" + suffix)).write_text("stale")
+
+            second = build_ai_context_artifacts(captured_package(), AiContextOptions(out_dir=out))
+            self.assertNotIn("evidenceStore", second["artifactPaths"])
+            self.assertFalse(any((out / ("evidence.sqlite3" + suffix)).exists()
+                                 for suffix in ("", "-wal", "-shm")))
+            self.assertFalse((group_dir / "evidence_refs.json").exists())
+            self.assertFalse((group_dir / "evidence.jsonl").exists())
+            group_paths = second["groups"][0]["artifactPaths"]
+            self.assertNotIn("evidenceRefs", group_paths)
+            self.assertNotIn("evidenceSlices", group_paths)
+            regenerated = analysis_path.read_text()
+            self.assertIn("USER-WRITTEN TRACE ANALYSIS", regenerated)
+            self.assertEqual(sum(line.startswith("#### AI Analysis — ")
+                                 for line in regenerated.splitlines()), 4)
+            self.assertTrue((group_dir / "logcat.txt").is_file())
+
+    def test_failed_workspace_publication_preserves_prior_generation_and_retry_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "output"
+            first = build_ai_context_artifacts(captured_package(), AiContextOptions(
+                out_dir=out, build_evidence_store=True, build_ess=True,
+            ))
+            first_index = (out / "index.json").read_bytes()
+            first_analysis = Path(first["groups"][0]["artifactPaths"]["analysis"]).read_bytes()
+            first_store = (out / "evidence.sqlite3").read_bytes()
+            real_replace = os.replace
+            calls = 0
+
+            def fail_stage_publication(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated publication failure")
+                return real_replace(source, destination)
+
+            with patch("anr_evidence.ai_context.os.replace", side_effect=fail_stage_publication):
+                with self.assertRaisesRegex(OSError, "simulated publication failure"):
+                    build_ai_context_artifacts(captured_package(), AiContextOptions(out_dir=out))
+
+            self.assertEqual((out / "index.json").read_bytes(), first_index)
+            self.assertEqual(Path(first["groups"][0]["artifactPaths"]["analysis"]).read_bytes(), first_analysis)
+            self.assertEqual((out / "evidence.sqlite3").read_bytes(), first_store)
+            self.assertTrue(Path(first["groups"][0]["artifactPaths"]["evidenceRefs"]).is_file())
+            self.assertTrue(Path(first["groups"][0]["artifactPaths"]["evidenceSlices"]).is_file())
+
+            retry = build_ai_context_artifacts(captured_package(), AiContextOptions(out_dir=out))
+            self.assertNotIn("evidenceStore", retry["artifactPaths"])
+            self.assertFalse((out / "evidence.sqlite3").exists())
+            self.assertFalse((out / retry["groups"][0]["id"] / "evidence_refs.json").exists())
+            self.assertFalse((out / retry["groups"][0]["id"] / "evidence.jsonl").exists())
 
     def test_duplicate_groups_and_invalid_encoding_fail_closed(self):
         package = captured_package()
