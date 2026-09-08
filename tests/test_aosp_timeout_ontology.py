@@ -36,6 +36,37 @@ def package_with_reason(reason: str, *, source_kind: str = "logcat", **extra: ob
 
 
 class AospTimeoutManifestTests(unittest.TestCase):
+    def test_registry_loads_only_android_17_and_preserves_no_arg_compatibility(self) -> None:
+        compatibility_manifest = load_manifest()
+        explicit_manifest = load_manifest(17)
+
+        self.assertEqual(compatibility_manifest, explicit_manifest)
+        self.assertIsNot(compatibility_manifest, explicit_manifest)
+        for unsupported_release in (14, 15, 16, 18):
+            with self.subTest(android_release=unsupported_release):
+                with self.assertRaisesRegex(
+                    ContractValidationError, "No independently pinned timeout profile"
+                ):
+                    load_manifest(unsupported_release)
+
+    def test_registry_returns_defensive_copies_of_cached_manifest(self) -> None:
+        mutated = load_manifest(17)
+        mutated["profileId"] = "caller-mutated"
+        mutated["sources"]["base"]["revision"] = "0" * 40
+        mutated["kinds"]["INPUT_DISPATCH_NO_FOCUSED_WINDOW"]["trigger"] = "mutated"
+
+        reloaded = load_manifest(17)
+
+        self.assertEqual(reloaded["profileId"], "aosp-android-17.0.0_r1-input")
+        self.assertEqual(
+            reloaded["sources"]["base"]["revision"],
+            "94b4c163b7dfe5ce3607f7bb8456f9573f7de57d",
+        )
+        self.assertEqual(
+            reloaded["kinds"]["INPUT_DISPATCH_NO_FOCUSED_WINDOW"]["trigger"],
+            "input.no_focused_window",
+        )
+
     def test_manifest_has_complete_auditable_schema_and_b1_kind_coverage(self) -> None:
         manifest = load_manifest()
 
@@ -131,6 +162,19 @@ class AospTimeoutManifestTests(unittest.TestCase):
 
 
 class AospTimeoutResolutionTests(unittest.TestCase):
+    def test_resolver_output_cannot_mutate_cached_android_17_profile(self) -> None:
+        first = resolve_timeout(package_with_reason(NO_FOCUS_REASON))
+        first["provenanceRefs"][0]["revision"] = "0" * 40
+
+        second = resolve_timeout(package_with_reason(NO_FOCUS_REASON))
+
+        self.assertEqual(second["profileId"], "aosp-android-17.0.0_r1-input")
+        self.assertEqual(second["canonicalTrigger"], "input.no_focused_window")
+        self.assertEqual(
+            second["provenanceRefs"][0]["revision"],
+            "94b4c163b7dfe5ce3607f7bb8456f9573f7de57d",
+        )
+
     def test_resolves_no_focused_window_reason_from_explicit_anchor(self) -> None:
         result = resolve_timeout(package_with_reason(NO_FOCUS_REASON, source_kind="event_log"))
 

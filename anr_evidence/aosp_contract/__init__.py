@@ -1,10 +1,14 @@
 """Additive, version-pinned trigger observations; never a blocker inference."""
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import dataclass
+from functools import lru_cache
 from importlib.resources import files
 import json
 import re
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Pattern
 
 
 class ContractValidationError(ValueError):
@@ -166,17 +170,57 @@ def validate_manifest_data(manifest: Any) -> dict[str, Any]:
     return manifest
 
 
-def load_manifest() -> dict[str, Any]:
-    manifest = json.loads(files(__package__).joinpath("android-17.json").read_text(encoding="utf-8"))
-    return validate_manifest_data(manifest)
+@dataclass(frozen=True)
+class _TimeoutProfile:
+    manifest_resource: str
+    validator: Callable[[Any], dict[str, Any]]
+    patterns: Mapping[str, Pattern[str]]
 
 
-_PATTERNS = {
-    "INPUT_DISPATCH_NO_FOCUSED_WINDOW": re.compile(r"\bdoes not have a focused window\b", re.IGNORECASE),
+_ANDROID_17_PATTERNS = MappingProxyType({
+    "INPUT_DISPATCH_NO_FOCUSED_WINDOW": re.compile(
+        r"\bdoes not have a focused window\b", re.IGNORECASE
+    ),
     "INPUT_DISPATCH_WINDOW_UNRESPONSIVE": re.compile(
         r"\bis not responding\.\s*Waited \d+ms for \S", re.IGNORECASE
     ),
-}
+})
+_TIMEOUT_PROFILES: Mapping[int, _TimeoutProfile] = MappingProxyType({
+    17: _TimeoutProfile(
+        manifest_resource="android-17.json",
+        validator=validate_manifest_data,
+        patterns=_ANDROID_17_PATTERNS,
+    ),
+})
+
+
+def _profile_for_release(android_release: int) -> _TimeoutProfile:
+    if type(android_release) is not int or android_release not in _TIMEOUT_PROFILES:
+        raise ContractValidationError(
+            f"No independently pinned timeout profile registered for Android {android_release!r}"
+        )
+    return _TIMEOUT_PROFILES[android_release]
+
+
+@lru_cache(maxsize=None)
+def _load_manifest_cached(android_release: int) -> dict[str, Any]:
+    profile = _profile_for_release(android_release)
+    manifest = json.loads(
+        files(__package__).joinpath(profile.manifest_resource).read_text(encoding="utf-8")
+    )
+    return profile.validator(manifest)
+
+
+def load_manifest(android_release: int = 17) -> dict[str, Any]:
+    """Load a registered, independently pinned timeout profile.
+
+    The no-argument form remains the Android 17 compatibility entry point.
+    Unknown releases fail closed, and every caller receives a defensive copy of
+    the internally cached validated manifest.
+    """
+    return deepcopy(_load_manifest_cached(android_release))
+
+
 _ANR_REASON = re.compile(r"\bam_anr\s*:\s*|\bReason:\s*", re.IGNORECASE)
 
 
@@ -195,14 +239,19 @@ def resolve_timeout(package: dict[str, Any]) -> dict[str, Any]:
         "requiresHumanConfirmation": True,
     }
     release = package.get("android_release")
-    if type(release) is not int or release != 17:
+    if type(release) is not int:
         result["gaps"] = ["android_release_unknown" if release is None else "unsupported_android_release"]
+        return result
+    try:
+        profile = _profile_for_release(release)
+    except ContractValidationError:
+        result["gaps"] = ["unsupported_android_release"]
         return result
     if package.get("vendor_overlays"):
         result["gaps"] = ["vendor_overlay_unsupported"]
         return result
     try:
-        manifest = load_manifest()
+        manifest = load_manifest(release)
     except (OSError, ValueError, KeyError, TypeError):
         result["gaps"] = ["profile_unavailable_or_invalid"]
         return result
@@ -215,7 +264,7 @@ def resolve_timeout(package: dict[str, Any]) -> dict[str, Any]:
         result["gaps"] = ["source_revision_conflict"]
         return result
     declared = package.get("timeout_kind")
-    if declared is not None and (not isinstance(declared, str) or declared not in _PATTERNS):
+    if declared is not None and (not isinstance(declared, str) or declared not in profile.patterns):
         result["gaps"] = ["timeout_kind_unsupported"]
         return result
     observations = []
@@ -235,7 +284,7 @@ def resolve_timeout(package: dict[str, Any]) -> dict[str, Any]:
             if not anchor:
                 continue
             reason = line[anchor.end():].strip()
-            matches = [name for name, pattern in _PATTERNS.items() if pattern.search(reason)]
+            matches = [name for name, pattern in profile.patterns.items() if pattern.search(reason)]
             observations.append((reason, matches, {"sourceKind": kind, "path": source.get("path", kind),
                                                    "lineIndex": index, "content": line,
                                                    "coordinateSpace": "provided_source_view"}))
