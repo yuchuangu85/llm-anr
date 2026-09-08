@@ -7,7 +7,7 @@ prevention) operate on a common schema rather than raw strings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from typing import Any
@@ -27,7 +27,9 @@ class EvidenceSlice:
     content: str                     # the raw log line
     importance: str                  # "critical", "warning", "contextual"
     group_id: str | None             # the ANR group this belongs to
-    line_index: int | None           # position in original source (0-based)
+    line_index: int | None           # position in the supplied group source view (0-based)
+    evidence_ref: dict[str, Any] | None = None  # optional verified store span coordinates
+    evidence_ref_error: str | None = None  # explicit failed/untrusted reference binding
 
 
 def build_evidence_slices(
@@ -128,6 +130,8 @@ def annotate_slices_with_tags(
             importance=importance,
             group_id=s.group_id,
             line_index=s.line_index,
+            evidence_ref=s.evidence_ref,
+            evidence_ref_error=s.evidence_ref_error,
         ))
     return annotated
 
@@ -156,10 +160,21 @@ def _slice_to_dict(s: EvidenceSlice) -> dict[str, Any]:
         "importance": s.importance,
         "group_id": s.group_id,
         "line_index": s.line_index,
+        **({"evidence_ref": s.evidence_ref} if s.evidence_ref is not None else {}),
+        **({"evidence_ref_error": s.evidence_ref_error} if s.evidence_ref_error is not None else {}),
     }
 
 
 def _dict_to_slice(d: dict[str, Any]) -> EvidenceSlice:
+    error = d.get("evidence_ref_error")
+    known_errors = {
+        "serialized_reference_unverified", "serialized_reference_error",
+        "malformed_sidecar", "ambiguous_sidecar_candidates", "reference_integrity_check_failed",
+    }
+    if error is not None and (not isinstance(error, str) or error not in known_errors):
+        error = "serialized_reference_error"
+    if d.get("evidence_ref") is not None:
+        error = "serialized_reference_unverified"
     return EvidenceSlice(
         source=d["source"],
         timestamp_iso=d.get("timestamp_iso"),
@@ -169,6 +184,9 @@ def _dict_to_slice(d: dict[str, Any]) -> EvidenceSlice:
         importance=d.get("importance", "contextual"),
         group_id=d.get("group_id"),
         line_index=d.get("line_index"),
+        # Serialized references are data, not proof. Rebind from a store/sidecar.
+        evidence_ref=None,
+        evidence_ref_error=error,
     )
 
 
@@ -179,8 +197,11 @@ def write_ess_jsonl(slices: list[EvidenceSlice], path: Path) -> None:
             fh.write(json.dumps(_slice_to_dict(s), ensure_ascii=False) + "\n")
 
 
-def read_ess_jsonl(path: Path) -> list[EvidenceSlice]:
-    """Read ESS from a JSONL file."""
+def read_ess_jsonl(path: Path, *, store=None,
+                   references: dict[str, list[dict[str, Any]]] | None = None) -> list[EvidenceSlice]:
+    """Read ESS, discarding serialized refs unless freshly rebound to a store."""
+    if (store is None) != (references is None):
+        raise ValueError("store and references must be supplied together")
     slices: list[EvidenceSlice] = []
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
@@ -188,7 +209,7 @@ def read_ess_jsonl(path: Path) -> list[EvidenceSlice]:
             if not line:
                 continue
             slices.append(_dict_to_slice(json.loads(line)))
-    return slices
+    return attach_store_references(slices, store, references) if store is not None else slices
 
 
 # ── Filter helpers ─────────────────────────────────────────────────────────
@@ -245,3 +266,58 @@ def filter_slices_by_source(
     if source_kinds is None:
         return slices
     return [s for s in slices if s.source in source_kinds]
+
+
+def attach_store_references(slices: list[EvidenceSlice], store,
+                            references: dict[str, list[dict[str, Any]]]) -> list[EvidenceSlice]:
+    """Bind a sidecar reference only after scoped byte-for-byte store readback.
+
+    JSONL-supplied references are not trusted: this function replaces them.
+    Failed bindings retain their full slice content with evidence_ref=None.
+    """
+    from .evidence_store import EvidenceStoreError
+
+    sections = {"trace": "trace", "event_log": "eventLog", "logcat": "logcat",
+                "anr_manager": "anrManager", "meminfo": "meminfo"}
+    candidates: dict[tuple, list[dict[str, Any]]] = {}
+    invalid_groups: set[str] = set()
+    for group_id, rows in references.items():
+        if not isinstance(group_id, str):
+            continue
+        if not isinstance(rows, list):
+            invalid_groups.add(group_id)
+            continue
+        for row in rows:
+            if isinstance(row, dict) and row.get("status") == "unresolved":
+                continue
+            if (not isinstance(row, dict) or not isinstance(row.get("section"), str)
+                    or type(row.get("viewLineIndex")) is not int
+                    or not isinstance(row.get("spanId"), str) or row.get("status") != "resolved"):
+                invalid_groups.add(group_id)
+                continue
+            if row.get("status") == "resolved":
+                key = (group_id, row.get("section"), row.get("viewLineIndex"))
+                candidates.setdefault(key, []).append(row)
+    output = []
+    for item in slices:
+        ref = None
+        error = "malformed_sidecar" if item.group_id in invalid_groups else None
+        rows = candidates.get((item.group_id, sections.get(item.source), item.line_index), [])
+        if len(rows) > 1:
+            error = "ambiguous_sidecar_candidates"
+        if len(rows) == 1 and error is None:
+            row = rows[0]
+            source_kind = "logcat" if item.source == "anr_manager" else item.source
+            try:
+                if row.get("sourceKind") != source_kind:
+                    raise EvidenceStoreError("Reference source mismatch")
+                value = store.read_span(row["spanId"], group_id=item.group_id, source_kind=source_kind)
+                if value["content"].decode("utf-8").rstrip("\r\n") != item.content:
+                    raise EvidenceStoreError("Reference content differs from slice")
+                ref = {key: value[key] for key in (
+                    "spanId", "groupId", "artifactId", "sourceKind", "sha256",
+                    "startByte", "endByte", "coordinateSpace")}
+            except (EvidenceStoreError, KeyError, UnicodeError):
+                error = "reference_integrity_check_failed"
+        output.append(replace(item, evidence_ref=ref, evidence_ref_error=error))
+    return output

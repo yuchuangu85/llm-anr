@@ -1,8 +1,8 @@
 """Fail-closed validation for manager-agent JSON output.
 
 This module validates only the structural and conservative-safety contract.
-Evidence-reference existence and causal consistency belong to the later V1
-verification stage.
+Store-reference existence is checked separately by evidence_validation;
+semantic causal consistency remains an unimplemented V1 qualification gate.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ _TOP_FIELDS = frozenset(
 )
 
 
-def validate_manager_report(data: object) -> list[str]:
+def validate_manager_report(data: object, *, require_store_refs: bool = False) -> list[str]:
     """Return all structural and safety errors in a manager report.
 
     An empty list means the value satisfies the current manager output shape.
@@ -84,7 +84,7 @@ def validate_manager_report(data: object) -> list[str]:
         data,
         "candidateChains",
         "$",
-        _CHAIN_FIELDS,
+        _CHAIN_FIELDS | {"groupId"} if require_store_refs else _CHAIN_FIELDS,
         _validate_chain,
         errors,
     )
@@ -92,7 +92,7 @@ def validate_manager_report(data: object) -> list[str]:
         data,
         "candidateConclusions",
         "$",
-        _CONCLUSION_FIELDS,
+        _CONCLUSION_FIELDS | {"groupId", "evidenceRefs"} if require_store_refs else _CONCLUSION_FIELDS,
         _validate_conclusion,
         errors,
     )
@@ -109,6 +109,17 @@ def validate_manager_report(data: object) -> list[str]:
     _validate_expected_bool(data, "notRootCauseYet", True, "$", errors)
     _validate_expected_bool(data, "requiresHumanConfirmation", True, "$", errors)
     _validate_reprobe(data, errors)
+    if require_store_refs:
+        for field in ("candidateChains", "candidateConclusions"):
+            items = data.get(field)
+            if not isinstance(items, list):
+                continue
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                path = f"$.{field}[{index}]"
+                _validate_string_field(item, "groupId", path, errors)
+                _validate_string_array_field(item, "evidenceRefs", path, errors)
     return errors
 
 

@@ -7,7 +7,11 @@ from datetime import datetime, timedelta
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import tempfile
+import uuid
 import re
 from typing import Any
 
@@ -16,6 +20,7 @@ from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .constants import TIME_ANCHOR_PRECEDENCE
 from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
+from .dump_quality import audit_dump_quality, bind_dump_quality_references
 from .log_identity import parse_line_identity
 from .input_window_evidence import build_input_window_digest
 from .root_cause_hints import (
@@ -56,6 +61,7 @@ class AiContextOptions:
     anr_type: str | None = None
     build_ess: bool = False
     delta_t_normalized: bool = False
+    build_evidence_store: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,7 @@ class AiContextResult:
                     "fallbackUsed": group.get("fallbackUsed", False),
                     "strategy": group.get("strategy"),
                     "rootCausePatternHints": group.get("rootCausePatternHints", []),
+                    "dumpQuality": group.get("dumpQuality"),
                     "completeness": group["completeness"],
                 }
                 for group in self.groups
@@ -116,16 +123,48 @@ def build_ai_context(package: dict[str, Any], options: AiContextOptions) -> AiCo
 
 
 def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOptions) -> dict[str, Any]:
-    """Create anr_analysis.md per ANR group and index.json for AI-assisted ANR analysis.
+    """Build a complete AI workspace, then publish it through a recoverable swap.
 
-    Artifact generation intentionally avoids rendering a monolithic cache/prompt
-    for every group before writing files.  Large multi-ANR inputs can retain
-    megabytes of rendered markdown otherwise; rendering each group directly
-    keeps peak memory proportional to one group plus the shared source package.
+    The previous published workspace is copied only to preserve user-authored
+    analysis slots.  New generated artifacts are written solely in a sibling
+    staging directory.  Consumers therefore never receive a new SQLite snapshot
+    paired with sidecars from a successfully completed previous generation.
     """
 
-    out_dir = Path(options.out_dir or "anr_ai_context")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    published_out_dir = Path(options.out_dir or "anr_ai_context")
+    published_out_dir.parent.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_workspace_publish(published_out_dir)
+    stage_dir = Path(tempfile.mkdtemp(
+        prefix=f".{published_out_dir.name}.staging-", dir=published_out_dir.parent,
+    ))
+    try:
+        if published_out_dir.exists():
+            if not published_out_dir.is_dir():
+                raise ValueError(f"AI context output path is not a directory: {published_out_dir}")
+            shutil.copytree(published_out_dir, stage_dir, dirs_exist_ok=True)
+        index = _build_ai_context_artifacts_in_directory(
+            package,
+            options,
+            write_out_dir=stage_dir,
+            published_out_dir=published_out_dir,
+        )
+        _publish_workspace_stage(stage_dir, published_out_dir)
+        return index
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)
+
+
+def _build_ai_context_artifacts_in_directory(
+    package: dict[str, Any],
+    options: AiContextOptions,
+    *,
+    write_out_dir: Path,
+    published_out_dir: Path,
+) -> dict[str, Any]:
+    """Write one complete generation into *write_out_dir* for later publication."""
+
+    out_dir = write_out_dir
 
     strategy = strategy_for_package(package, options.anr_type)
     resolved = _resolve_options(AiContextOptions(
@@ -144,18 +183,23 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
     groups, group_events = _build_groups(package, resolved, strategy)
     events.extend(group_events)
 
-    # Clean stale legacy files from the top-level output directory.
-    for stale in ("cache.md", "ai_prompt.md", "summary.json", "analysis.md"):
-        stale_path = out_dir / stale
-        if stale_path.exists():
-            stale_path.unlink()
-    # Clean stale legacy files from group subdirectories (upgrade migration).
-    for child in out_dir.iterdir():
-        if child.is_dir():
-            for stale_name in ("cache.md", "ai_prompt.md", "analysis.md", "summary.json"):
-                stale_child = child / stale_name
-                if stale_child.exists():
-                    stale_child.unlink()
+    evidence_store = None
+    if options.build_evidence_store:
+        from .evidence_store_export import export_evidence_store
+        evidence_store = export_evidence_store(
+            package, groups, out_dir, published_path=published_out_dir / "evidence.sqlite3",
+        )
+
+    # Clean stale legacy and prior-generation evidence artifacts inside staging.
+    # This keeps a regenerated workspace from advertising sidecars that belong
+    # to a previous database snapshot or to an ANR group no longer in index.json.
+    current_group_ids = {group["id"] for group in groups}
+    _clean_stale_generated_artifacts(
+        out_dir,
+        current_group_ids=current_group_ids,
+        retain_evidence_store=evidence_store is not None,
+        retain_ess=options.build_ess,
+    )
 
     index_groups: list[dict[str, Any]] = []
     for group in groups:
@@ -167,9 +211,32 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
         logcat_path.write_text(("\n".join(logcat_lines) + "\n") if logcat_lines else "", encoding="utf-8")
         group_for_render = _with_logcat_artifact_reference(group, logcat_path.name)
         artifact_paths = {
-            "analysis": str(analysis_path),
-            "logcat": str(logcat_path),
+            "analysis": _published_artifact_path(analysis_path, out_dir, published_out_dir),
+            "logcat": _published_artifact_path(logcat_path, out_dir, published_out_dir),
         }
+        if evidence_store is not None:
+            refs_path = group_dir / "evidence_refs.json"
+            refs_path.write_text(json.dumps({
+                "groupId": group["id"], "store": evidence_store["publishedPath"],
+                "warning": evidence_store["warning"],
+                "references": evidence_store["groups"][group["id"]],
+            }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            artifact_paths["evidenceRefs"] = _published_artifact_path(refs_path, out_dir, published_out_dir)
+        if options.build_ess:
+            from .evidence_slice import build_ess_from_ai_context_result, attach_store_references, write_ess_jsonl
+            from .evidence_store import EvidenceStore
+            slices = build_ess_from_ai_context_result([group])
+            if evidence_store is not None:
+                with EvidenceStore(evidence_store["path"]) as store:
+                    slices = attach_store_references(slices, store, evidence_store["groups"])
+                    group["dumpQuality"] = bind_dump_quality_references(
+                        group["dumpQuality"], slices, store,
+                        anchor_line=(group.get("anchor") or {}).get("line"),
+                    )
+                    group_for_render["dumpQuality"] = group["dumpQuality"]
+            ess_path = group_dir / "evidence.jsonl"
+            write_ess_jsonl(slices, ess_path)
+            artifact_paths["evidenceSlices"] = _published_artifact_path(ess_path, out_dir, published_out_dir)
         # Keep generated workspaces focused on evidence and analysis slots.
         # The reusable analysis instructions live in docs/anr-ai-analysis-guide.md
         # and are printed by the script entrypoint instead of being duplicated
@@ -193,6 +260,7 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             "completeness": group["completeness"],
             "rootCausePatternHints": group.get("rootCausePatternHints", []),
             "rootCausePatternHintDetails": group.get("rootCausePatternHintDetails", []),
+            "dumpQuality": group.get("dumpQuality"),
             "analysisSlots": analysis_slots,
             "analysisComplete": all(status == "filled" for status in analysis_slots.values()),
             "warningCount": _group_warning_count(group),
@@ -209,13 +277,96 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
     index = {
         "packageId": package.get("package_id"),
         "strategy": _strategy_summary(strategy),
-        "artifactPaths": {"index": str(index_path)},
+        "artifactPaths": {"index": _published_artifact_path(index_path, out_dir, published_out_dir)},
         "groupCount": len(groups),
         "events": events,
         "groups": index_groups,
     }
+    if evidence_store is not None:
+        index["artifactPaths"]["evidenceStore"] = evidence_store["publishedPath"]
     index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return index
+
+def _published_artifact_path(path: Path, write_out_dir: Path, published_out_dir: Path) -> str:
+    """Return the final path for a file currently written inside staging."""
+
+    return str(published_out_dir / path.relative_to(write_out_dir))
+
+
+def _clean_stale_generated_artifacts(
+    out_dir: Path,
+    *,
+    current_group_ids: set[str],
+    retain_evidence_store: bool,
+    retain_ess: bool,
+) -> None:
+    """Remove generated artifacts which cannot safely survive this generation."""
+
+    if not retain_evidence_store:
+        for stale_name in ("evidence.sqlite3", "evidence.sqlite3-shm", "evidence.sqlite3-wal"):
+            stale_path = out_dir / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
+    for stale_name in ("cache.md", "ai_prompt.md", "summary.json", "analysis.md"):
+        stale_path = out_dir / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
+    for child in out_dir.iterdir():
+        if not child.is_dir():
+            continue
+        for stale_name in ("cache.md", "ai_prompt.md", "analysis.md", "summary.json"):
+            stale_path = child / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
+        if not retain_evidence_store or child.name not in current_group_ids:
+            stale_refs = child / "evidence_refs.json"
+            if stale_refs.exists():
+                stale_refs.unlink()
+        if not retain_ess or child.name not in current_group_ids:
+            stale_ess = child / "evidence.jsonl"
+            if stale_ess.exists():
+                stale_ess.unlink()
+
+
+def _recover_interrupted_workspace_publish(published_out_dir: Path) -> None:
+    """Restore a proven prior workspace if a process died during its swap."""
+
+    backups = sorted(
+        candidate for candidate in published_out_dir.parent.glob(
+            f".{published_out_dir.name}.previous-*"
+        ) if candidate.is_dir()
+    )
+    if published_out_dir.exists():
+        for backup in backups:
+            shutil.rmtree(backup)
+        return
+    if len(backups) == 1:
+        os.replace(backups[0], published_out_dir)
+    elif len(backups) > 1:
+        raise RuntimeError(
+            f"Multiple interrupted AI context workspace backups found for {published_out_dir}; "
+            "refusing to choose one automatically"
+        )
+
+
+def _publish_workspace_stage(stage_dir: Path, published_out_dir: Path) -> None:
+    """Publish a complete staged workspace and restore the prior one on error."""
+
+    backup_dir: Path | None = None
+    try:
+        if published_out_dir.exists():
+            backup_dir = published_out_dir.parent / (
+                f".{published_out_dir.name}.previous-{uuid.uuid4().hex}"
+            )
+            os.replace(published_out_dir, backup_dir)
+        os.replace(stage_dir, published_out_dir)
+    except Exception:
+        if backup_dir is not None and backup_dir.exists() and not published_out_dir.exists():
+            os.replace(backup_dir, published_out_dir)
+        raise
+    if backup_dir is not None and backup_dir.exists():
+        shutil.rmtree(backup_dir)
+
 
 def _single_group_summary(result: AiContextResult, group: dict[str, Any], artifact_paths: dict[str, str]) -> dict[str, Any]:
     return {
@@ -319,6 +470,13 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         )
         if input_window_digest is not None:
             group["inputWindowDigest"] = input_window_digest
+        metadata = trace.get("metadata") or {}
+        group["dumpQuality"] = audit_dump_quality(FusionScope(
+            group_id=group["id"], target_pid=None, target_process=options.package_name,
+            trace_pid=metadata.get("pid"), trace_process=metadata.get("processName"),
+            anchor_timestamp=None, trace_timestamp=inferred_anr_dt,
+            before_seconds=options.logcat_before_seconds, after_seconds=options.logcat_after_seconds,
+        ))
         events.extend(_group_step_events(group))
         return [group], events
 
@@ -425,30 +583,27 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         # whose findings are corroborated by logcat / event_log / kernel
         # log signals (e.g. MAIN_BINDER_WAIT_REPLY + "Slow binder
         # transaction" -> critical).
+        target_pid, identity_conflict = _fusion_target_identity(
+            anchor, anrmanager_lines,
+            before_seconds=options.logcat_before_seconds,
+            after_seconds=options.logcat_after_seconds,
+        )
+        trace_metadata = trace.get("metadata", {})
+        dump_scope = FusionScope(
+            group_id=anchor["groupId"], target_pid=target_pid,
+            target_process=anchor.get("packageName"),
+            trace_pid=trace_metadata.get("pid"), trace_process=trace_metadata.get("processName"),
+            anchor_timestamp=anchor_dt, trace_timestamp=_trace_selected_timestamp(trace),
+            before_seconds=options.logcat_before_seconds, after_seconds=options.logcat_after_seconds,
+            identity_conflict=identity_conflict,
+        )
         if trace.get("traceHints"):
-            target_pid, identity_conflict = _fusion_target_identity(
-                anchor, anrmanager_lines,
-                before_seconds=options.logcat_before_seconds,
-                after_seconds=options.logcat_after_seconds,
-            )
-            trace_metadata = trace.get("metadata", {})
             trace["traceHints"] = fuse_cross_source_evidence(
                 trace["traceHints"],
                 logcat_text="\n".join(merged_logcat_lines),
                 event_log_text="\n".join(event_lines),
                 kernel_log_text=kernel_log_content,
-                scope=FusionScope(
-                    group_id=anchor["groupId"],
-                    target_pid=target_pid,
-                    target_process=anchor.get("packageName"),
-                    trace_pid=trace_metadata.get("pid"),
-                    trace_process=trace_metadata.get("processName"),
-                    anchor_timestamp=anchor_dt,
-                    trace_timestamp=_trace_selected_timestamp(trace),
-                    before_seconds=options.logcat_before_seconds,
-                    after_seconds=options.logcat_after_seconds,
-                    identity_conflict=identity_conflict,
-                ),
+                scope=dump_scope,
             )
 
         root_cause_hints = _root_cause_pattern_hints_for_group(
@@ -473,6 +628,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "rootCausePatternHints": root_cause_hints,
             "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
             "trace": trace,
+            "dumpQuality": audit_dump_quality(dump_scope),
             "eventLog": {"lines": event_lines, "warnings": event_warnings},
             "logcat": {"lines": merged_logcat_lines, "warnings": logcat_result.warnings, "metadata": logcat_metadata},
             "anrManager": {
@@ -1137,6 +1293,16 @@ def _render_cache_markdown(
                 ])
             _append_root_cause_pattern_hint_section(lines, group.get("rootCausePatternHintDetails", []))
             lines.append("")
+        quality = group.get("dumpQuality")
+        if quality:
+            lines.extend([
+                "### Dump 身份与质量（确定性观察，非因果结论）",
+                f"- Identity: `{quality['identityStatus']}`; time: `{quality['timeStatus']}`; scope: `{quality['scopeEligibility']}`",
+                f"- Freshness: `{quality['freshnessStatus']}`; process lifetime: `{quality['processLifetimeStatus']}`; references: `{quality['referenceStatus']}`",
+                "- 窗口内不证明 dump 新鲜或 PID 未复用；窗口外不直接标记 stale。",
+                "- Gaps: " + ", ".join(f"`{gap}`" for gap in quality["gaps"]),
+                "",
+            ])
         _append_deadlock_section(lines, group["trace"].get("lockGraph"), group["trace"].get("deadlockHints", []))
         _append_trace_hints_section(lines, group["trace"].get("traceHints", []), group["trace"].get("deadlockHints", []))
         annotated_trace_lines = _inject_hint_markers(

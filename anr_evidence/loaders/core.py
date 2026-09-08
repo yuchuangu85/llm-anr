@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from contextlib import contextmanager, ExitStack
 import bz2
+import base64
 import gzip
 import lzma
 from datetime import datetime
@@ -48,13 +49,15 @@ def load_package_from_directory(
     path: str | Path,
     package_name: str | None = None,
     event_anchor_dt: datetime | None = None,
+    *,
+    capture_originals: bool = False,
 ) -> dict[str, Any]:
     root = Path(path)
     if event_anchor_dt is None:
         event_anchor_dt = find_event_anr_timestamp_by_command(root, package_name)
     # Try smart Monkey-test discovery first (System_log/ directory with
     # System_MT_logcat* files). Falls back to full recursive traversal.
-    smart_entries = try_smart_monkey_discovery(root, package_name=package_name)
+    smart_entries = None if capture_originals else try_smart_monkey_discovery(root, package_name=package_name)
     if smart_entries is not None:
         smart_package = build_package_from_entries(
             root.name,
@@ -67,14 +70,31 @@ def load_package_from_directory(
     # Original fallback: load everything recursively.
     entries = []
     for file_path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        try:
-            content = file_path.read_text(encoding="utf-8")
-            readable = True
-        except UnicodeDecodeError:
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-            readable = False
+        original = {}
+        if capture_originals:
+            raw = file_path.read_bytes()
+            try:
+                content = raw.decode("utf-8")
+                readable = True
+            except UnicodeDecodeError:
+                content = raw.decode("utf-8", errors="replace")
+                readable = False
+            # Keep the legacy text view's universal-newline behavior.
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
+            original = {
+                "originalBase64": base64.b64encode(raw).decode("ascii"),
+                "origin": {"type": "file", "path": str(file_path.absolute())},
+            }
+        else:
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                readable = True
+            except UnicodeDecodeError:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                readable = False
         entries.append(
             {
+                **original,
                 "path": str(file_path.relative_to(root)),
                 "content": content,
                 "readable": readable,
@@ -87,6 +107,8 @@ def _load_loose_package_from_directory(
     path: Path,
     package_name: str | None = None,
     event_anchor_dt: datetime | None = None,
+    *,
+    capture_originals: bool = False,
 ) -> dict[str, Any] | None:
     """Load non-archive files that sit beside bugreport archives.
 
@@ -101,14 +123,31 @@ def _load_loose_package_from_directory(
     for file_path in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
         if is_archive_path(file_path):
             continue
-        try:
-            content = file_path.read_text(encoding="utf-8")
-            readable = True
-        except UnicodeDecodeError:
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-            readable = False
+        original = {}
+        if capture_originals:
+            raw = file_path.read_bytes()
+            try:
+                content = raw.decode("utf-8")
+                readable = True
+            except UnicodeDecodeError:
+                content = raw.decode("utf-8", errors="replace")
+                readable = False
+            # Keep the legacy text view's universal-newline behavior.
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
+            original = {
+                "originalBase64": base64.b64encode(raw).decode("ascii"),
+                "origin": {"type": "file", "path": str(file_path.absolute())},
+            }
+        else:
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                readable = True
+            except UnicodeDecodeError:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                readable = False
         entries.append(
             {
+                **original,
                 "path": str(file_path.relative_to(path)),
                 "content": content,
                 "readable": readable,
@@ -120,7 +159,8 @@ def _load_loose_package_from_directory(
     return package if package.get("sources") else None
 
 
-def load_package_from_archive(path: str | Path, package_name: str | None = None) -> dict[str, Any]:
+def load_package_from_archive(path: str | Path, package_name: str | None = None, *,
+                              capture_originals: bool = False) -> dict[str, Any]:
     archive_path = Path(path)
     suffixes = [suffix.lower() for suffix in archive_path.suffixes]
     entries: list[dict[str, Any]] = []
@@ -142,17 +182,22 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None)
                 )
                 actual_total = 0
                 for member in sorted(files, key=lambda item: item.filename):
+                    original = {}
                     try:
                         with archive.open(member) as extracted:
                             content, readable, actual_size = _read_archive_member(
                                 extracted,
                                 member.filename,
                                 max_bytes=min(MAX_ARCHIVE_MEMBER_BYTES, MAX_ARCHIVE_TOTAL_BYTES - actual_total),
+                                original_out=original if capture_originals else None,
                             )
                     except OSError as exc:
                         raise ArchiveLoadError(f"Failed to read zip member `{member.filename}` from `{archive_path.name}`: {exc}") from exc
                     actual_total += actual_size
-                    entries.append({"path": member.filename, "content": content, "readable": readable})
+                    if capture_originals:
+                        original["origin"] = {"type": "archive_member", "container": str(archive_path.absolute()),
+                                              "member": member.filename, "memberOffset": str(member.header_offset)}
+                    entries.append({"path": member.filename, "content": content, "readable": readable, **original})
         except zipfile.BadZipFile as exc:
             raise ArchiveLoadError(f"Archive `{archive_path.name}` is not a readable zip file or is corrupted.") from exc
     elif any(suffix in {".tar", ".gz", ".tgz", ".bz2", ".xz"} for suffix in suffixes):
@@ -181,17 +226,22 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None)
                     extracted = archive.extractfile(member)
                     if extracted is None:
                         raise ArchiveLoadError("Unable to read declared TAR file member")
+                    original = {}
                     try:
                         with extracted:
                             content, readable, actual_size = _read_archive_member(
                                 extracted,
                                 member.name,
                                 max_bytes=min(MAX_ARCHIVE_MEMBER_BYTES, MAX_ARCHIVE_TOTAL_BYTES - actual_total),
+                                original_out=original if capture_originals else None,
                             )
                     except OSError as exc:
                         raise ArchiveLoadError(f"Failed to read tar member `{member.name}` from `{archive_path.name}`: {exc}") from exc
                     actual_total += actual_size
-                    entries.append({"path": member.name, "content": content, "readable": readable})
+                    if capture_originals:
+                        original["origin"] = {"type": "archive_member", "container": str(archive_path.absolute()),
+                                              "member": member.name, "memberOffset": str(member.offset)}
+                    entries.append({"path": member.name, "content": content, "readable": readable, **original})
                 entries.sort(key=lambda entry: entry["path"])
         except (tarfile.TarError, OSError, EOFError, lzma.LZMAError) as exc:
             raise ArchiveLoadError(f"Archive `{archive_path.name}` is not a readable tar archive or is corrupted.") from exc
@@ -226,7 +276,8 @@ def find_archives_in_directory(directory: Path) -> list[Path]:
     return archives
 
 
-def load_package_from_path(input_path: str | Path, package_name: str | None = None) -> dict[str, Any]:
+def load_package_from_path(input_path: str | Path, package_name: str | None = None, *,
+                           capture_originals: bool = False) -> dict[str, Any]:
     """Universal loader that auto-detects the input type.
 
     Handles:
@@ -243,7 +294,7 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
         if path.suffix.lower() == ".json":
             return load_package_from_fixture(path)
         if is_archive_path(path):
-            return load_package_from_archive(path, package_name=package_name)
+            return load_package_from_archive(path, package_name=package_name, capture_originals=capture_originals)
         raise ArchiveLoadError(f"Unsupported file type: `{path.name}`")
 
     if path.is_dir():
@@ -253,20 +304,20 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
         # exist — the directory may contain System_log/ files that are more
         # complete than what's in the archive (especially for Monkey test
         # results where the zip only contains a partial bugreport snapshot).
-        smart_package = try_load_smart_package(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
+        smart_package = None if capture_originals else try_load_smart_package(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
         if smart_package is not None and _has_core_anr_sources(smart_package):
             return smart_package
         if not archives:
             if smart_package is not None:
                 return smart_package
             # No archives — load directory directly
-            return load_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
+            return load_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt, capture_originals=capture_originals)
 
         # Extract all archives found and merge into a single package.
         all_entries: list[dict[str, Any]] = []
         for archive_path in archives:
             try:
-                package = load_package_from_archive(archive_path, package_name=package_name)
+                package = load_package_from_archive(archive_path, package_name=package_name, capture_originals=capture_originals)
             except ArchivePolicyError:
                 raise
             except ArchiveLoadError:
@@ -279,13 +330,14 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
                         "path": f"{archive_path.name}/{src.get('path', source_kind)}",
                         "content": src["content"],
                         "readable": src.get("readable", True),
+                        "originalArtifacts": src.get("originalArtifacts", []),
                     })
 
         if not all_entries and smart_package is not None:
             return smart_package
         if not all_entries:
             # Fallback: try loading directory directly
-            return load_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
+            return load_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt, capture_originals=capture_originals)
 
         archive_pkg = build_package_from_entries(
             path.name,
@@ -293,7 +345,7 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
             package_name=package_name,
             event_anchor_dt=event_anchor_dt,
         )
-        loose_package = _load_loose_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
+        loose_package = _load_loose_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt, capture_originals=capture_originals)
         if smart_package is None:
             if loose_package is None:
                 return archive_pkg
@@ -520,7 +572,8 @@ def _validate_archive_total_size(archive_path: Path, total: int) -> None:
         )
 
 
-def _read_archive_member(handle, name: str, *, max_bytes: int) -> tuple[str, bool, int]:
+def _read_archive_member(handle, name: str, *, max_bytes: int,
+                         original_out: dict[str, Any] | None = None) -> tuple[str, bool, int]:
     chunks: list[bytes] = []
     remaining = max_bytes + 1
     while remaining > 0:
@@ -534,6 +587,8 @@ def _read_archive_member(handle, name: str, *, max_bytes: int) -> tuple[str, boo
         raise ArchivePolicyError(
             f"Archive member `{name}` actual data exceeds bounded-read limit {max_bytes}."
         )
+    if original_out is not None:
+        original_out["originalBase64"] = base64.b64encode(data).decode("ascii")
     try:
         return data.decode("utf-8"), True, len(data)
     except UnicodeDecodeError:

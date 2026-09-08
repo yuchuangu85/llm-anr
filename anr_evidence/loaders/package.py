@@ -62,6 +62,22 @@ def build_package_from_entries(
             "content": "\n".join(entry["content"] for entry in source_entries if entry["content"]),
             "readable": all(entry["readable"] for entry in source_entries),
         }
+        selected_ids = {id(entry) for entry in source_entries}
+        selected_contents = {entry["content"] for entry in source_entries
+                             if entry["content"] and not entry["content"].isspace()}
+        original_entries = [entry for entry in grouped[source_kind]
+                            if id(entry) in selected_ids or entry["content"] in selected_contents]
+        originals = [
+            {"path": entry["path"], "origin": entry["origin"], "originalBase64": entry["originalBase64"]}
+            # Keep physical duplicates of selected text, but not sources
+            # excluded by package/time selection. LF/CRLF normalization must
+            # not turn duplicate physical occurrences into unique citations.
+            for entry in original_entries if "originalBase64" in entry and "origin" in entry
+        ]
+        for entry in original_entries:
+            originals.extend(entry.get("originalArtifacts", []))
+        if originals:
+            sources[source_kind]["originalArtifacts"] = originals
     return {
         "package_id": package_id,
         "provided_type": None,

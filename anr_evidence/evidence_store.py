@@ -83,7 +83,8 @@ class EvidenceStore:
         if not isinstance(origin, dict) or origin.get("type") not in ("file", "archive_member"):
             raise EvidenceStoreError("Explicit file or archive_member origin required")
         required = {"type", "path"} if origin["type"] == "file" else {"type", "container", "member"}
-        if set(origin) != required or any(not isinstance(value, str) or not value for value in origin.values()):
+        allowed = required | ({"memberOffset"} if origin["type"] == "archive_member" else set())
+        if not required <= set(origin) <= allowed or any(not isinstance(value, str) or not value for value in origin.values()):
             raise EvidenceStoreError("Invalid artifact origin fields")
         digest = hashlib.sha256(content).hexdigest()
         origin_json = json.dumps(origin, ensure_ascii=False, sort_keys=True)
