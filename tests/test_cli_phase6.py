@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
 from anr_evidence import (
     analyze_normalized_package,
@@ -15,21 +11,12 @@ from anr_evidence import (
     load_package_from_fixture,
     normalize_evidence_package,
 )
-
-ROOT = Path(__file__).resolve().parent.parent
-ENV = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
+from tests.helpers import REPO_ROOT, run_cli, write_json_fixture
 
 
 class CliPhase6Tests(unittest.TestCase):
     def test_cli_root_cause_from_fixture_input(self) -> None:
-        completed = subprocess.run(
-            [sys.executable, '-m', 'anr_evidence', '--root-cause', 'tests/fixtures/nfw_01.json'],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=ENV,
-        )
+        completed = run_cli('--root-cause', 'tests/fixtures/nfw_01.json')
         payload = json.loads(completed.stdout)
         self.assertEqual(payload['metadata']['phase'], 'phase6-root-cause-report-v1')
         self.assertEqual(payload['classification']['detectedType'], 'no_focus_window')
@@ -38,21 +25,13 @@ class CliPhase6Tests(unittest.TestCase):
         phase5 = generate_causal_draft(
             analyze_normalized_package(
                 normalize_evidence_package(
-                    extract_evidence_package(load_package_from_fixture(ROOT / 'tests/fixtures/idt_01.json'))
+                    extract_evidence_package(load_package_from_fixture(REPO_ROOT / 'tests/fixtures/idt_01.json'))
                 )
             )
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / 'phase5.json'
-            path.write_text(json.dumps(phase5, ensure_ascii=False), encoding='utf-8')
-            completed = subprocess.run(
-                [sys.executable, '-m', 'anr_evidence', '--root-cause', str(path)],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-                env=ENV,
-            )
+            path = write_json_fixture(tmpdir, 'phase5.json', phase5)
+            completed = run_cli('--root-cause', str(path))
         payload = json.loads(completed.stdout)
         self.assertEqual(payload['metadata']['phase'], 'phase6-root-cause-report-v1')
         self.assertEqual(payload['classification']['detectedType'], 'input_dispatching_timeout')
@@ -61,20 +40,13 @@ class CliPhase6Tests(unittest.TestCase):
         phase5 = generate_causal_draft(
             analyze_normalized_package(
                 normalize_evidence_package(
-                    extract_evidence_package(load_package_from_fixture(ROOT / 'tests/fixtures/nfw_01.json'))
+                    extract_evidence_package(load_package_from_fixture(REPO_ROOT / 'tests/fixtures/nfw_01.json'))
                 )
             )
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / 'phase5.json'
-            path.write_text(json.dumps(phase5, ensure_ascii=False), encoding='utf-8')
-            completed = subprocess.run(
-                [sys.executable, '-m', 'anr_evidence', str(path)],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                env=ENV,
-            )
+            path = write_json_fixture(tmpdir, 'phase5.json', phase5)
+            completed = run_cli(str(path), check=False)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn('Use --root-cause, --remediate, --deliver, or --report', completed.stderr or completed.stdout)
 
