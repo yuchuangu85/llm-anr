@@ -1,8 +1,8 @@
 """Fail-closed validation for manager-agent JSON output.
 
 This module validates only the structural and conservative-safety contract.
-Store-reference existence is checked separately by evidence_validation;
-semantic causal consistency remains an unimplemented V1 qualification gate.
+Store-reference existence and deterministic V1 high-confidence qualification
+are checked separately by evidence_validation.
 """
 
 from __future__ import annotations

@@ -139,6 +139,26 @@ class ManagerAcceptanceSafetyTests(unittest.TestCase):
         self.assertEqual(result.integrated_report, report())
         self.assertEqual(result.errors, [])
 
+    def test_structure_only_path_rejects_high_confidence(self):
+        value = report()
+        value["candidateChains"] = [{
+            "title": "Unqualified high", "rank": 1, "score": 100,
+            "confidenceLevel": "high", "signalCategory": "scheduler_pressure",
+            "rationale": "model prose", "limitations": [], "evidenceRefs": [],
+            "notRootCauseYet": True,
+        }]
+        value["candidateConclusions"] = [{
+            "rank": 1, "confidenceLevel": "high", "statement": "Unqualified high",
+            "signalCategory": "scheduler_pressure", "whyNotFinal": [],
+            "unresolvedQuestions": [], "tentative": True,
+        }]
+        result, count = self.run_manager(json.dumps(value))
+        self.assertEqual(count, 4)
+        self.assertEqual(result.integrated_report, {})
+        self.assertIsNone(result.final_turn)
+        self.assertEqual(result.validation_status, "not_accepted")
+        self.assertTrue(any("store-backed deterministic qualification" in error for error in result.errors))
+
     def test_invalid_report_never_accepted_even_at_iteration_exhaustion(self):
         variants = []
         for key, value in (("finalJudgment", True), ("notRootCauseYet", False),

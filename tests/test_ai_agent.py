@@ -282,12 +282,12 @@ class AgentIntegrationTests(unittest.TestCase):
     MOCK_MANAGER_RESPONSE = json.dumps({
         "finalJudgment": False, "notRootCauseYet": True, "requiresHumanConfirmation": True,
         "candidateChains": [
-            {"title": "锁竞争导致ANR", "rank": 1, "score": 85, "confidenceLevel": "high",
+            {"title": "锁竞争导致ANR", "rank": 1, "score": 85, "confidenceLevel": "medium",
              "signalCategory": "scheduler_pressure", "rationale": "main waiting on lock", "limitations": [],
              "evidenceRefs": [], "notRootCauseYet": True}
         ],
         "candidateConclusions": [
-            {"rank": 1, "confidenceLevel": "high", "statement": "锁竞争是ANR直接原因", "signalCategory": "scheduler_pressure",
+            {"rank": 1, "confidenceLevel": "medium", "statement": "锁竞争是ANR直接原因", "signalCategory": "scheduler_pressure",
              "whyNotFinal": [], "unresolvedQuestions": [], "tentative": True}
         ],
         "remediationDrafts": [

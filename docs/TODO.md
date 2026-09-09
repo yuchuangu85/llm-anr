@@ -15,7 +15,7 @@
 | B1 / B2 | B1 Android 17 已实现并本地验证；B2 未完成 | B1 已增加双仓库固定 revision manifest、两类 Input reason resolver 和 Phase 1 additive 字段，其余八类明确 unsupported；14 项 ontology 专项、18 项 ontology+legacy 专项、全量 unittest discovery 运行 418 项并整体通过（1 项跳过），compileall/diff 检查均通过。B2 的 Android 14–16 profiles 与 OEM overlays 仍未完成；B1 provenance 校验仅覆盖 manifest 自洽性与 canonical source URL，不会重新下载并重算上游源码 blob，也不证明设备兼容 |
 | C1 | 最小证据引用契约已实现并本地验证 | `2a757f2` 覆盖 mixed archive+loose winner provenance、重生成清理 SQLite/WAL/SHM 与 refs/ESS 且保留用户分析/四槽位/baseline logcat，以及发布失败回滚后可重试；全量 424 项通过、1 项跳过，compileall/diff 检查通过。G003 仍因 C2 共享流式/预算及 100 MiB/1 GiB 验证未完成而保持 pending |
 | C2 | 已有流式过滤/归档有界读，未完成 | 归档已加预算并有界读取，目录 loader/package 仍保留或合并全量字符串；单归档预算不是跨输入共享预算，也不证明端到端 100 MiB/1 GiB 内存目标 |
-| V1 | 引用门禁已有基础，因果资格未完成 | C1 已验证当前组 span 回读与错误引用 fail-closed 基础；仍缺完整矛盾、身份/时间/direct-blocker 与高因果置信资格校验，不宣称 V1 完成 |
+| V1 | manager 门禁已完成、已验证 | `e7a03bf` 后的 V1 增量在 manager 接受边界结合当前轮 immutable span、同组 ANR anchor、主线程 direct-blocker、PID/时间/scope 与字段引用资格；还要求受信任的 `eligibleForHighCausalConfidence=true`。当前 auditor 明确保持该值为 false，因此所有现有 high 均 fail-closed；旧无 store 路径仍仅为 low/medium 的 `structure_only` |
 | E1 / Q1 | 已有 hint eval，未完成 | 当前 13 个 eval 用例只验证 hint；机制、引用、跨版本语料准入、冻结评测集和正式性能/成本门禁尚未闭环 |
 | DQ1 | 已有局部门禁，未完成 | R1 已校验 PID/进程/窗口/采样锁环；尚未抽成带统一引用、缺口与 provenance 的共享 dump auditor，不能把窗口外等同于 stale |
 | D1 / D2 | 已有分类/报告/专项指引，未完成 | no-focus/Input 分类和四槽位已有；尚缺结构化 target/blame/lifecycle 闭环、dumpsys adapter 与 WMS/AMS/Recents 状态校验 |
@@ -84,11 +84,11 @@
 
 ### V1 · P1 · 确定性输出/引用验证（G008/G009 前置；依赖 C1）
 
-开发增量：显式 store 模式已接入当前轮/当前组 span 目录与原始字节回读；chain/conclusion 均要求 groupId 和非空 span 引用。伪造/跨组/未提供/变化引用拒绝；相关回归已随 C1 全量验证通过。因果资格尚未接入，严格路径暂不接受 high；旧路径标记 structure_only。完整矛盾、身份/时间/blocker 门禁仍待后续，不宣称 V1 完成。
+开发状态：显式 store 模式在当前轮/当前组 span 目录与原始字节回读之上，已完成 V1 manager 接受门禁。chain/conclusion 均要求 groupId 和非空 span 引用；伪造/跨组/未提供/变化引用拒绝。`high` 仅在本地同时确认 matched identity、within-window time、eligible scope、verified immutable field references、受信任的 `eligibleForHighCausalConfidence=true`、同组 ANR anchor 和主线程 direct-blocker span 时接受；direct-blocker 的受支持签名目前限 Binder reply wait、lock wait 与 render/fence wait，并必须匹配 candidate 的 signalCategory。多个 high 结论未共用同一 blocker span 时作为矛盾拒绝。当前 `dump_quality` 刻意不生成 lifecycle/freshness 的正面证明，并保持 `eligibleForHighCausalConfidence=false`，故真实运行中的 high 均 fail-closed，直到后续 DQ1 提供受信任资格。`score`、retrieval relevance、hint 强度、specialist prose 与证据内 prompt injection 不会升级高置信；无 store 的旧路径仅接受 low/medium，标记为 `structure_only`。这只表示该窄 manager qualification 门禁已实现，`finalJudgment=false`、`notRootCauseYet=true` 与 `requiresHumanConfirmation=true` 仍是硬约束，且不证明 freshness、process lifetime 或最终根因。
 
-- [ ] 优化：在当前 Agent 结果接受边界验证结构、引用归属、保守字段和矛盾；不等八类 specialist 或 Perfetto 完成后再加入。
-- [ ] 验收：非法 JSON/类型、伪造/越界/跨组引用、将日志中的指令当规则、提升保守字段均拒绝或输出明确 invalid 状态；原始证据保留。mock LLM 测试无需 API key。
-- [ ] 验收：缺少身份、时间或直接 blocker 时无法输出高因果置信；`relevanceScore` / hint 强度不能直接充当因果置信。
+- [x] 优化：在当前 Agent 结果接受边界验证结构、引用归属、保守字段和 high 候选的本地矛盾；不等待八类 specialist 或 Perfetto。
+- [x] 验收：非法 JSON/类型、伪造/越界/跨组引用、将日志中的指令当规则、提升保守字段均拒绝或输出明确 invalid 状态；原始证据保留。mock LLM 测试无需 API key。
+- [x] 验收：缺少 identity、time、scope、字段 immutable provenance、ANR anchor 或直接 blocker 时无法输出高因果置信；`relevanceScore` / hint 强度不能直接充当因果置信。
 
 ### S1 · P0 · 输入与模型边界（G003/G009 前置，贯穿）
 
@@ -192,7 +192,7 @@
 - `python3 -m compileall -q anr_evidence tests scripts` 与 `git diff --check`：通过。
 - 验证范围只证明当前检出的 Android 17 B1 规则、manifest 约束和 legacy 兼容行为；未重新下载/重算固定 URL 对应的上游源码 blob，未执行 Android 14–16/OEM overlay 验收，也未执行真实设备兼容性验证。因此 G002 仍未完成。
 
-C1 最小证据引用契约已完成；后续按 **V1 → DQ1 → D1** 推进，C2 另行完成 G003 的共享流式/预算与 100 MiB/1 GiB 验证。S1/E1 的前置约束不变，不得将 C1 引用契约等同于 V1 因果资格或 S1 已具备完整脱敏/出站安全保证。
+C1 最小证据引用契约与 V1 manager 高置信资格门禁已完成；后续按 **DQ1 → D1** 推进，C2 另行完成 G003 的共享流式/预算与 100 MiB/1 GiB 验证。S1/E1 的前置约束不变，不得将 V1 的窄 manager qualification 等同于完整脱敏/出站安全、process lifetime/freshness 证明、机制评测或最终根因结论。
 
 - [ ] 验收：每个后续代码故事先补针对性回归，再实现，执行专项 → 全量 unittest → compileall → diff 检查；适用时补 eval/benchmark/真实样本，明确 skip 与外部门禁。
 - [ ] 验收：baseline、CLI/产物兼容、四槽位保留、三项保守字段持续成立；只有证据与复核齐全才更新任务完成状态。

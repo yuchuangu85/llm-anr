@@ -96,7 +96,7 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 
 - wheel/发布产物级验收仍未执行；本地单元回归不等同正式发布验收。
 - smart-discovery 原始快照优化（当前 capture 模式绕开），更多 loader 边界和混合来源兼容验收。
-- Agent/V1 引用消费与结果引用/因果校验的完整验收。当前主循环已支持 store+sidecar 的 fail-closed 绑定，但字段引用不等于因果资格。
+- 更广的 Agent/V1 语义覆盖与正式评测仍未执行。当前 manager V1 已有窄的 immutable direct-blocker qualification，但字段引用不等于 freshness、process lifetime 或最终根因证明。
 - 非目录捕获路径仍可能使用 base64/完整文本视图；C2 目录流式接口不代表所有 loader 都已获得相同资源上限。
 
 ## ESS 引用开发接入
@@ -105,7 +105,7 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 
 `EvidenceSlice.evidence_ref` 为新增可选字段；没有引用的旧 JSONL 字段保持原状。`attach_store_references` 不信任已有 JSONL 引用，而是使用侧车候选回读数据库，检查 group/source 和解码后的完整行内容，仅保留唯一且匹配的 span。失败时保留原 slice 并清空引用；AnrManager 展示来源映射回原 logcat artifact。
 
-字段绑定不等于因果资格：时间、进程、直接阻塞点和结论矛盾门禁仍需 V1/DQ1/D1。真实 Agent 主循环在调用方同时提供 `evidence_store` 与逐组 sidecar 引用时会重建 ESS、回读绑定，并在完整性失败时于任何 HTTP 请求前停止。
+字段绑定本身不等于因果资格。V1 在 manager 接受点额外校验 matched PID/进程身份、in-window 时间、eligible scope、完整 immutable field references、受信任的 `eligibleForHighCausalConfidence=true`、同组 ANR anchor 与主线程 direct-blocker；DQ1/D1 仍需扩展 freshness、process lifetime 和机制闭环。当前 auditor 保守地将该 eligibility 保持为 false。真实 Agent 主循环在调用方同时提供 `evidence_store` 与逐组 sidecar 引用时会重建 ESS、回读绑定，并在完整性失败时于任何 HTTP 请求前停止。
 
 ## Agent / V1 首批引用消费
 
@@ -118,10 +118,9 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 引用模式下，chain 和 conclusion 均须包含 `groupId` 与非空 `evidenceRefs: ["span-..."]`。
 接受边界要求结构及保守字段合法、引用属于当前组且实际提供于本轮、原始字节回读一致。
 模型响应期间发生的存储变化也会被拒绝；re-probe 重新绑定、截断，只允许引用本轮保留的证据。
-当前尚无完整的确定性因果资格/矛盾判定，引用模式一律拒绝 `high`，不把有效引用等同根因证明。
+V1 对 `high` 的接受是窄而确定性的：候选必须引用当前轮、同组、原始字节回读的 ANR anchor 和主线程 direct-blocker span；dump quality 必须为 matched identity、within-window time、eligible scope、verified immutable field references 和受信任的 `eligibleForHighCausalConfidence=true`；blocker 类别必须匹配 signalCategory。多个 high 候选不能给出不同 blocker。受支持 blocker 目前限 Binder reply wait、lock wait 与 render/fence wait；score、retrieval relevance、hint、specialist prose、有效引用或证据中的 prompt injection 都不构成因果资格。现有 auditor 不会编造 lifecycle/freshness 证明，故 eligibility 当前为 false，引用模式也会拒绝 high。无 immutable store 的旧路径只接受 low/medium。三个保守字段仍强制，故这不是最终根因证明。
 
-`AiAgentResult.validation_status` 区分 `not_accepted`、`structure_only`（旧路径）与
-`references_verified_causality_unverified`（引用模式）。旧路径保持原 schema，不因此获得引用已验证标记。
+`AiAgentResult.validation_status` 区分 `not_accepted`、`structure_only`（旧路径、仅 low/medium）、`references_verified_causality_unverified`（引用模式但没有 accepted high）与 `references_verified_causality_qualified_v1`（至少一个 high 通过 V1）。旧路径保持原 schema，不因此获得引用已验证标记。
 真实日志外发仍默认拒绝；仅合成测试可以显式启用已有 `synthetic_only` 边界。
 
 JSONL 中的 `evidence_ref` 不受信任：`read_ess_jsonl(path)` 默认清空引用；提供
@@ -129,4 +128,4 @@ JSONL 中的 `evidence_ref` 不受信任：`read_ess_jsonl(path)` 默认清空�
 原始快照保留所有检测为同一 source kind 的物理输入（包括旧文本视图去重/筛选掉的来源），
 因此跨 shard 的重复行不会在文本去重后错误获得“唯一”引用；这可能保守地增加 unresolved。
 
-本增量不宣称完成 V1 的语义矛盾、身份/时间/blocker 资格或 DQ1/D1；C2 staged publication 只覆盖显式目录流式接口，不代表其他 loader 已迁移。
+本增量已完成 V1 的 manager 入口级身份/时间/blocker/矛盾资格，但不宣称 DQ1/D1 的 freshness、process lifetime、队列生命周期或完整机制判定；C2 staged publication 只覆盖显式目录流式接口，不代表其他 loader 已迁移。
