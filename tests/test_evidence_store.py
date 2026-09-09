@@ -514,10 +514,16 @@ class AgentReferenceTests(unittest.TestCase):
                 first = report()
                 first['reProbeRequest'] = dict(beforeSeconds=3, afterSeconds=3,
                     sourceKinds=sources, additionalTags=[], reason='Narrow window')
-                replies = [response('{}')] * 3 + [response(json.dumps(first))]
-                replies += [response('{}')] * 3 + [response(json.dumps(self.candidate_report()))]
+                # This fixture has event-log and logcat but no trace, so the
+                # capability router starts cpu_memory + io_binder. A logcat
+                # re-probe then leaves io_binder alone; event_log keeps both.
+                first_round_agents = 2
+                second_round_agents = 2 if sources == ['event_log'] else 1
+                replies = [response('{}')] * first_round_agents + [response(json.dumps(first))]
+                replies += [response('{}')] * second_round_agents + [response(json.dumps(self.candidate_report()))]
                 result, http = self.run_report(first, side_effect=replies, iterations=2)
-                self.assertEqual(http.call_count, 8)
+                expected_calls = sum(1 + sum(route.selected for route in routes) for routes in result.routing_decisions)
+                self.assertEqual(http.call_count, expected_calls)
                 self.assertEqual(bool(result.integrated_report), accepted)
 
     def test_store_does_not_bypass_outbound_deny(self):

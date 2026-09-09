@@ -234,7 +234,7 @@ Multi-agent AI analysis entrypoint (synthetic test data only; requires configure
 Remote requests are denied by default. Real/private logs must stay offline until
 reference-preserving redaction is verified. The opt-in below is a caller
 attestation for synthetic fixtures, not automatic PII detection or permission to
-send real logs. See [safety boundaries and migration notes](docs/safety-boundaries.md).
+send real logs. See [safety boundaries and migration notes](docs/safety-boundaries.md) and [the v1 Definition of Done and final-acceptance gate](docs/v1-dod-and-final-acceptance.md).
 
 ```python
 from anr_evidence import (

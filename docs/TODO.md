@@ -1,12 +1,12 @@
 # 未完成任务与验收清单
 
-> 复核日期：2026-09-08；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`。Android 17 B1 与 C1 最小证据引用契约均已实现并完成本地验证；其余增量仍按各节状态管理。本文件是当前可版本管理的 backlog。
+> 复核日期：2026-09-09；本轮实施前代码基线：`37cd8d1`（P0 首批）；摘要基线：`4d266e2`。Android 17 B1 与 C1 最小证据引用契约均已实现并完成本地验证；其余增量仍按各节状态管理。本文件是当前可版本管理的 backlog。
 > G001、R2、R1 已完成并提交；Android 17 B1 与 C1 最小证据引用契约已完成本地验证。G002/B2 与 G003 整体仍未完成；其余任务按下表区分“未实现”和“已有基础但未完成”，不把局部能力当作整项验收。
 > `存在` 表示已有能力，`优化` 表示补强，`新增` 表示新增能力，`验收` 表示检查；`[x]` 只用于已有或已验证完成的条目。
 
 ## 1. 当前状态总览
 
-**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 24 个已勾选、28 个未勾选条目；复选框同时包含实现与验收，不能把 28 个复选框当成 28 个独立功能。
+**仍有 16 个编号任务组未完成，另有 3 个维护条目。** 当前共有 37 个已勾选、18 个未勾选条目；复选框同时包含实现与验收，不能把 18 个复选框当成 18 个独立功能。
 
 | 任务 | 当前状态 | 本次核对的剩余缺口 / 证据 |
 | --- | --- | --- |
@@ -16,19 +16,19 @@
 | C1 | 最小证据引用契约已实现并本地验证 | `2a757f2` 覆盖 mixed archive+loose winner provenance、重生成清理 SQLite/WAL/SHM 与 refs/ESS 且保留用户分析/四槽位/baseline logcat，以及发布失败回滚后可重试；全量 424 项通过、1 项跳过，compileall/diff 检查通过。G003 仍因 C2 共享流式/预算及 100 MiB/1 GiB 验证未完成而保持 pending |
 | C2 | 已有流式过滤/归档有界读，未完成 | 归档已加预算并有界读取，目录 loader/package 仍保留或合并全量字符串；单归档预算不是跨输入共享预算，也不证明端到端 100 MiB/1 GiB 内存目标 |
 | V1 | manager 门禁已完成、已验证 | `e7a03bf` 后的 V1 增量在 manager 接受边界结合当前轮 immutable span、同组 ANR anchor、主线程 direct-blocker、PID/时间/scope 与字段引用资格；还要求受信任的 `eligibleForHighCausalConfidence=true`。当前 auditor 明确保持该值为 false，因此所有现有 high 均 fail-closed；旧无 store 路径仍仅为 low/medium 的 `structure_only` |
-| E1 / Q1 | 已有 hint eval，未完成 | 当前 13 个 eval 用例只验证 hint；机制、引用、跨版本语料准入、冻结评测集和正式性能/成本门禁尚未闭环 |
-| DQ1 | 已有局部门禁，未完成 | R1 已校验 PID/进程/窗口/采样锁环；尚未抽成带统一引用、缺口与 provenance 的共享 dump auditor，不能把窗口外等同于 stale |
-| D1 / D2 | 已有分类/报告/专项指引，未完成 | no-focus/Input 分类和四槽位已有；尚缺结构化 target/blame/lifecycle 闭环、dumpsys adapter 与 WMS/AMS/Recents 状态校验 |
-| F1 | 已有类型/模板，未完成 | Broadcast/Service/Provider/Job 等已有识别基础，尚非逐版本组件状态机 pack |
-| F2 | 已有 stack/lock/pressure hint，未完成 | 缺 caller-peer-transaction 关联、共享 dump 质量接口及完整 Watchdog/cause-amplifier 判定 |
-| P1 | 未实现 | 无 Perfetto/WinScope capability runner、版本化查询/adapter 与时钟/实体映射验收 |
+| E1 / Q1 | formal-eval-v1 基础已验证，正式评测未合格 | 已新增机制、AOSP ontology provenance、ESS/store immutable 引用、case SHA-256 冻结、版本/语料身份与本地 resource/cost gate；当前只有 2 个合成 Android 17 case，gate 明确阻断 14–16 覆盖和 `licensed_deidentified` 正式语料缺口，不能作为发布评测 |
+| DQ1 | 共享 auditor 已验证；F2 首个 consumer 已复用 | `dq1-v1` 已统一 dump PID/进程/TID、归属、时间、provenance 与 gap；窗口外仅拒绝归属不等同 stale，D1 与 F2 trace-side peer parser 均已复用。完整 D2 queue/dump lifecycle、F2 lock-owner 等 consumer 仍未完成 |
+| D1 / D2 | D1 已验证完成；D2 仅日志派生子增量 | `input-lifecycle-v1` 已闭合 Input → WMS/AMS/Recents 的保守 target/blame/lifecycle view 并复用 DQ1；真实 dumpsys input/window、生产 token/display transfer 和完整 queue/dump lifecycle 仍未完成 |
+| F1 | pack 获取/验证与受限组件 lifecycle 已实现；整体未完成 | 已为 Android 14–17 分别固定 recipe tag/commit，必须 Gitiles tag→commit→blob→SHA-256→symbol 校验后才生成可用 pack；未取得真实上游 bytes 时各 kind 保持 unverified。首个 lifecycle 只接受 caller 注入的 verified pack、精确 kind/component/record key，且 trigger 明确不是根因；尚无真实 14–17 pack 产物、OEM profile 或设备验证 |
+| F2 | Binder peer / Watchdog 首个 fail-closed 观察链已实现；整体未完成 | 已有同 transaction key + 精确 caller/peer PID+进程才建 observation edge、trace-side DQ1 association gate、ordered Watchdog checker start/blocked/finish、cause/amplifier/context 分层与 RUNNABLE-only 负例；尚缺 lock-owner 事务关联、生产 Binder/Watchdog dump adapter、真实设备验证和完整因果图 |
+| P1 | capability/provenance 与首个 fixed query 已验证；整体未完成 | `performance-capability-v1` 显式探测本地 allowlisted Trace Processor 与 hash-pinned WinScope ZIP；`perfetto-scheduling-adapter-v1` 仅执行固定 PID scheduling SQL、保留 trace-ns/unmapped clock 与 generic-trace provenance gap；WinScope 仅 metadata-only。9 项 fixture 回归和一轮显式本地二进制/归档烟测通过；图形/trace data-source/capture-manifest adapter、设备兼容与跨时钟关联仍缺失 |
 | A1 | 已有 Agent/re-probe，未完成 | 按组 EntityMap 已接入，但仍遍历全部 `SUB_AGENT_SPECS`；`additionalTags` 只解析未执行，probe 参数/预算及能力驱动 SOP 未完成 |
 | DOC | 部分完成 | 本次 TODO 同步、R1 hint 迁移说明已完成；后续故事文档和完整 v1 DoD 仍待对应实现/验证，不提前勾选 |
 
 当前代码证据：
 - [身份解析](../anr_evidence/log_identity.py)、[EntityMap](../anr_evidence/entity_linker.py)、[真实 Agent 调用与结果接受边界](../anr_evidence/ai_agent.py)；[HTTP mock 集成回归](../tests/test_ai_agent.py) 验证了按组身份，但不证明脱敏。
 - [FusionScope](../anr_evidence/cross_source_fusion.py)、[dump 锁环门禁](../anr_evidence/trace_preprocessor.py)、[压力线索](../anr_evidence/anrmanager_parser.py)；旧“无 scope 升级 / CONFIRMED 根因 / CPU 推断泄漏”问题已修复，不再作为未完成项。
-- [分类器](../anr_evidence/extraction/classification.py)、[source kinds](../anr_evidence/constants.py)、[loader](../anr_evidence/loaders/core.py)、[package 合并](../anr_evidence/loaders/package.py)、[ESS](../anr_evidence/evidence_slice.py)、[现有 eval](../anr_evidence/eval.py)、[模板 remediation](../anr_evidence/remediation.py)。
+- [分类器](../anr_evidence/extraction/classification.py)、[source kinds](../anr_evidence/constants.py)、[loader](../anr_evidence/loaders/core.py)、[package 合并](../anr_evidence/loaders/package.py)、[ESS](../anr_evidence/evidence_slice.py)、[hint eval](../anr_evidence/eval.py)、[formal eval gate](../anr_evidence/formal_eval.py)、[模板 remediation](../anr_evidence/remediation.py)。
 
 运行时状态单独看待：本地 `.omx/ultragoal/goals.json` 仍记录 G001 complete、G002 in_progress、G003–G010 pending。当前检出的 Android 17 B1 与 C1 最小证据引用契约已实现并完成本地验证；但 G002 仍包含未完成的 B2 Android 14–16 profiles 与 OEM overlays，G003 仍包含未完成的 C2 共享流式/预算及 100 MiB/1 GiB 验证，均不能宣称完成。本轮文档更新不改写原运行账本、不启动旧大目标，也不推断其他工作树状态。
 
@@ -104,6 +104,9 @@
 
 ### E1 · P1 · 分层评测与真实 corpus 准入（G009 前置，贯穿）
 
+开发状态（2026-09-09）：`formal-eval-v1` 已作为独立于旧 hint eval 的 fail-closed gate 落地。每个 case 声明 corpus revision、source class/license/deidentification、Android release、device/build、机制、ontology observation/provenance 与 immutable citation source；执行时重新物化原始 bytes，构建 store + ESS，只有 sidecar 经 store readback 重绑定的 span 才计为引用。`corpus.json` 以 case SHA-256 冻结输入，并设定每 case 的 wall/input/artifact/model-call（固定为零）预算。当前随仓仅有 2 个 Android 17 synthetic case：case 级机制/引用检查通过，但 aggregate 因 Android 14–16 缺样本和非 `licensed_deidentified` 语料而返回 `blocked`（CLI exit 2），因此 E1/Q1 不能勾选完成。
+
+- [x] 新增（E1/Q1 基础）：提供 `anr_evidence.formal_eval`、版本化 formal corpus/case schema、机制期待、AOSP provenance symbol、immutable ESS/store 引用回读、case hash 冻结、跨版本覆盖及确定性资源/零模型调用门禁；合成语料只能验证规则，不能获得正式资格。
 - [ ] 优化：在 D1 前冻结第一版评测 schema，复用现有 eval，分别统计 trigger、blocker、evidence status、引用、矛盾和高置信违规；每次规则变更补正例和反例。声明哪些输出被完整标注，不能把未列入 forbidden 的额外输出当作已证明正确，也不用“13 个 hint 测试通过”代替端到端正确率。
 - [ ] 新增：真实样本需来源许可、脱敏校验、版本/设备信息及人工标注；按事故/设备来源隔离开发集与评测集，冻结 corpus revision 与各类最低 support 后再启用统计阈值，报告各类样本量、缺失标签和 unsupported，不强行塞入真实私有日志。
 - [ ] 验收：已支持范围内引用完整性 100%、高置信门禁违规 0、对抗集关键 trigger 误报 0；没有样本的类别报 N/A。macro-F1 ≥0.95、top-3 ≥0.90 保留为冻结 corpus 后的目标，未满足数据条件不得宣称达标。
@@ -117,9 +120,11 @@
 
 ### D1 · P1 · 最小 Input 证据闭环（G004 第一部分；依赖 B1/C1/R1/R2/V1/DQ1/E1）
 
-- [ ] 优化：在已有 no-focus/Input 类型区分之上建立结构化 trigger 状态、anchor、原 target、blame target 和 dump PID/time 字段，仅对有证据的转移建边；不能只增加类型别名就算闭环。
-- [ ] 验收：no-focus、unacked、错 PID、迟到 dump、恢复/取消、未知身份各有 fixture；缺少 WMS 映射不得猜 blame；纯 log/trace 无 Perfetto 也完成保守报告。
-- [ ] 验收：D1 新闭环输出接入既有四槽位：三个专项结论分别写入 Trace / EventLog / Logcat-AnrManager 槽位，综合结论只写入 `#### AI Analysis — 最终 ANR 综合分析`；不是把同一综合结论复制四次。
+开发状态（2026-09-09）：已完成 `input-lifecycle-v1` 的最小保守闭环。该 view 保留 source + `lineIndex` 与 evidence-backed edge；触发、WMS focus/Recents 生命周期只能由精确目标 PID/进程、EventLog anchor，或已关联 Input trigger 的共享 token 连接。时间接近、display、通用 system-server 行和 Recents handler/log ID 都不能单独建立归属、blame 或连续性；DQ1 是唯一 dump identity/quality 边界。
+
+- [x] 优化：在已有 no-focus/Input 类型区分之上建立结构化 trigger 状态、anchor、原 target、blame target 和 dump PID/time 字段，仅对有证据的转移建边；不能只增加类型别名就算闭环。
+- [x] 验收：no-focus、unacked、错 PID、迟到 dump、恢复/取消、未知身份各有 fixture；缺少 WMS 映射不得猜 blame；纯 log/trace 无 Perfetto 也完成保守报告。
+- [x] 验收：D1 新闭环输出接入既有四槽位：三个专项结论分别写入 Trace / EventLog / Logcat-AnrManager 槽位，综合结论只写入 `#### AI Analysis — 最终 ANR 综合分析`；不是把同一综合结论复制四次。
 
 ### C2 · P2 · 单路径流式迁移与资源预算（G003 余项；依赖 C1/S1）
 
@@ -132,6 +137,8 @@
 
 ### D2 · P2 · WMS/AMS/Recents 扩展（G004 余项；依赖 D1）
 
+开发状态（2026-09-09）：已验证一个日志派生子增量：带 target-associated Input token 的 Recents start/pending/cancel/finish 按 handler/log ID 分段为独立实例；显式 input cancel/recovery/queue suppression 可记录，未知/无 key 仍为 `unknown`。这不是完整 D2：没有真实 `dumpsys input/window` adapter、生产 token/display transfer adapter 或完整 dump/queue 生命周期证明，以下三项保持未完成。
+
 - [ ] 新增：dumpsys input/window、token/display/blame transfer、queue/dump lifecycle 分 adapter 交付；按真实输入确认字段，不先实现无消费者的通用因果图。
 - [ ] 优化：在 DQ1 共享边界上补充生命周期状态；F2 和涉及 dump 的图形 adapter 复用 DQ1，不另建彼此冲突的 stale/wrong-PID 判定器。
 - [ ] 验收：pending-focus、embedded PID、重复/抑制/恢复、Recents cancel/finish 与缺失事件负例；状态缺口标 unknown，不因未找到日志认定事件未发生。
@@ -140,14 +147,14 @@
 
 | ID / 原目标 | 最小范围与依赖 | 独立验收边界 |
 | --- | --- | --- |
-| F1 / G005 | 复用已有类型和模板；B1/C1/V1/E1 后逐个增加 Broadcast、Service、Provider、Job、App-start/registered pack | 每个 pack 独立正例/中止/恢复/错组件/未知版本负例；trigger 不等于 root cause |
-| F2 / G006 | R1/R2/B1/C1/V1/DQ1/E1 后先 caller-peer Binder 关联，再 lock owner、pressure、Watchdog | 未知 peer 明示；RUNNABLE 不等于高 CPU；pressure 区分 cause/amplifier/context；不是重写现有堆栈 hint |
-| P1 / G007 | C1/S1 后先 artifact/capability 探测，再固定版本 Trace Processor 的一个 scheduling 查询；图形/WinScope adapter 单独故事 | 外部二进制由显式配置提供，不静默下载安装；版本/allowlist/时钟转换、无工具与不支持 schema 降级测试；各 adapter 自带 fixture |
-| A1 / G008 | B1/S1/V1/E1 之后先让已有三个 specialist 按需运行，再实现一个有界 search/expand probe；SOP 独立 | 记录选择/跳过原因；参数、结果数、次数/耗时/token 上限；反证与无结果停止测试；新增角色须有证据需求，不以数量验收 |
-| Q1 / G009 | 各 pack 与 E1 持续集成，再做完整版本发布评测 | 冻结 corpus + 分版本指标 + perf/cost/provenance；真实样本不足或外部工具未验时保留未完成状态 |
-| DOC / G010 | 各故事同步公共文档；最终只做汇总独立审查 | 不把所有文档拖到最后；逐条核对测试/产物证据，旧版本/不支持项不能误标完成 |
+| F1 / G005 | 已新增 `framework-timeout-pack-recipe-v1` / verifier：14–17 必须各自 tag→peeled commit→Gitiles blob→SHA-256→symbol；verified pack 才能驱动 Broadcast、Service、Provider、Job、App-start/registered lifecycle | 单测覆盖每个可验证 kind 的正例、cancel、recovery、错组件、未知版本、错误 provenance 与 trigger 非根因；真实 Gitiles bytes/pack、OEM 与设备验证仍未完成，不能关闭 G005 |
+| F2 / G006 | R1/R2/B1/C1/V1/DQ1/E1 后先 caller-peer Binder 关联，再 lock owner、pressure、Watchdog | 首个 `binder-watchdog-lifecycle-v1` 已落地：仅 explicit transaction key + exact caller/peer PID+process 建 observation edge，trace 还需 DQ1 associated；Watchdog 要 start→blocked 排序，缺 finish 保持 unknown。lock owner/生产 dump adapter/真实设备仍未完成 |
+| P1 / G007 | 已交付首个 `performance-capability-v1`：显式绝对路径、SHA-256 allowlist、完整 `--version` 精确匹配、bounded subprocess 的 Perfetto capability probe；首个 `perfetto-scheduling-adapter-v1` 固定 query，并完成 WinScope ZIP metadata verifier | `tests/test_performance_adapters.py` 覆盖无/相对工具、hash/version 拒绝且不执行 query、固定 PID/CSV schema、非零/超时/输出上限，以及 ZIP hash/manifest/schema/version/traversal；仅验证本地 package metadata，未启动/解压 viewer。仍需图形 WinScope adapter、hash-bound capture manifest/data-source identity、真实设备/tool compatibility、跨 clock mapping、更丰富 entity mapping 与 formal corpus/eval 证据，故 G007 不关闭 |
+| A1 / G008 | 已实现首个 capability-driven router：仅在已有 `cpu_memory` / `stack_lock` / `io_binder` 具备 source capability 且 focused view 非空时调度；首个本地 bounded re-probe 执行 source/window/tag 过滤，不新增 remote role 或 search/expand tool | 每轮保留 selected/skipped audit；`additionalTags` 规范化并实际收窄，保留唯一 scoped identity anchor；router、参数/次数/结果/墙钟/token 预算与无结果/超限停止已有回归。G008 仍缺外部 search/expand、经证据需求验证的新角色、部署遥测/真实语料与独立 SOP，不能关闭 |
+| Q1 / G009 | formal-eval-v1 已提供 fail-closed 的 release gate；各 pack 与 E1 持续集成后再做完整版本发布评测 | 已有 case SHA-256 冻结、分版本 coverage、机制/ontology provenance/immutable citation、wall/input/artifact/zero-model-call 成本记录；仍需许可且脱敏的 14–17 真实 corpus、每版本最低 support、完整指标与外部工具证据。synthetic Android 17 gate 必须继续 `blocked` |
+| DOC / G010 | v1 DoD 与最终验收文档已落地：区分 `core-v1-minimum-reliable-input` 与 `full-roadmap-v1`，按 release candidate、基础命令、逐 gate provenance/资源/语料/设备证据与独立 review 定义 `accepted`；README 已提供入口 | 当前快照、拒绝条件、evidence bundle 与签核模板见 [v1 DoD 与最终验收](v1-dod-and-final-acceptance.md)。P2 的 B2/C2/D2/F1/F2/P1/A1/Q1 不被错误写成 core v1 必需项，但仍阻断它们对应的扩展与 full-roadmap；后续故事变更必须同步矩阵 |
 
-- [ ] 优化：A1 首个 probe 故事先修复或替换当前 `_execute_re_probe`：`additionalTags` 目前被解析但没有执行，须定义可测试语义，非法 source/负窗口拒绝，重过滤后仍应用预算；不在旧主路径之外另建功能重叠的工具。
+- [x] 优化（A1 首个本地闭环）：`route_sub_agents(...)` 按已有 specialist 的声明 source capability 与 focused evidence 决定调度；`_execute_re_probe(...)` 已执行 `additionalTags` 的 source/window/tag 收窄，非法 source/window/tag 与次数、结果、墙钟、token 预算均 fail-closed，并保留 request/outcome/audit。没有把广义 `critical` 行当作 tag probe 的隐式绕过，也没有在旧主路径外新增重叠工具。
 - [ ] 验收：F1/F2/P1/A1/Q1/DOC 各按上表建立独立证据后关闭；不能仅凭本表或原 G 编号状态勾选完成。
 
 ## 4. 保留但降级的维护任务

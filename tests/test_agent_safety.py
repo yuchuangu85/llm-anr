@@ -108,8 +108,14 @@ class OutboundSafetyTests(unittest.TestCase):
         cfg = config(outbound_policy="synthetic_only")
         with patch("urllib.request.urlopen", return_value=response("alice@example.test")) as http:
             with self.assertRaisesRegex(LlmRequestError, "sensitive data"):
-                run_ai_agent_analysis({"sources": {}}, provider_config=cfg,
-                                      agent_config=AgentConfig(provider=cfg, max_iterations=1))
+                run_ai_agent_analysis({
+                    "provided_type": "input_dispatching_timeout",
+                    "sources": {
+                        "trace": {"content": "----- pid 1 -----\nCmd line: com.demo\nmain tid=1"},
+                        "event_log": {"content": "2026-04-12 10:00:00.000 I am_anr: [0,1,com.demo,1,Input dispatching timed out]"},
+                        "logcat": {"content": "2026-04-12 10:00:01.000 W timeout"},
+                    },
+                }, provider_config=cfg, agent_config=AgentConfig(provider=cfg, max_iterations=1))
             self.assertEqual(http.call_count, 3)
             for call in http.call_args_list:
                 self.assertNotIn(b"alice@example.test", call.args[0].data)
@@ -124,7 +130,14 @@ class OutboundSafetyTests(unittest.TestCase):
 
 class ManagerAcceptanceSafetyTests(unittest.TestCase):
     def run_manager(self, text, iterations=1):
-        package = {"provided_type": "no_focus_window", "sources": {}}
+        package = {
+            "provided_type": "no_focus_window",
+            "sources": {
+                "trace": {"content": "----- pid 1 -----\nCmd line: com.demo\nmain tid=1"},
+                "event_log": {"content": "2026-04-12 10:00:00.000 I am_anr: [0,1,com.demo,1,Input dispatching timed out]"},
+                "logcat": {"content": "2026-04-12 10:00:01.000 W timeout"},
+            },
+        }
         original = copy.deepcopy(package)
         cfg = config(outbound_policy="synthetic_only")
         with patch("urllib.request.urlopen", return_value=response(text)) as http:

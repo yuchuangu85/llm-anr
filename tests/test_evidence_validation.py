@@ -204,8 +204,10 @@ class CausalQualificationV1Tests(unittest.TestCase):
             "additionalTags": [],
             "reason": "Keep only the ANR anchor",
         }
+        # First round has all three source-capable specialists; the event-log
+        # probe removes trace, so router selects only cpu_memory and io_binder.
         replies = [response("{}")] * 3 + [response(json.dumps(first))]
-        replies += [response("{}")] * 3 + [response(json.dumps(self._high_report()))]
+        replies += [response("{}")] * 2 + [response(json.dumps(self._high_report()))]
         real_bind = bind_dump_quality_references
 
         def trusted_eligible(*args: object, **kwargs: object) -> dict[str, object]:
@@ -223,7 +225,8 @@ class CausalQualificationV1Tests(unittest.TestCase):
                 evidence_store=self.store,
                 evidence_references=self.exported["groups"],
             )
-        self.assertEqual(http.call_count, 8)
+        expected_calls = sum(1 + sum(route.selected for route in routes) for routes in result.routing_decisions)
+        self.assertEqual(http.call_count, expected_calls)
         self.assertEqual(result.integrated_report, {})
         self.assertEqual(result.validation_status, "not_accepted")
         self.assertTrue(any("reference not offered" in error for error in result.errors))

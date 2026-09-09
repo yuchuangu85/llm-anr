@@ -8,12 +8,14 @@ are checked separately by evidence_validation.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Callable
 
 from .constants import SOURCE_KINDS
 
 
 _CONFIDENCE_LEVELS = frozenset({"high", "medium", "low"})
+_PROBE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/ -]{0,63}")
 _SAFETY_VALUES = {
     "finalJudgment": False,
     "notRootCauseYet": True,
@@ -167,8 +169,8 @@ def _validate_reprobe(data: dict[str, Any], errors: list[str]) -> None:
     _validate_exact_fields(request, _REPROBE_FIELDS, path, errors)
     _validate_bounded_int_field(request, "beforeSeconds", 0, 300, path, errors)
     _validate_bounded_int_field(request, "afterSeconds", 0, 300, path, errors)
-    _validate_enum_array_field(request, "sourceKinds", SOURCE_KINDS, path, errors)
-    _validate_string_array_field(request, "additionalTags", path, errors)
+    _validate_nonempty_unique_enum_array_field(request, "sourceKinds", SOURCE_KINDS, path, errors)
+    _validate_probe_tag_array_field(request, "additionalTags", path, errors)
     _validate_string_field(request, "reason", path, errors)
 
 
@@ -225,6 +227,44 @@ def _validate_string_array_field(
     for index, item in enumerate(value):
         if not isinstance(item, str):
             errors.append(f"{field_path}[{index}] must be a string")
+
+
+def _validate_nonempty_unique_enum_array_field(
+    data: dict[str, Any],
+    field: str,
+    allowed: tuple[str, ...],
+    path: str,
+    errors: list[str],
+) -> None:
+    _validate_enum_array_field(data, field, allowed, path, errors)
+    value = data.get(field)
+    field_path = f"{path}.{field}"
+    if isinstance(value, list):
+        if not value:
+            errors.append(f"{field_path} must not be empty")
+        elif len(set(value)) != len(value):
+            errors.append(f"{field_path} must not contain duplicates")
+
+
+def _validate_probe_tag_array_field(data: dict[str, Any], field: str, path: str, errors: list[str]) -> None:
+    _validate_string_array_field(data, field, path, errors)
+    value = data.get(field)
+    field_path = f"{path}.{field}"
+    if not isinstance(value, list):
+        return
+    if len(value) > 8:
+        errors.append(f"{field_path} must contain at most 8 tags")
+        return
+    normalized: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            continue
+        if _PROBE_TAG_RE.fullmatch(item) is None:
+            errors.append(f"{field_path}[{index}] must be an ASCII evidence tag of at most 64 characters")
+            continue
+        normalized.append(re.sub(r"[_.:/ -]+", " ", item.casefold()).strip())
+    if len(set(normalized)) != len(normalized):
+        errors.append(f"{field_path} must not contain equivalent duplicates")
 
 
 def _validate_enum_array_field(

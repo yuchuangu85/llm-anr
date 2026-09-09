@@ -42,16 +42,21 @@ ZIP/TAR 默认每个归档最多 **10,000 个成员、单文件 256 MiB、文件
 | 单请求重试 | 默认 2，允许 0–3 |
 | `max_tokens` | 默认 4096，允许 1–16384 |
 | `max_iterations` | 1–3 |
+| `max_routed_sub_agents` | 1–3 / 每轮；仅已有 specialist |
+| `max_re_probe_requests` | 0–2 / 每个 analysis run |
+| re-probe window / source kinds / tags / results | 1–300 秒 / 1–支持 source 数 / 0–8 / 1–1024 |
+| `max_probe_wall_seconds` | 0.01–30 秒；仅本地 rebuild/filter 墙钟 |
+| `max_total_tokens` | 1–262,144；每轮 reservation + provider 上报 usage stop check |
 | 请求 timeout | 默认/上限 120 秒，必须正且有限 |
 
-超过预算明确失败，不悄悄截断 baseline 或结果。timeout 是请求 I/O 超时配置，不是整个 run 的硬墙钟期限；provider 上报 token 不是账单精确证明。A1 的工具耗时/检索结果/SOP 预算仍未完成。
+超过预算明确失败，不悄悄截断 baseline 或结果。timeout 是请求 I/O 超时配置，不是整个 run 的硬墙钟期限；provider 上报 token 不是账单精确证明，故 `max_total_tokens` 对未返回请求的 prompt token 只能预留、对已返回 usage 才能审计并停止。A1 已覆盖本地 router/re-probe 的次数、结果与墙钟预算；没有外部 search/expand 工具，相关外部工具预算、部署遥测与 SOP 仍未完成。完整语义见 `docs/agent-router-contract.md`。
 
 ## 4. 模型结果接受边界
 
 - manager 只接受完整 JSON object 或独立 JSON fence，拒绝额外 prose、重复 key、NaN/Infinity 及非 object。
-- `model_output.validate_manager_report` 验证已声明字段、数组/对象/字符串类型、rank/score/priority 范围、confidence 枚举、re-probe 参数及 source allowlist；未知字段拒绝。
+- `model_output.validate_manager_report` 验证已声明字段、数组/对象/字符串类型、rank/score/priority 范围、confidence 枚举、re-probe 参数及 source allowlist；`sourceKinds` 必须非空且唯一，`additionalTags` 必须是至多 8 个 ASCII evidence tag 且无 separator/case 等价重复；未知字段拒绝。
 - 顶层必须包含 `finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`；候选链、结论和 remediation 的既有保守字段也必须满足约束。
 - 非法结果记录在 `AiAgentResult.errors`，不进入 `integrated_report`；耗尽迭代也不能重新接受未校验响应。原始 turn 保留为待审查数据，不代表有效结论。
-- **这里只验证结构与保守字段。** 引用是否真实、属于哪个 ANR、因果推理是否矛盾及高置信资格仍由 V1 完成；`additionalTags` 的实际过滤语义仍由 A1 完成。
+- **这里只验证结构与保守字段。** A1 的本地 re-probe 已按 source/window 后的 tag/content 命中收窄，并且只额外保留 scoped EventLog `am_anr` 或 AnrManager identity anchor；它不保留所有 `critical` 行，也不构成因果证明。引用是否真实、属于哪个 ANR、因果推理是否矛盾及高置信资格仍由 V1 完成；外部 search/expand 与 SOP 仍属未完成的 G008 范围。
 
 旧调用方需要迁移默认外发策略、补齐 manager 的顶层三个字段，并处理安全异常/空报告。不得用空缺字段的默认值替模型补出一个“合格”结论。

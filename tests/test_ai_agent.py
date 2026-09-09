@@ -220,7 +220,7 @@ class AgentIntegrationTests(unittest.TestCase):
             result = run_ai_agent_analysis(package, provider_config=cfg,
                                            agent_config=AgentConfig(provider=cfg, max_iterations=1))
         self.assertEqual(result.errors, [])
-        self.assertEqual(http.call_count, 4)
+        self.assertEqual(http.call_count, 3)
         for call in http.call_args_list:
             prompt = json.loads(call.args[0].data)["messages"][-1]["content"]
             for group_id in ids:

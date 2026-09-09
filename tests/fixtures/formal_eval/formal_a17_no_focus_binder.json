@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "anr-formal-eval-case-v1",
+  "id": "formal-a17-no-focus-binder",
+  "description": "Synthetic Android 17 no-focus event with an observed main-thread Binder reply wait.",
+  "corpus": {
+    "corpusRevision": "synthetic-a17-formal-gate-2026-09-09",
+    "split": "evaluation",
+    "sourceClass": "synthetic",
+    "sourceLicense": "repository synthetic fixture",
+    "deidentificationStatus": "not_applicable",
+    "androidRelease": 17,
+    "device": {
+      "model": "synthetic-emulator",
+      "buildFingerprint": "synthetic/a17/formal-gate:17/TEST/1:userdebug/test-keys"
+    }
+  },
+  "package": {
+    "package_id": "FORMAL-A17-NO-FOCUS-BINDER",
+    "android_release": 17,
+    "aosp_source_revisions": {
+      "base": "94b4c163b7dfe5ce3607f7bb8456f9573f7de57d",
+      "native": "ae266dcb706d083868578cfedce381ef44488a07"
+    },
+    "sources": {
+      "event_log": {
+        "path": "events.log",
+        "content": "04-12 10:00:05.000 1000 1000 I am_anr  : [0,1234,com.demo,1,Application does not have a focused window]"
+      },
+      "trace": {
+        "path": "trace.txt",
+        "content": "04-12 10:00:05.100 ----- pid 1234 at 2026-04-12 10:00:05.100000000+0000 -----\nCmd line: com.demo\n\"main\" prio=5 tid=1 Native\n  | sysTid=1234\n  native: #00 pc 0 /system/lib/libbinder.so (android::IPCThreadState::waitForResponse+8)\n  at android.os.BinderProxy.transactNative(Native method)"
+      },
+      "logcat": {
+        "path": "logcat.txt",
+        "content": "04-12 10:00:04.900 E InputDispatcher: Application does not have a focused window for com.demo pid=1234 token=window-1"
+      }
+    }
+  },
+  "expected": {
+    "packageNameFilter": "com.demo",
+    "requiredHintIds": ["MAIN_BINDER_WAIT_REPLY"],
+    "forbiddenHintIds": ["DEADLOCK_CYCLE", "MAIN_RENDER_WAIT_FENCE"],
+    "primaryRootCauseHintId": "MAIN_BINDER_WAIT_REPLY",
+    "requiredMechanismIds": ["trigger:input.no_focused_window", "main_thread_binder_reply_wait"],
+    "forbiddenMechanismIds": ["thread_deadlock_cycle", "main_thread_render_fence_wait"],
+    "requiredCitationSourceKinds": ["event_log", "trace"],
+    "minVerifiedEvidenceRefs": 2,
+    "timeoutOntology": {
+      "canonicalTrigger": "input.no_focused_window",
+      "evidenceStatus": "observed",
+      "requiredProvenanceSymbols": ["TimeoutRecord.TimeoutKind", "InputDispatcher::onAnrLocked"]
+    }
+  }
+}

@@ -25,6 +25,20 @@ python3 scripts/fetch_aosp_source_provenance.py \
 
 截至 **2026-09-09**，此开发环境无法连接 `android.googlesource.com:443`，因此尚未取得 Android 14、15、16 的 raw bytes 或 SHA-256；没有新增这些 release 的 manifest，B2 和 G002 继续保持未完成。工具的 mocked 单测只证明抓取协议、严格解码和 fail-closed 行为，不能替代实际的上游字节获取。
 
+## F1 · Android 14–17 Framework timeout pack 获取与观察边界
+
+`anr_evidence/framework_timeout_lifecycle.py` 新增独立的 F1 获取/验证链，和 B1 的 Android 17 Input resolver 并列，**不**将其写回或放宽 B1 manifest：
+
+1. `framework_timeout_pack_recipe(14|15|16|17)` 为每个 Android release 分别给出固定 release tag 与 `platform/frameworks/base` peeled commit。它不包含复用的 Android 17 blob hash，初始状态为 `pending_source_acquisition`；
+2. `retrieve_framework_timeout_sources()` 复用现有 `aosp_contract.gitiles` 的 canonical tag / immutable-file URL 与 tag JSON revision parser，重新核对 tag→commit，再下载每个固定 commit 的 `?format=TEXT` 原始 bytes；
+3. `verify_framework_timeout_pack()` 为每个下载文件计算 SHA-256，并检查所有通用与 kind-route symbol。只有所需 source refs 和 symbols 全部 verified 的 kind 才可用；不支持、缺 blob、错误 URL/revision/hash 或符号缺失均 fail closed；
+4. `scripts/fetch_framework_timeout_pack.py --android-release <14|15|16|17> --out <pack.json>` 是显式的实际抓取入口。失败时不会写半成品；输出 pack 不含完整源码 bytes，但包含 release、commit、canonical source URL、SHA-256、symbols、每 kind status/gaps；
+5. `build_framework_timeout_lifecycle()` 只接受调用方注入的 verified pack，且要求同一 release、精确 timeout kind、精确 `component=package/class`、以及 record key 才能把 trigger/cancel/recovery 编成组件 lifecycle。所有 edge 均为 `trigger_only`，`triggerIsRootCause=false`。
+
+当前 recipes 的四个 `frameworks/base` commit 分别是 Android 14 `299fe6f5d6fc6f1af7c3411dcf4e5efdf7217368`、Android 15 `4e43ad12e1b211f15152e9c5b16b0fe88e6b93f3`、Android 16 `99b01a65cc4c104933788b3143285ab6bae65827`、Android 17 `94b4c163b7dfe5ce3607f7bb8456f9573f7de57d`。这些是互不共享的 recipe pins，**不是**已捕获的 blob provenance。此环境在 2026-09-09 仍无法连接上游 Gitiles，因此未生成真实 14–17 pack JSON；mocked retrieval tests 只验证协议和 fail-closed 行为，不能替代上游字节、OEM 或设备证据。
+
+Framework pack 正常 kind 覆盖 `BROADCAST_RECEIVER`、`SERVICE_EXEC`、`SERVICE_START`、`CONTENT_PROVIDER`、`APP_REGISTERED`、`SHORT_FGS_TIMEOUT`、`JOB_SERVICE`、`APP_START`；同时把 `CONTENT_PROVIDER_PUBLISH_TIMEOUT` 显式标为 `non_anr_timeout` / `mustNotPromoteToFrameworkAnr=true`。`APP_REGISTERED` 指 app 主动报告 unresponsive，不等价于注册广播接收器 timeout；Job/FGS/broadcast route 的 runtime/compat 条件也会作为 pack 元数据保留。
+
 ## 最小支持范围
 
 `TimeoutKind` 1–10 均在 manifest 列举，前两类映射，其余八类为 unsupported，不把枚举存在当作已实现组件状态机。

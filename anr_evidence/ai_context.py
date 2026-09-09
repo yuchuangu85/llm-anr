@@ -20,8 +20,15 @@ from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .constants import TIME_ANCHOR_PRECEDENCE
 from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
+from .binder_watchdog_lifecycle import build_binder_watchdog_lifecycle
+from .framework_timeout_lifecycle import build_framework_timeout_lifecycle
 from .dump_quality import audit_dump_quality, bind_dump_quality_references
 from .log_identity import parse_line_identity
+from .input_lifecycle import (
+    build_input_lifecycle,
+    filter_input_lifecycle_windows,
+    refresh_input_lifecycle_dump_quality,
+)
 from .input_window_evidence import build_input_window_digest
 from .root_cause_hints import (
     infer_root_cause_pattern_hints_from_ids,
@@ -94,6 +101,9 @@ class AiContextResult:
                     "strategy": group.get("strategy"),
                     "rootCausePatternHints": group.get("rootCausePatternHints", []),
                     "dumpQuality": group.get("dumpQuality"),
+                    "inputLifecycle": group.get("inputLifecycle"),
+                    "binderWatchdogLifecycle": group.get("binderWatchdogLifecycle"),
+                    "frameworkTimeoutLifecycle": group.get("frameworkTimeoutLifecycle"),
                     "completeness": group["completeness"],
                 }
                 for group in self.groups
@@ -373,6 +383,10 @@ def build_ai_context_artifacts_from_store(
                     group["dumpQuality"], slices, store,
                     anchor_line=(group.get("anchor") or {}).get("line"),
                 )
+                if group.get("inputLifecycle") is not None:
+                    group["inputLifecycle"] = refresh_input_lifecycle_dump_quality(
+                        group["inputLifecycle"], group["dumpQuality"],
+                    )
             group_for_render = _with_logcat_artifact_reference(group, logcat_path.name)
             artifact_paths = {
                 "analysis": _published_artifact_path(analysis_path, stage_dir, published_out_dir),
@@ -408,6 +422,9 @@ def build_ai_context_artifacts_from_store(
                 "rootCausePatternHints": group.get("rootCausePatternHints", []),
                 "rootCausePatternHintDetails": group.get("rootCausePatternHintDetails", []),
                 "dumpQuality": group.get("dumpQuality"),
+                "inputLifecycle": group.get("inputLifecycle"),
+                "binderWatchdogLifecycle": group.get("binderWatchdogLifecycle"),
+                "frameworkTimeoutLifecycle": group.get("frameworkTimeoutLifecycle"),
                 "analysisSlots": slots,
                 "analysisComplete": all(status == "filled" for status in slots.values()),
                 "warningCount": _group_warning_count(group),
@@ -554,6 +571,11 @@ def _build_ai_context_artifacts_in_directory(
                         anchor_line=(group.get("anchor") or {}).get("line"),
                     )
                     group_for_render["dumpQuality"] = group["dumpQuality"]
+                    if group.get("inputLifecycle") is not None:
+                        group["inputLifecycle"] = refresh_input_lifecycle_dump_quality(
+                            group["inputLifecycle"], group["dumpQuality"],
+                        )
+                        group_for_render["inputLifecycle"] = group["inputLifecycle"]
             ess_path = group_dir / "evidence.jsonl"
             write_ess_jsonl(slices, ess_path)
             artifact_paths["evidenceSlices"] = _published_artifact_path(ess_path, out_dir, published_out_dir)
@@ -581,6 +603,9 @@ def _build_ai_context_artifacts_in_directory(
             "rootCausePatternHints": group.get("rootCausePatternHints", []),
             "rootCausePatternHintDetails": group.get("rootCausePatternHintDetails", []),
             "dumpQuality": group.get("dumpQuality"),
+            "inputLifecycle": group.get("inputLifecycle"),
+            "binderWatchdogLifecycle": group.get("binderWatchdogLifecycle"),
+            "frameworkTimeoutLifecycle": group.get("frameworkTimeoutLifecycle"),
             "analysisSlots": analysis_slots,
             "analysisComplete": all(status == "filled" for status in analysis_slots.values()),
             "warningCount": _group_warning_count(group),
@@ -955,6 +980,12 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             ),
             trace_tid=(metadata.get("mainThread") or {}).get("tid"),
         )
+        if strategy.anr_type in _INPUT_WINDOW_DIGEST_STRATEGIES:
+            group["inputLifecycle"] = build_input_lifecycle(
+                group_id=group["id"], anr_type=strategy.anr_type, anchor=None,
+                event_log_lines=[], logcat_lines=[], anrmanager_lines=[],
+                dump_quality=group["dumpQuality"],
+            )
         events.extend(_group_step_events(group))
         return [group], events
 
@@ -986,6 +1017,13 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 "logcat-ai-context",
             )
             for index, anchor in enumerate(anchors)
+        ],
+    )
+    lifecycle_logcat_results = filter_input_lifecycle_windows(
+        iter_text_lines(logcat_content),
+        windows=[
+            (anchor["timestamp"], options.logcat_before_seconds, options.logcat_after_seconds)
+            for anchor in anchors
         ],
     )
     anrmanager_results = [
@@ -1051,6 +1089,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             package_name=effective_package_name,
             target_pid=anrmanager_summary.get("anrPid") if anrmanager_summary else None,
         )
+        lifecycle_logcat_lines = lifecycle_logcat_results[index]
         logcat_metadata = {
             "anrManagerPreContextSeconds": ANRMANAGER_PRE_CONTEXT_SECONDS,
             "anrManagerPreContextAnchor": timestamp_to_raw(anrmanager_pre_context_anchor) if anrmanager_pre_context_anchor else None,
@@ -1140,6 +1179,37 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         }
         if input_window_digest is not None:
             group["inputWindowDigest"] = input_window_digest
+        if strategy.anr_type in _INPUT_WINDOW_DIGEST_STRATEGIES:
+            group["inputLifecycle"] = build_input_lifecycle(
+                group_id=group["id"], anr_type=strategy.anr_type,
+                anchor={"line": anchor["line"], "timestamp": anchor_dt, "packageName": effective_package_name},
+                event_log_lines=event_lines,
+                logcat_lines=lifecycle_logcat_lines,
+                anrmanager_lines=anrmanager_lines,
+                dump_quality=group["dumpQuality"],
+            )
+        group["binderWatchdogLifecycle"] = build_binder_watchdog_lifecycle(
+            group_id=group["id"],
+            anchor={"line": anchor["line"], "timestamp": anchor_dt, "packageName": effective_package_name},
+            event_log_lines=event_lines,
+            logcat_lines=merged_logcat_lines,
+            trace_lines=trace.get("lines", []),
+            dump_quality=group["dumpQuality"],
+            anrmanager_summary=anrmanager_summary,
+        )
+        framework_release = package.get("android_release")
+        if isinstance(framework_release, int) or package.get("framework_timeout_pack") is not None:
+            group["frameworkTimeoutLifecycle"] = build_framework_timeout_lifecycle(
+                group_id=group["id"],
+                android_release=framework_release if isinstance(framework_release, int) else None,
+                verified_pack=package.get("framework_timeout_pack"),
+                anchor={"line": anchor["line"], "timestamp": anchor_dt, "packageName": effective_package_name},
+                source_lines=(
+                    [("eventLog", line) for line in event_lines]
+                    + [("logcat", line) for line in merged_logcat_lines]
+                    + [("anrManager", line) for line in anrmanager_lines]
+                ),
+            )
         groups.append(group)
         events.extend(_group_step_events(group))
     return groups, events
@@ -1190,6 +1260,39 @@ def _group_step_events(group: dict[str, Any]) -> list[dict[str, Any]]:
             countsByFamily=digest.get("countsByFamily", {}),
             duplicateCount=digest.get("duplicateCount", 0),
             truncatedCount=digest.get("truncatedCount", 0),
+        ))
+    lifecycle = group.get("inputLifecycle")
+    if lifecycle is not None:
+        events.insert(-1, _event(
+            "input_lifecycle_built",
+            "completed",
+            groupId=group["id"],
+            triggerStatus=lifecycle.get("trigger", {}).get("status"),
+            inputStatus=lifecycle.get("inputLifecycle", {}).get("status"),
+            focusStatus=lifecycle.get("focusLifecycle", {}).get("status"),
+            recentsStatus=lifecycle.get("recentsLifecycle", {}).get("status"),
+            evidenceEventCount=len(lifecycle.get("events", [])),
+        ))
+    binder_watchdog = group.get("binderWatchdogLifecycle")
+    if binder_watchdog is not None:
+        events.insert(-1, _event(
+            "binder_watchdog_lifecycle_built",
+            "completed",
+            groupId=group["id"],
+            binderTransactionCount=len(binder_watchdog.get("binderTransactions", [])),
+            watchdogCheckCount=len(binder_watchdog.get("watchdogChecks", [])),
+            observationEdgeCount=len(binder_watchdog.get("edges", [])),
+        ))
+    framework_timeout = group.get("frameworkTimeoutLifecycle")
+    if framework_timeout is not None:
+        events.insert(-1, _event(
+            "framework_timeout_lifecycle_built",
+            "completed",
+            groupId=group["id"],
+            profileId=framework_timeout.get("profileId"),
+            timeoutKind=framework_timeout.get("timeoutKind"),
+            triggerStatus=framework_timeout.get("trigger", {}).get("status"),
+            observationEdgeCount=len(framework_timeout.get("edges", [])),
         ))
     return events
 
@@ -1814,7 +1917,7 @@ def _render_cache_markdown(
                 "trace",
                 "anr-trace-analysis",
                 [
-                    "只分析 Trace / 死锁检测 / Trace 线索。",
+                    "只分析 Trace / 死锁检测 / Trace 线索，以及 DQ1 dump PID/time association；不要从 Trace 单独推断 Input/WMS/Recents 生命周期。",
                     "输出 main thread、直接 trace blocker、相关线程/hints、Trace-only conclusion、gaps、confidence。",
                 ],
             )
@@ -1826,10 +1929,19 @@ def _render_cache_markdown(
                 "eventlog",
                 "anr-eventlog-analysis",
                 [
-                    "只分析 EventLog 与 Anchor；按 am_anr 基准计算 ΔT 并解释 pre-ANR tag 序列。",
-                    "输出 Anchor/am_anr、pre-ANR sequence、state-machine interpretation、EventLog-only conclusion、gaps、confidence。",
+                    "只分析 EventLog 与 Anchor；按 am_anr 基准计算 ΔT，并使用 D1 inputLifecycle 的 EventLog finding 说明 observed trigger / original target。",
+                    "输出 Anchor/am_anr、pre-ANR sequence、state-machine interpretation、EventLog-only conclusion、gaps、confidence；不要把 original target 自动写成 blame target。",
                 ],
             )
+        input_lifecycle = group.get("inputLifecycle")
+        if input_lifecycle is not None:
+            _append_input_lifecycle_section(lines, input_lifecycle)
+        binder_watchdog_lifecycle = group.get("binderWatchdogLifecycle")
+        if binder_watchdog_lifecycle is not None:
+            _append_binder_watchdog_lifecycle_section(lines, binder_watchdog_lifecycle)
+        framework_timeout_lifecycle = group.get("frameworkTimeoutLifecycle")
+        if framework_timeout_lifecycle is not None:
+            _append_framework_timeout_lifecycle_section(lines, framework_timeout_lifecycle)
         input_window_digest = group.get("inputWindowDigest")
         if input_window_digest is not None:
             _append_input_window_digest_section(lines, input_window_digest)
@@ -1862,8 +1974,8 @@ def _render_cache_markdown(
                 "logcat-anrmanager",
                 "anr-logcat-analysis",
                 [
-                    "先读取同目录 `logcat.txt` 中的过滤后 Logcat，再结合 AnrManager 摘要 与 Meminfo 目标/高负载跟进。",
-                    "输出 trigger line、dump lifecycle、window/focus/surface sequence、load/PSI/meminfo、Logcat-only conclusion、gaps、confidence。",
+                    "先读取同目录 `logcat.txt` 中的过滤后 Logcat，再结合 AnrManager 摘要、D1/D2 inputLifecycle 的 WMS/AMS/Recents finding 与 Meminfo 目标/高负载跟进。",
+                    "输出 trigger line、observed WMS focus target（不是自动 blame）、explicit cancel/recovery/queue status、Recents keyed lifecycle、load/PSI/meminfo、Logcat-only conclusion、gaps、confidence。",
                 ],
             )
         completeness = group["completeness"]
@@ -1882,11 +1994,71 @@ def _render_cache_markdown(
                 "final-anr",
                 "anr-analysis",
                 [
-                    "仅在 Trace、EventLog、Logcat/AnrManager 三段专项分析完成后填写。",
+                    "仅在 Trace、EventLog、Logcat/AnrManager 三段专项分析完成后填写；D1/D2 仅在这里跨 source 汇总，不能把综合结论复制回前三个槽位。",
                     "综合分析必须写回本槽位；按固定步骤输出 综合分析结论、Timeline、Direct blocking point、Candidate root-cause chains、Evidence quality、Remediation suggestions 和 fenced JSON tail。",
                 ],
             )
     return "\n".join(lines).rstrip()
+
+
+def _render_lifecycle_entity(entity: dict[str, Any] | None) -> str:
+    if entity is None:
+        return "`unknown`"
+    pid = entity.get("pid")
+    return f"`{entity.get('kind')}:{entity.get('name')}`" + (f" (pid={pid})" if pid else "")
+
+
+def _append_input_lifecycle_section(lines: list[str], lifecycle: dict[str, Any]) -> None:
+    """Render the D1/D2 derived view without filling any AI analysis slot."""
+    trigger = lifecycle.get("trigger", {})
+    dump = lifecycle.get("dump", {})
+    input_state = lifecycle.get("inputLifecycle", {})
+    focus_state = lifecycle.get("focusLifecycle", {})
+    queue_state = lifecycle.get("queueLifecycle", {})
+    recents_state = lifecycle.get("recentsLifecycle", {})
+    lines.extend([
+        "### Input / WMS / AMS / Recents structured lifecycle (D1/D2)",
+        "- Derived source-coordinate view only: every listed transition must retain evidence event IDs; it is not a causal conclusion.",
+        f"- Trigger: `{trigger.get('status')}` / `{trigger.get('kind')}`; original target: {_render_lifecycle_entity(lifecycle.get('originalTarget'))}; observed WMS focus target: {_render_lifecycle_entity(lifecycle.get('blameTarget'))}.",
+        f"- Input: `{input_state.get('status')}`; focus: `{focus_state.get('status')}`; queue/suppression: `{queue_state.get('status')}`; Recents: `{recents_state.get('status')}`.",
+        f"- DQ1 dump: pid=`{dump.get('pid')}`, timestamp=`{dump.get('timestamp')}`, association=`{dump.get('associationStatus')}`, provenance=`{dump.get('provenanceStatus')}`.",
+        f"- Evidence events: `{len(lifecycle.get('events', []))}`; verified transitions: `{len(lifecycle.get('edges', []))}`.",
+        "- A missing WMS map leaves blame target unknown; unkeyed Recents events are not linked; an out-of-window dump is not stale.",
+        "- Gaps: " + ", ".join(f"`{gap}`" for gap in lifecycle.get("gaps", [])),
+        "",
+    ])
+
+
+def _append_binder_watchdog_lifecycle_section(lines: list[str], lifecycle: dict[str, Any]) -> None:
+    """Render F2 observations without promoting them to a causal conclusion."""
+    binder = lifecycle.get("binderTransactions", [])
+    watchdog = lifecycle.get("watchdogChecks", [])
+    pressure = lifecycle.get("pressure", {})
+    lines.extend([
+        "### Binder / Watchdog structured observations (F2)",
+        "- A Binder caller-peer edge requires a matching transaction key and exact caller/peer PID+process identity; it is observation-only, not a root-cause conclusion.",
+        "- A Watchdog chain requires an ordered explicit checker start and blocked event; an absent finish remains unknown/pending rather than proving a timeout cause.",
+        f"- Binder transactions: `{len(binder)}`; Watchdog checks: `{len(watchdog)}`; evidence edges: `{len(lifecycle.get('edges', []))}`.",
+        f"- Pressure: causeCandidates=`{len(pressure.get('causeCandidates', []))}`, amplifiers=`{len(pressure.get('amplifiers', []))}`, context=`{len(pressure.get('context', []))}`. RUNNABLE/CPU/RSS observations are never a standalone cause.",
+        "- Gaps: " + ", ".join(f"`{gap}`" for gap in lifecycle.get("gaps", [])),
+        "",
+    ])
+
+
+
+def _append_framework_timeout_lifecycle_section(lines: list[str], lifecycle: dict[str, Any]) -> None:
+    """Render F1's version/source gate without treating a trigger as cause."""
+    trigger = lifecycle.get("trigger", {})
+    state = lifecycle.get("lifecycle", {})
+    lines.extend([
+        "### Framework timeout pack observation (F1)",
+        f"- Android release=`{lifecycle.get('androidRelease')}`; profile=`{lifecycle.get('profileId')}`; timeout kind=`{lifecycle.get('timeoutKind')}`.",
+        f"- Trigger=`{trigger.get('status')}`; lifecycle=`{state.get('status')}`; component=`{json.dumps(lifecycle.get('component'), ensure_ascii=False)}`.",
+        "- The pack must independently recheck this release tag/commit and every required upstream blob/symbol. A timeout trigger is never a root-cause conclusion.",
+        "- Gaps: " + ", ".join(f"`{gap}`" for gap in lifecycle.get("gaps", [])),
+        "",
+    ])
+
 
 
 def _append_input_window_digest_section(lines: list[str], digest: dict[str, Any]) -> None:

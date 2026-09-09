@@ -4,12 +4,15 @@ from .ai_context import AiContextOptions, AiContextResult, build_ai_context, bui
 from .ai_agent import (
     AgentConfig,
     AgentMessage,
+    AgentRoute,
     AgentTurn,
     AiAgentResult,
+    ProbeOutcome,
     LlmClient,
     ProviderConfig,
     ProviderKind,
     ReProbeRequest,
+    route_sub_agents,
     run_ai_agent_analysis,
     run_ai_agent_from_cli,
 )
@@ -26,6 +29,20 @@ from .root_cause_hints import (
 )
 from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
 from .dump_quality import audit_dump_quality, bind_dump_quality_references
+from .input_lifecycle import build_input_lifecycle, refresh_input_lifecycle_dump_quality
+from .binder_watchdog_lifecycle import build_binder_watchdog_lifecycle
+from .framework_timeout_lifecycle import (
+    FrameworkTimeoutPackError,
+    build_framework_timeout_lifecycle,
+    framework_timeout_pack_recipe,
+    retrieve_framework_timeout_sources,
+    verify_framework_timeout_pack,
+)
+from .performance_adapters import (
+    inspect_winscope_release_artifact,
+    probe_performance_capabilities,
+    run_perfetto_scheduling_query,
+)
 from .pattern_catalog import MAIN_THREAD_PATTERN_CATALOG, evaluate_main_thread_patterns
 from .context_flooding import TruncationConfig, TruncationResult, truncate_evidence, truncation_stats_text
 from .pipeline import PipelineError, payload_phase, run_until
@@ -37,6 +54,15 @@ from .eval import (
     collect_all_hint_ids,
     run_eval_case,
     run_eval_directory,
+)
+from .formal_eval import (
+    FORMAL_CASE_SCHEMA_VERSION,
+    FORMAL_CORPUS_SCHEMA_VERSION,
+    FormalEvalAggregate,
+    FormalEvalCaseResult,
+    collect_mechanism_ids,
+    run_formal_eval_case,
+    run_formal_eval_directory,
 )
 from .evidence_slice import (
     EvidenceSlice,
@@ -105,11 +131,14 @@ __all__ = [
     "AiAgentResult",
     "AgentConfig",
     "AgentMessage",
+    "AgentRoute",
     "AgentTurn",
+    "ProbeOutcome",
     "LlmClient",
     "ProviderConfig",
     "ProviderKind",
     "ReProbeRequest",
+    "route_sub_agents",
     "run_ai_agent_analysis",
     "run_ai_agent_from_cli",
     # ai_context
@@ -143,6 +172,18 @@ __all__ = [
     "FusionScope",
     "audit_dump_quality",
     "bind_dump_quality_references",
+    "build_input_lifecycle",
+    "refresh_input_lifecycle_dump_quality",
+    "build_binder_watchdog_lifecycle",
+    "FrameworkTimeoutPackError",
+    "framework_timeout_pack_recipe",
+    "retrieve_framework_timeout_sources",
+    "verify_framework_timeout_pack",
+    "build_framework_timeout_lifecycle",
+    # performance_adapters
+    "inspect_winscope_release_artifact",
+    "probe_performance_capabilities",
+    "run_perfetto_scheduling_query",
     # context_flooding
     "TruncationConfig",
     "TruncationResult",
@@ -163,6 +204,14 @@ __all__ = [
     "collect_all_hint_ids",
     "run_eval_case",
     "run_eval_directory",
+    # formal_eval
+    "FORMAL_CASE_SCHEMA_VERSION",
+    "FORMAL_CORPUS_SCHEMA_VERSION",
+    "FormalEvalAggregate",
+    "FormalEvalCaseResult",
+    "collect_mechanism_ids",
+    "run_formal_eval_case",
+    "run_formal_eval_directory",
     # evidence_slice
     "EvidenceSlice",
     "annotate_slices_with_tags",

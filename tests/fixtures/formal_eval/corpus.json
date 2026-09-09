@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "anr-formal-eval-corpus-v1",
+  "corpusRevision": "synthetic-a17-formal-gate-2026-09-09",
+  "frozen": true,
+  "requiredAndroidReleases": [
+    14,
+    15,
+    16,
+    17
+  ],
+  "minimumCasesPerRelease": 1,
+  "requiredSourceClass": "licensed_deidentified",
+  "executionBudget": {
+    "maxWallSecondsPerCase": 10.0,
+    "maxInputBytesPerCase": 100000,
+    "maxArtifactBytesPerCase": 2000000,
+    "maxModelCalls": 0
+  },
+  "caseSha256": {
+    "formal_a17_no_focus_binder.json": "0295cbec208b0c713d1d74b2cbc2dc6d524a7e585195ec27e11b995674dad589",
+    "formal_a17_unresponsive_render.json": "a6e3b6313b4306dec638602f666ef6535adb87eac48614150872bd866a45ace6"
+  }
+}

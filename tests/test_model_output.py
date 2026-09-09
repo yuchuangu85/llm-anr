@@ -179,5 +179,27 @@ class ValidateManagerReportTests(unittest.TestCase):
         self.assert_invalid(report, "$.reProbeRequest.reason is required")
 
 
+    def test_reprobe_rejects_empty_duplicate_or_malformed_probe_parameters(self) -> None:
+        cases = (
+            ("sourceKinds", [], "sourceKinds must not be empty"),
+            ("sourceKinds", ["logcat", "logcat"], "sourceKinds must not contain duplicates"),
+            ("additionalTags", ["binder_reply"] * 9, "additionalTags must contain at most 8 tags"),
+            ("additionalTags", ["bad\nvalue"], "must be an ASCII evidence tag"),
+            ("additionalTags", ["binder_reply", "binder reply"], "must not contain equivalent duplicates"),
+        )
+        for field, value, expected in cases:
+            with self.subTest(field=field, value=value):
+                report = valid_report()
+                report["reProbeRequest"] = {
+                    "beforeSeconds": 3,
+                    "afterSeconds": 3,
+                    "sourceKinds": ["logcat"],
+                    "additionalTags": [],
+                    "reason": "fixture",
+                }
+                report["reProbeRequest"][field] = value
+                self.assert_invalid(report, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

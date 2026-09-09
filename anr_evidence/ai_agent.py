@@ -26,6 +26,7 @@ from typing import Any
 from .ai_context import AiContextOptions, AiContextResult, build_ai_context
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .context_flooding import TruncationConfig, truncate_evidence
+from .constants import SOURCE_KINDS
 from .entity_linker import EntityMap, build_entity_map, entity_summary_for_ai
 from .log_identity import parse_line_identity
 from .evidence_store import EvidenceStore
@@ -99,6 +100,17 @@ class AgentConfig:
     manager_model: str | None = None
     verbose: bool = False
     truncation: TruncationConfig = field(default_factory=TruncationConfig)
+
+    # A1 routing/probe budgets. These apply before a new remote iteration is
+    # dispatched; they do not weaken ProviderConfig's byte/HTTP safeguards.
+    max_routed_sub_agents: int = 3
+    max_re_probe_requests: int = 2
+    max_probe_window_seconds: int = 30
+    max_probe_source_kinds: int = 4
+    max_probe_tags: int = 8
+    max_probe_results: int = 128
+    max_probe_wall_seconds: float = 3.0
+    max_total_tokens: int = 49_152
 
     def model_for(self, role: str) -> str:
         if role == "manager" and self.manager_model:
@@ -645,7 +657,48 @@ def _focus_slices_for_sub_agent(
     return focused
 
 
-# ── Re-Probe ───────────────────────────────────────────────────────────────
+# ── Capability router and re-probe ─────────────────────────────────────────
+
+
+_PROBE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/ -]{0,63}")
+
+
+@dataclass(frozen=True)
+class AgentRoute:
+    """One deterministic specialist-selection decision for an iteration."""
+
+    agent_name: str
+    selected: bool
+    reason: str
+    capability_sources: tuple[str, ...]
+    focused_slice_count: int
+
+
+def route_sub_agents(slices: list[EvidenceSlice], *, max_agents: int = 3) -> list[AgentRoute]:
+    """Select existing specialists only when their declared source capability exists.
+
+    The router does not infer a root cause from selection.  It records source
+    capability and a bounded selection decision so a sparse package does not
+    automatically incur every specialist call.
+    """
+    if type(max_agents) is not int or not 1 <= max_agents <= len(SUB_AGENT_SPECS):
+        raise ValueError(f"max_agents must be an integer in 1..{len(SUB_AGENT_SPECS)}")
+    selected_count = 0
+    routes: list[AgentRoute] = []
+    for spec_name, spec in SUB_AGENT_SPECS.items():
+        supported = filter_slices_by_source(slices, source_kinds=spec.source_kinds)
+        sources = tuple(sorted({item.source for item in supported}))
+        focused = _focus_slices_for_sub_agent(slices, spec)
+        if not supported:
+            routes.append(AgentRoute(spec_name, False, "no_supported_source", sources, 0))
+        elif not focused:
+            routes.append(AgentRoute(spec_name, False, "no_relevant_focused_evidence", sources, 0))
+        elif selected_count >= max_agents:
+            routes.append(AgentRoute(spec_name, False, "routing_budget_exhausted", sources, len(focused)))
+        else:
+            selected_count += 1
+            routes.append(AgentRoute(spec_name, True, "source_capability_available", sources, len(focused)))
+    return routes
 
 
 @dataclass(frozen=True)
@@ -659,8 +712,82 @@ class ReProbeRequest:
     reason: str
 
 
+@dataclass(frozen=True)
+class ProbeOutcome:
+    """Auditable result of one bounded re-probe attempt."""
+
+    status: str
+    reason: str
+    elapsed_ms: int
+    source_slice_count: int
+    result_slice_count: int
+    additional_tags: tuple[str, ...]
+
+
+def _normalise_probe_tag(value: object) -> str | None:
+    if not isinstance(value, str) or _PROBE_TAG_RE.fullmatch(value) is None:
+        return None
+    normalised = re.sub(r"[_.:/ -]+", " ", value.casefold()).strip()
+    return normalised or None
+
+
+def _normalise_probe_tags(values: list[str]) -> tuple[str, ...] | None:
+    normalised = tuple(_normalise_probe_tag(value) for value in values)
+    if any(value is None for value in normalised):
+        return None
+    result = tuple(value for value in normalised if value is not None)
+    return result if len(set(result)) == len(result) else None
+
+
+def _slice_matches_probe_tags(slice_: EvidenceSlice, tags: tuple[str, ...]) -> bool:
+    if not tags:
+        return True
+    values = (slice_.tag or "", slice_.content)
+    haystack = " ".join(
+        re.sub(r"[_.:/ -]+", " ", value.casefold()).strip()
+        for value in values
+    )
+    return any(tag in haystack for tag in tags)
+
+
+def _is_re_probe_anchor(slice_: EvidenceSlice) -> bool:
+    """Return only identity anchors that must accompany a narrowed probe hit."""
+    tag = (slice_.tag or "").casefold()
+    return (
+        slice_.source == "anr_manager"
+        or (slice_.source == "event_log" and (tag == "am_anr" or "am_anr" in slice_.content.casefold()))
+    )
+
+
+def _filter_re_probe_slices(
+    slices: list[EvidenceSlice],
+    request: ReProbeRequest,
+    *,
+    normalized_tags: tuple[str, ...],
+) -> list[EvidenceSlice]:
+    """Apply source/window filters and real additional-tag semantics.
+
+    With tags, retain tag-matched records plus a scoped EventLog/AnrManager
+    identity anchor.  Do not preserve every ``critical`` line: doing so would
+    silently defeat a tag probe whenever a broad classifier marked a line
+    critical.
+    """
+    filtered = filter_slices_by_source(slices, source_kinds=request.source_kinds)
+    filtered = filter_slices_by_delta_t(
+        filtered,
+        min_delta_t=-request.before_seconds,
+        max_delta_t=request.after_seconds,
+    )
+    if not normalized_tags:
+        return filtered
+    return [
+        item for item in filtered
+        if _is_re_probe_anchor(item) or _slice_matches_probe_tags(item, normalized_tags)
+    ]
+
+
 def _parse_re_probe_request(data: dict[str, Any]) -> ReProbeRequest | None:
-    """Parse a reProbeRequest from the manager's JSON output."""
+    """Parse a structurally validated reProbeRequest from manager JSON."""
     req = data.get("reProbeRequest")
     if not req:
         return None
@@ -673,30 +800,53 @@ def _parse_re_probe_request(data: dict[str, Any]) -> ReProbeRequest | None:
     )
 
 
+def _probe_request_error(request: ReProbeRequest, config: AgentConfig) -> tuple[str | None, tuple[str, ...]]:
+    if (type(request.before_seconds) is not int or type(request.after_seconds) is not int
+            or request.before_seconds < 0 or request.after_seconds < 0
+            or request.before_seconds > config.max_probe_window_seconds
+            or request.after_seconds > config.max_probe_window_seconds):
+        return "probe_window_budget_exceeded", ()
+    if (not isinstance(request.source_kinds, list) or not request.source_kinds
+            or len(request.source_kinds) > config.max_probe_source_kinds
+            or any(not isinstance(kind, str) for kind in request.source_kinds)
+            or len(set(request.source_kinds)) != len(request.source_kinds)
+            or any(kind not in SOURCE_KINDS for kind in request.source_kinds)):
+        return "probe_source_kind_budget_exceeded", ()
+    if not isinstance(request.additional_tags, list) or len(request.additional_tags) > config.max_probe_tags:
+        return "probe_tag_budget_exceeded", ()
+    tags = _normalise_probe_tags(request.additional_tags)
+    if tags is None:
+        return "probe_tag_invalid", ()
+    return None, tags
+
+
 def _execute_re_probe(
     groups: list[dict[str, Any]],
     request: ReProbeRequest,
     strategy: AnrTypeStrategy,
-) -> list[EvidenceSlice]:
-    """Re-filter evidence with a narrower window + additional tags.
+    config: AgentConfig,
+) -> tuple[ProbeOutcome, list[EvidenceSlice]]:
+    """Run one fully bounded local evidence re-probe, without remote I/O."""
+    error, tags = _probe_request_error(request, config)
+    if error:
+        return ProbeOutcome(error, request.reason, 0, 0, 0, tags), []
 
-    Builds new ESS slices where delta_t is within the re-probe window.
-    """
+    started = time.monotonic()
     slices = build_evidence_slices(groups)
     annotated = annotate_slices_with_tags(
         slices,
         event_tags=frozenset(strategy.event_tags),
         logcat_patterns=frozenset(strategy.logcat_patterns),
     )
-    # Filter by source kinds
-    filtered = filter_slices_by_source(annotated, source_kinds=request.source_kinds)
-    # Filter by narrower delta_t window
-    filtered = filter_slices_by_delta_t(
-        filtered,
-        min_delta_t=-request.before_seconds,
-        max_delta_t=request.after_seconds,
-    )
-    return filtered
+    filtered = _filter_re_probe_slices(annotated, request, normalized_tags=tags)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    if elapsed_ms > int(config.max_probe_wall_seconds * 1000):
+        return ProbeOutcome("probe_wall_time_exceeded", request.reason, elapsed_ms, len(annotated), 0, tags), []
+    if not filtered:
+        return ProbeOutcome("no_results", request.reason, elapsed_ms, len(annotated), 0, tags), []
+    if len(filtered) > config.max_probe_results:
+        return ProbeOutcome("probe_result_budget_exceeded", request.reason, elapsed_ms, len(annotated), len(filtered), tags), []
+    return ProbeOutcome("executed", request.reason, elapsed_ms, len(annotated), len(filtered), tags), filtered
 
 
 # ── Result Types ───────────────────────────────────────────────────────────
@@ -713,9 +863,32 @@ class AiAgentResult:
     integrated_report: dict[str, Any] = field(default_factory=dict)
     total_tokens: int = 0
     re_probe_requests: list[ReProbeRequest] = field(default_factory=list)
+    probe_outcomes: list[ProbeOutcome] = field(default_factory=list)
+    routing_decisions: list[list[AgentRoute]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     validation_status: str = "not_accepted"
     dump_quality: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _validate_agent_config(config: AgentConfig) -> None:
+    integer_bounds = (
+        ("max_iterations", config.max_iterations, 1, 3),
+        ("max_routed_sub_agents", config.max_routed_sub_agents, 1, len(SUB_AGENT_SPECS)),
+        ("max_re_probe_requests", config.max_re_probe_requests, 0, 2),
+        ("max_probe_window_seconds", config.max_probe_window_seconds, 1, 300),
+        ("max_probe_source_kinds", config.max_probe_source_kinds, 1, len(SOURCE_KINDS)),
+        ("max_probe_tags", config.max_probe_tags, 0, 8),
+        ("max_probe_results", config.max_probe_results, 1, 1024),
+        ("max_total_tokens", config.max_total_tokens, 1, 262_144),
+    )
+    for name, value, minimum, maximum in integer_bounds:
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be an integer in {minimum}..{maximum}")
+    if (not isinstance(config.max_probe_wall_seconds, (int, float))
+            or isinstance(config.max_probe_wall_seconds, bool)
+            or not math.isfinite(config.max_probe_wall_seconds)
+            or not 0.01 <= config.max_probe_wall_seconds <= 30.0):
+        raise ValueError("max_probe_wall_seconds must be finite in 0.01..30.0")
 
 
 # ── Main Entry Point ───────────────────────────────────────────────────────
@@ -744,8 +917,7 @@ def run_ai_agent_analysis(
     if (evidence_store is None) != (evidence_references is None):
         raise ValueError("evidence_store and evidence_references must be supplied together")
     agent_cfg = agent_config or AgentConfig(provider=provider_config)
-    if type(agent_cfg.max_iterations) is not int or not 1 <= agent_cfg.max_iterations <= 3:
-        raise ValueError("max_iterations must be an integer in 1..3")
+    _validate_agent_config(agent_cfg)
     ai_opts = ai_context_options or AiContextOptions()
     strategy = strategy_for_package(package, ai_opts.anr_type)
     client = LlmClient(provider_config)
@@ -792,35 +964,52 @@ def run_ai_agent_analysis(
 
     for iteration in range(agent_cfg.max_iterations):
         iteration_turns: dict[str, AgentTurn] = {}
+        routes = route_sub_agents(active_slices, max_agents=agent_cfg.max_routed_sub_agents)
+        result.routing_decisions.append(routes)
+        selected_routes = [route for route in routes if route.selected]
 
-        # 3a. Dispatch sub-agents
-        for spec_name, spec in SUB_AGENT_SPECS.items():
+        # Reserve the maximum completion-token allocation before any request in
+        # this iteration. Provider-reported prompt tokens are checked again
+        # after each response, so an anomalous provider usage report fails
+        # closed rather than starting another call.
+        reserved_tokens = (len(selected_routes) + 1) * provider_config.max_tokens
+        if total_tokens + reserved_tokens > agent_cfg.max_total_tokens:
+            result.total_tokens = total_tokens
+            result.errors.append(
+                f"Iteration {iteration}: token budget prevents dispatch "
+                f"({total_tokens}+{reserved_tokens}>{agent_cfg.max_total_tokens})"
+            )
+            return result
+
+        # 3a. Dispatch only specialists whose declared source capability exists.
+        for route in selected_routes:
+            spec = SUB_AGENT_SPECS[route.agent_name]
             focused = _focus_slices_for_sub_agent(active_slices, spec)
             prompt = _build_sub_agent_prompt(spec, focused, entity_map)
-
             messages = [
                 AgentMessage(role="system", content=spec.system_prompt),
                 AgentMessage(role="user", content=prompt),
             ]
             response_text, tokens = client.complete_with_tokens(messages)
             total_tokens += tokens
+            if total_tokens > agent_cfg.max_total_tokens:
+                result.total_tokens = total_tokens
+                result.errors.append(f"Iteration {iteration}: provider-reported token budget exceeded by {route.agent_name}")
+                return result
 
             turn = AgentTurn(
-                agent_name=spec_name,
+                agent_name=route.agent_name,
                 iteration=iteration,
                 messages=messages,
                 response=response_text,
                 tokens_used=tokens,
             )
-            iteration_turns[spec_name] = turn
-
+            iteration_turns[route.agent_name] = turn
             if agent_cfg.verbose:
-                print(f"[{spec_name}] iter={iteration} tokens={tokens}")
+                print(f"[{route.agent_name}] iter={iteration} tokens={tokens} route={route.reason}")
 
-        # 3b. Run manager
-        manager_prompt = _build_manager_prompt(
-            iteration_turns, groups, entity_map, strategy,
-        )
+        # 3b. Run manager with the exact selection/skip audit trail.
+        manager_prompt = _build_manager_prompt(iteration_turns, groups, entity_map, strategy, routes)
         manager_system = MANAGER_SYSTEM_PROMPT
         if evidence_store is not None:
             manager_system += (
@@ -850,6 +1039,10 @@ def run_ai_agent_analysis(
         ]
         manager_text, manager_tokens = client.complete_with_tokens(manager_messages)
         total_tokens += manager_tokens
+        if total_tokens > agent_cfg.max_total_tokens:
+            result.total_tokens = total_tokens
+            result.errors.append(f"Iteration {iteration}: provider-reported token budget exceeded by manager")
+            return result
 
         manager_turn = AgentTurn(
             agent_name="manager",
@@ -860,16 +1053,14 @@ def run_ai_agent_analysis(
         )
         iteration_turns["manager"] = manager_turn
         result.iterations.append(iteration_turns)
-
         if agent_cfg.verbose:
             print(f"[manager] iter={iteration} tokens={manager_tokens}")
 
-        # 3c. Parse manager output
+        # 3c. Parse manager output.
         parsed = _parse_manager_json(manager_text)
         if parsed is None:
             result.errors.append(f"Iteration {iteration}: failed to parse manager JSON")
             continue
-
         schema_errors = (
             validate_report_references(
                 parsed,
@@ -883,22 +1074,52 @@ def run_ai_agent_analysis(
             result.errors.append(f"Iteration {iteration}: invalid manager report: " + "; ".join(schema_errors))
             continue
 
-        # 3d. Check for re-probe request
+        # 3d. A manager that asks for a probe cannot have its unverified report
+        # accepted if the probe is exhausted, rejected, or returns no evidence.
         re_probe = _parse_re_probe_request(parsed)
-        if re_probe is not None and iteration < agent_cfg.max_iterations - 1:
+        if re_probe is not None:
             result.re_probe_requests.append(re_probe)
-            active_slices = _execute_re_probe(groups, re_probe, strategy)
+            if iteration >= agent_cfg.max_iterations - 1:
+                result.probe_outcomes.append(ProbeOutcome(
+                    "iteration_budget_exhausted", re_probe.reason, 0, 0, 0, (),
+                ))
+                result.total_tokens = total_tokens
+                result.errors.append("Re-probe requested after the final allowed iteration; report not accepted")
+                return result
+            if len(result.re_probe_requests) > agent_cfg.max_re_probe_requests:
+                result.probe_outcomes.append(ProbeOutcome(
+                    "probe_count_budget_exceeded", re_probe.reason, 0, 0, 0, (),
+                ))
+                result.total_tokens = total_tokens
+                result.errors.append("Re-probe count budget exceeded; report not accepted")
+                return result
+            outcome, next_slices = _execute_re_probe(groups, re_probe, strategy, agent_cfg)
+            result.probe_outcomes.append(outcome)
+            if outcome.status != "executed":
+                result.total_tokens = total_tokens
+                result.errors.append(f"Re-probe stopped: {outcome.status}; no qualifying evidence accepted")
+                return result
+            active_slices = next_slices
             if evidence_store is not None:
                 active_slices = attach_store_references(active_slices, evidence_store, evidence_references)
                 if any(item.evidence_ref_error for item in active_slices):
+                    result.total_tokens = total_tokens
                     result.errors.append("Re-probe reference binding failed integrity checks")
-                    break
+                    return result
             active_slices = truncate_evidence(active_slices, agent_cfg.truncation).retained_slices
+            if not active_slices:
+                result.total_tokens = total_tokens
+                result.errors.append("Re-probe stopped: truncation retained no qualifying evidence")
+                return result
             if agent_cfg.verbose:
-                print(f"[re-probe] iter={iteration} window={re_probe.before_seconds}s/{re_probe.after_seconds}s tags={re_probe.additional_tags}")
+                print(
+                    f"[re-probe] iter={iteration} status={outcome.status} "
+                    f"results={outcome.result_slice_count} elapsedMs={outcome.elapsed_ms} "
+                    f"tags={outcome.additional_tags}"
+                )
             continue
 
-        # 3e. Accept the result
+        # 3e. Accept the result only when no further probe was requested.
         result.final_turn = manager_turn
         result.integrated_report = parsed
         result.validation_status = (
@@ -925,6 +1146,7 @@ def _build_manager_prompt(
     groups: list[dict[str, Any]],
     entity_map: EntityMap | dict[str, EntityMap] | None,
     strategy: AnrTypeStrategy,
+    routes: list[AgentRoute] | None = None,
 ) -> str:
     """Build the user prompt for the manager agent."""
     lines = ["# Manager: 综合根因分析", ""]
@@ -934,6 +1156,18 @@ def _build_manager_prompt(
     lines.append(f"- 类型: `{strategy.anr_type}` ({strategy.label})")
     lines.append(f"- 分析重点: {'; '.join(strategy.analysis_focus)}")
     lines.append("")
+
+    # Router audit trail: selection is evidence-capability routing only, never causal evidence.
+    if routes is not None:
+        lines.append("## Specialist router audit")
+        for route in routes:
+            status = "selected" if route.selected else "skipped"
+            sources = ",".join(route.capability_sources) or "none"
+            lines.append(
+                f"- `{route.agent_name}` {status}: reason=`{route.reason}`, "
+                f"sources=`{sources}`, focusedSlices={route.focused_slice_count}"
+            )
+        lines.append("")
 
     # Sub-agent reports
     lines.append("## 子分析报告")
