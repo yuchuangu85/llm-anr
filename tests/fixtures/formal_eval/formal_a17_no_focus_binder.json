@@ -1,9 +1,9 @@
 {
-  "schemaVersion": "anr-formal-eval-case-v1",
+  "schemaVersion": "anr-formal-eval-case-v3",
   "id": "formal-a17-no-focus-binder",
   "description": "Synthetic Android 17 no-focus event with an observed main-thread Binder reply wait.",
   "corpus": {
-    "corpusRevision": "synthetic-a17-formal-gate-2026-09-09",
+    "corpusRevision": "synthetic-a17-formal-eval-v3-2026-09-09",
     "split": "evaluation",
     "sourceClass": "synthetic",
     "sourceLicense": "repository synthetic fixture",
@@ -12,6 +12,20 @@
     "device": {
       "model": "synthetic-emulator",
       "buildFingerprint": "synthetic/a17/formal-gate:17/TEST/1:userdebug/test-keys"
+    },
+    "sampleIdentity": {
+      "incidentSourceId": "synthetic-incident-no-focus-binder",
+      "deviceSourceId": "synthetic-device-a17-binder"
+    },
+    "supportClassIds": [
+      "trigger:input.no_focused_window",
+      "blocker:main_thread_binder_reply_wait"
+    ],
+    "manualAnnotation": {
+      "status": "not_applicable",
+      "labeledOutputDomains": [],
+      "missingOutputDomains": [],
+      "unsupportedOutputDomains": []
     }
   },
   "package": {
@@ -38,17 +52,95 @@
   },
   "expected": {
     "packageNameFilter": "com.demo",
-    "requiredHintIds": ["MAIN_BINDER_WAIT_REPLY"],
-    "forbiddenHintIds": ["DEADLOCK_CYCLE", "MAIN_RENDER_WAIT_FENCE"],
+    "requiredHintIds": [
+      "MAIN_BINDER_WAIT_REPLY"
+    ],
+    "forbiddenHintIds": [
+      "DEADLOCK_CYCLE",
+      "MAIN_RENDER_WAIT_FENCE"
+    ],
     "primaryRootCauseHintId": "MAIN_BINDER_WAIT_REPLY",
-    "requiredMechanismIds": ["trigger:input.no_focused_window", "main_thread_binder_reply_wait"],
-    "forbiddenMechanismIds": ["thread_deadlock_cycle", "main_thread_render_fence_wait"],
-    "requiredCitationSourceKinds": ["event_log", "trace"],
+    "requiredMechanismIds": [
+      "trigger:input.no_focused_window",
+      "main_thread_binder_reply_wait"
+    ],
+    "forbiddenMechanismIds": [
+      "thread_deadlock_cycle",
+      "main_thread_render_fence_wait"
+    ],
+    "requiredCitationSourceKinds": [
+      "event_log",
+      "trace"
+    ],
     "minVerifiedEvidenceRefs": 2,
     "timeoutOntology": {
       "canonicalTrigger": "input.no_focused_window",
       "evidenceStatus": "observed",
-      "requiredProvenanceSymbols": ["TimeoutRecord.TimeoutKind", "InputDispatcher::onAnrLocked"]
+      "requiredProvenanceSymbols": [
+        "TimeoutRecord.TimeoutKind",
+        "InputDispatcher::onAnrLocked"
+      ]
+    },
+    "outputLabels": {
+      "trigger": {
+        "coverage": "complete",
+        "requiredIds": [
+          "input.no_focused_window"
+        ],
+        "forbiddenIds": [],
+        "allowedIds": [
+          "input.no_focused_window"
+        ]
+      },
+      "blocker": {
+        "coverage": "complete",
+        "requiredIds": [
+          "main_thread_binder_reply_wait"
+        ],
+        "forbiddenIds": [
+          "main_thread_render_fence_wait"
+        ],
+        "allowedIds": [
+          "main_thread_binder_reply_wait"
+        ]
+      },
+      "evidence_status": {
+        "coverage": "complete",
+        "requiredIds": [
+          "observed"
+        ],
+        "forbiddenIds": [
+          "unknown"
+        ],
+        "allowedIds": [
+          "observed"
+        ]
+      },
+      "citations": {
+        "coverage": "complete",
+        "requiredIds": [
+          "event_log",
+          "trace"
+        ],
+        "forbiddenIds": [],
+        "allowedIds": [
+          "event_log",
+          "logcat",
+          "trace"
+        ]
+      },
+      "contradictions": {
+        "coverage": "complete",
+        "requiredIds": [],
+        "forbiddenIds": [],
+        "allowedIds": []
+      },
+      "high_confidence_violations": {
+        "coverage": "complete",
+        "requiredIds": [],
+        "forbiddenIds": [],
+        "allowedIds": []
+      }
     }
   }
 }

@@ -31,10 +31,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from anr_evidence import (
     AiContextOptions,
-    build_ai_context,
     build_ai_context_artifacts,
+    build_ai_context_artifacts_from_input_path,
     load_package_from_path,
 )
+from anr_evidence.loaders import is_archive_path
 from anr_evidence.extractor import ArchiveLoadError
 
 
@@ -73,22 +74,9 @@ def main() -> int:
 
     input_path = Path(args.input)
 
-    # Load the package — auto-detects nested archives
-    try:
-        package = load_package_from_path(input_path, package_name=args.package_name)
-    except ArchiveLoadError as exc:
-        print(f"Error loading input: {exc}", file=sys.stderr)
-        return 1
-
-    if not package.get("sources"):
-        print("Error: no recognizable log sources found in input.", file=sys.stderr)
-        return 1
-
     # Keep generated context next to the input logs by default.
     # An explicit --out-dir always takes precedence.
     out_dir = Path(args.out_dir) if args.out_dir else _default_out_dir(input_path)
-
-    # Build AI context
     options = AiContextOptions(
         out_dir=out_dir,
         event_before_seconds=args.event_before,
@@ -100,7 +88,21 @@ def main() -> int:
         anr_type=args.anr_type,
     )
 
-    summary = build_ai_context_artifacts(package, options)
+    try:
+        if input_path.is_dir() or is_archive_path(input_path):
+            # Directory, ZIP, and TAR use the one C2 default path: stream the
+            # original input once into a fresh store, then render from that
+            # store.  Fixture JSON remains the legacy normalized-package path.
+            summary = build_ai_context_artifacts_from_input_path(input_path, options)
+        else:
+            package = load_package_from_path(input_path, package_name=args.package_name)
+            if not package.get("sources"):
+                print("Error: no recognizable log sources found in input.", file=sys.stderr)
+                return 1
+            summary = build_ai_context_artifacts(package, options)
+    except ArchiveLoadError as exc:
+        print(f"Error loading input: {exc}", file=sys.stderr)
+        return 1
 
     print(f"[✓] {summary['groupCount']} ANR analysis file(s) written under {out_dir}/")
     print(f"    Analysis guide — read before analyzing: {REPO_ROOT / 'docs/anr-ai-analysis-guide.md'}")

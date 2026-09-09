@@ -34,6 +34,58 @@ class InputLifecycleIntegrationTests(unittest.TestCase):
             },
         }
 
+    def test_dumpsys_snapshot_is_projected_without_promoting_blame_or_dump_lifecycle(self) -> None:
+        package = self._package()
+        sources = package["sources"]
+        assert isinstance(sources, dict)
+        sources["dumpsys_input"] = {
+            "path": "dumpsys/input.txt",
+            "content": """Input Dispatcher State:
+  FocusedWindow: Window{a1b2c3 u0 com.demo/.MainActivity} inputChannelToken=Token{input-1} mDisplayId=0
+  PendingEvents: seq=17 target=Window{a1b2c3 u0 com.demo/.MainActivity}
+""",
+        }
+        sources["dumpsys_window"] = {
+            "path": "dumpsys/window.txt",
+            "content": """WINDOW MANAGER WINDOWS (dumpsys window windows)
+  mCurrentFocus=Window{a1b2c3 u0 com.demo/.MainActivity}
+  Window #0 Window{a1b2c3 u0 com.demo/.MainActivity}:
+    mDisplayId=0
+    mSession=Session{abcd 1234:u0a123}
+    mInputChannelToken=Token{input-1}
+    mHasSurface=true mViewVisibility=0x0
+""",
+        }
+
+        result = build_ai_context(package, AiContextOptions(package_name="com.demo", anr_type="no_focus_window"))
+        group = result.groups[0]
+        dump = group["dumpQuality"]
+        snapshot = dump["dumpsysSnapshot"]
+
+        self.assertEqual(snapshot["inputStatus"], "observed")
+        self.assertEqual(snapshot["windowStatus"], "observed")
+        self.assertEqual(snapshot["queueStatus"], "pending")
+        self.assertEqual(snapshot["transferStatus"], "matched")
+        self.assertEqual(snapshot["blameTransfer"]["status"], "unqualified")
+        self.assertEqual(snapshot["blameTransfer"]["reason"], "dumpsys_capture_time_unavailable")
+        self.assertEqual(dump["lifecycleStatus"], "unknown")
+        self.assertEqual(dump["dumpLifecycle"]["status"], "observed")
+        self.assertEqual(dump["dumpLifecycle"]["captureTimeStatus"], "unavailable")
+        self.assertFalse(dump["eligibleForHighCausalConfidence"])
+        self.assertEqual(group["inputLifecycle"]["dump"]["dumpsysSnapshot"], snapshot)
+        self.assertEqual(group["inputLifecycle"]["dump"]["dumpLifecycle"], dump["dumpLifecycle"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = build_ai_context_artifacts(
+                package,
+                AiContextOptions(out_dir=tmpdir, package_name="com.demo", anr_type="no_focus_window"),
+            )
+            analysis = Path(summary["groups"][0]["artifactPaths"]["analysis"]).read_text(encoding="utf-8")
+        self.assertIn("Shared DQ1 dump lifecycle", analysis)
+        self.assertIn("Dumpsys snapshot", analysis)
+        self.assertIn("blame transfer=`unqualified`", analysis)
+        self.assertIn("cannot establish blame", analysis)
+
     def test_context_exposes_structured_lifecycle_and_source_specific_slot_guidance(self) -> None:
         result = build_ai_context(self._package(), AiContextOptions(package_name="com.demo", anr_type="no_focus_window"))
         group = result.groups[0]

@@ -67,6 +67,9 @@ class StoreBackedAiContextTests(unittest.TestCase):
             )
             self.assertEqual(index["groupCount"], 2)
             self.assertEqual(index["artifactPaths"]["evidenceStore"], str(path))
+            # Explicit store export is an API seam, not proof that a raw
+            # directory/ZIP/TAR workflow selected the default route.
+            self.assertNotIn("inputRouting", index)
             refs_by_group = {}
             for group in index["groups"]:
                 group_dir = output / group["id"]

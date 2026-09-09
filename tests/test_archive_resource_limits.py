@@ -8,7 +8,12 @@ from unittest import mock
 import zipfile
 from pathlib import Path
 
-from anr_evidence import ArchiveLoadError, load_package_from_archive, load_package_from_path
+from anr_evidence import (
+    ArchiveLoadError,
+    InputResourceBudget,
+    load_package_from_archive,
+    load_package_from_path,
+)
 from anr_evidence.evidence_store import EvidenceStore, EvidenceStoreBudgetExceeded
 from anr_evidence.loaders import core
 
@@ -190,6 +195,82 @@ class ArchiveResourceLimitTests(unittest.TestCase):
                     mock.patch.object(core, "MAX_ARCHIVE_MEMBERS", 1):
                 with self.assertRaisesRegex(ArchiveLoadError, "stream exceeds byte budget"):
                     load_package_from_archive(path)
+
+    def test_mixed_zip_and_tar_share_one_accepted_input_byte_budget(self) -> None:
+        event = b"04-12 10:00:05 I am_anr: [0,1,com.demo,1]\n"
+        logcat = b"04-12 10:00:06 W timeout data\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with zipfile.ZipFile(root / "a.zip", "w") as archive:
+                archive.writestr("events/events.txt", event)
+            with tarfile.open(root / "b.tar", "w") as archive:
+                _write_tar_member(archive, "logs/logcat.txt", logcat)
+
+            with self.assertRaisesRegex(ArchiveLoadError, "Input resource byte budget exceeded"):
+                load_package_from_path(
+                    root,
+                    input_budget=InputResourceBudget(
+                        max_bytes=len(event) + len(logcat) - 1,
+                        max_entries=8,
+                    ),
+                )
+
+    def test_mixed_archive_and_loose_file_share_one_accepted_input_byte_budget(self) -> None:
+        event = b"04-12 10:00:05 I am_anr: [0,1,com.demo,1]\n"
+        loose_logcat = b"04-12 10:00:06 W loose timeout\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with zipfile.ZipFile(root / "a.zip", "w") as archive:
+                archive.writestr("events/events.txt", event)
+            (root / "logcat.txt").write_bytes(loose_logcat)
+
+            with self.assertRaisesRegex(ArchiveLoadError, "Loose file.*accepted-input byte limit"):
+                load_package_from_path(
+                    root,
+                    input_budget=InputResourceBudget(
+                        max_bytes=len(event) + len(loose_logcat) - 1,
+                        max_entries=8,
+                    ),
+                )
+
+    def test_mixed_input_budget_allows_combined_sources_at_exact_limit(self) -> None:
+        event = b"04-12 10:00:05 I am_anr: [0,1,com.demo,1]\n"
+        logcat = b"04-12 10:00:06 W archive timeout\n"
+        kernel = b"04-12 10:00:07 kernel loose signal\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with zipfile.ZipFile(root / "a.zip", "w") as archive:
+                archive.writestr("events/events.txt", event)
+            with tarfile.open(root / "b.tar", "w") as archive:
+                _write_tar_member(archive, "logs/logcat.txt", logcat)
+            (root / "last_kmsg").write_bytes(kernel)
+
+            package = load_package_from_path(
+                root,
+                input_budget=InputResourceBudget(
+                    max_bytes=len(event) + len(logcat) + len(kernel),
+                    max_entries=8,
+                ),
+            )
+
+        self.assertIn("event_log", package["sources"])
+        self.assertIn("logcat", package["sources"])
+        self.assertIn("kernel_log", package["sources"])
+
+    def test_mixed_input_budget_counts_archive_and_loose_entries_together(self) -> None:
+        event = b"04-12 10:00:05 I am_anr: [0,1,com.demo,1]\n"
+        logcat = b"04-12 10:00:06 W loose timeout\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with zipfile.ZipFile(root / "a.zip", "w") as archive:
+                archive.writestr("events/events.txt", event)
+            (root / "logcat.txt").write_bytes(logcat)
+
+            with self.assertRaisesRegex(ArchiveLoadError, "Input resource entry budget exceeded"):
+                load_package_from_path(
+                    root,
+                    input_budget=InputResourceBudget(max_bytes=1024, max_entries=1),
+                )
 
     def test_accepted_compressed_tar_variants(self):
         payload = b"2026-04-12 10:00:05.000 I am_anr: [0,123,com.test,1,Input dispatching timed out]\n"

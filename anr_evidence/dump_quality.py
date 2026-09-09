@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import math
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from .cross_source_fusion import FusionScope
 from .evidence_slice import EvidenceSlice
@@ -20,6 +20,7 @@ from .log_filter import parse_log_timestamp
 
 
 _DQ1_SCHEMA_VERSION = "dq1-v1"
+_DQ1_DUMP_LIFECYCLE_SCHEMA_VERSION = "dq1-dump-lifecycle-v1"
 _REQUIRED_REFERENCE_FIELDS = frozenset({"anchor", "dumpPid", "dumpTimestamp", "dumpProcess"})
 _TRACE_DUMP_HEADER = re.compile(r"-+\s+pid\s+(\d+)\s+at\s+(.+?)\s+-+")
 _TRACE_PROCESS_LINE = re.compile(r"Cmd line:\s*(\S+)\s*")
@@ -77,6 +78,51 @@ def _provenance(status: str, field_references: dict[str, list[str]]) -> dict[str
     return {"status": status, "fieldReferences": field_references}
 
 
+def _status_from_quality(quality: Mapping[str, Any], key: str, default: str = "unknown") -> str:
+    value = quality.get(key)
+    return value if isinstance(value, str) else default
+
+
+def dump_lifecycle_projection(quality: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the canonical source-local lifecycle view attached to DQ1.
+
+    This is a projection, not a second identity, freshness, staleness, or PID
+    classifier.  Consumers (D1, F2, and any future dump/graph adapter) copy
+    this view rather than reconstructing conflicting local quality decisions.
+    """
+    source_quality = quality if isinstance(quality, Mapping) else {}
+    current = source_quality.get("dumpLifecycle")
+    result = copy.deepcopy(dict(current)) if isinstance(current, Mapping) else {}
+    result.setdefault("schemaVersion", _DQ1_DUMP_LIFECYCLE_SCHEMA_VERSION)
+    result.setdefault("status", "unavailable")
+    result.setdefault("source", "none")
+    result.setdefault("captureTimeStatus", "unavailable")
+    result.setdefault("inputStatus", "unknown")
+    result.setdefault("windowStatus", "unknown")
+    result.setdefault("queueStatus", "unknown")
+    result.setdefault("transferStatus", "unknown")
+    result.setdefault("blameTransferStatus", "unavailable")
+    result.setdefault("gaps", ["source_local_dump_lifecycle_unavailable"])
+    # These are exact DQ1 copies, never adapter-local decisions.  Preserve the
+    # independent generic lifecycle field so a source-local snapshot cannot
+    # upgrade freshness, staleness, process lifetime, or ANR-time lifecycle.
+    for key in (
+        "identityStatus", "timeStatus", "associationStatus", "freshnessStatus",
+        "stalenessStatus", "processLifetimeStatus", "lifecycleStatus",
+        "provenanceStatus",
+    ):
+        result[key] = _status_from_quality(source_quality, key)
+    return result
+
+
+def _snapshot_lifecycle_status(input_status: str, window_status: str) -> str:
+    if input_status == "observed" and window_status == "observed":
+        return "observed"
+    if input_status == "absent" and window_status == "absent":
+        return "unavailable"
+    return "partial"
+
+
 def audit_dump_quality(
     scope: FusionScope,
     *,
@@ -106,7 +152,7 @@ def audit_dump_quality(
 
     reference_status = "unavailable"
     field_references: dict[str, list[str]] = {}
-    return {
+    result = {
         "schemaVersion": _DQ1_SCHEMA_VERSION,
         "groupId": scope.group_id,
         "target": {
@@ -147,6 +193,79 @@ def audit_dump_quality(
         "notRootCauseYet": True,
         "requiresHumanConfirmation": True,
     }
+    result["dumpLifecycle"] = dump_lifecycle_projection(result)
+    return result
+
+
+def annotate_dump_quality_with_dumpsys_snapshot(
+    quality: dict[str, Any],
+    snapshot: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Project a parsed Input/Window snapshot onto the shared DQ1 record.
+
+    The adapter supplies only source-local observations.  This helper does not
+    alter DQ1 identity, time, association, freshness, process-lifetime, or
+    generic lifecycle status: a dumpsys body normally has no trustworthy
+    capture timestamp, so it cannot prove that its snapshot existed at the
+    selected ANR anchor.
+    """
+    result = copy.deepcopy(quality)
+    if not isinstance(snapshot, Mapping):
+        return result
+    input_view = snapshot.get("input") if isinstance(snapshot.get("input"), Mapping) else {}
+    window_view = snapshot.get("window") if isinstance(snapshot.get("window"), Mapping) else {}
+    # Preserve pre-D2 report shape when no optional dumpsys source was supplied.
+    # A pair of adapter-generated ``absent`` placeholders is not evidence.
+    if input_view.get("status") == "absent" and window_view.get("status") == "absent":
+        return result
+    transfer = snapshot.get("transfer") if isinstance(snapshot.get("transfer"), Mapping) else {}
+    candidate = {
+        "kind": "window",
+        "name": transfer.get("windowId"),
+        "pid": transfer.get("pid"),
+        "processName": transfer.get("processName"),
+        "displayId": transfer.get("displayId"),
+        "inputChannelToken": transfer.get("inputChannelToken"),
+    }
+    input_status = input_view.get("status", "unknown")
+    window_status = window_view.get("status", "unknown")
+    queue_status = (input_view.get("queue") or {}).get("status", "unknown")
+    transfer_status = transfer.get("status", "unknown")
+    result["dumpsysSnapshot"] = {
+        "schemaVersion": snapshot.get("schemaVersion"),
+        "inputStatus": input_status,
+        "windowStatus": window_status,
+        "queueStatus": queue_status,
+        "transferStatus": transfer_status,
+        # A matched source-local token/display mapping is never itself a blame
+        # conclusion.  Its capture time and ANR-group association are absent.
+        "blameTransfer": {
+            "status": "unqualified",
+            "candidate": candidate if transfer_status == "matched" else None,
+            "reason": "dumpsys_capture_time_unavailable",
+        },
+        "captureTimestamp": None,
+        "lifecycleStatus": "unknown",
+        "gaps": list(snapshot.get("gaps") or []),
+    }
+    lifecycle = dump_lifecycle_projection(result)
+    lifecycle.update({
+        "status": _snapshot_lifecycle_status(input_status, window_status),
+        "source": "dumpsys_input_window",
+        "captureTimeStatus": "unavailable",
+        "inputStatus": input_status,
+        "windowStatus": window_status,
+        "queueStatus": queue_status,
+        "transferStatus": transfer_status,
+        "blameTransferStatus": "unqualified",
+        "gaps": list(dict.fromkeys([
+            *(snapshot.get("gaps") or []),
+            "dumpsys_capture_time_unavailable",
+            "source_local_snapshot_not_anr_lifecycle_proof",
+        ])),
+    })
+    result["dumpLifecycle"] = lifecycle
+    return result
 
 
 def bind_dump_quality_references(
@@ -231,4 +350,7 @@ def bind_dump_quality_references(
         _append_gap(result, "dump_reference_integrity_failed")
     if not complete:
         _append_gap(result, "immutable_field_references_incomplete")
+    # Keep all consumer projections synchronized with the sole DQ1 authority
+    # after immutable provenance changes; do not derive a separate lifecycle.
+    result["dumpLifecycle"] = dump_lifecycle_projection(result)
     return result

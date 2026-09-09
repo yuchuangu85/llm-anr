@@ -16,6 +16,7 @@ from datetime import datetime
 import re
 from typing import Any, Iterable
 
+from .dump_quality import dump_lifecycle_projection
 from .log_filter import parse_log_timestamp
 from .log_identity import parse_line_identity
 
@@ -114,12 +115,9 @@ def _watchdog_state(line: str) -> str:
 
 
 def _trace_eligible(dump_quality: dict[str, Any] | None) -> bool:
-    if not isinstance(dump_quality, dict):
-        return False
-    # DQ1's association combines target PID/process identity and anchor-window
-    # membership.  Provenance is a separate dimension and must never be
-    # silently substituted for association.
-    return dump_quality.get("associationStatus") == "associated"
+    # Use the same canonical DQ1 projection exposed in F2 output.  This is an
+    # association admission check, not a local stale/wrong-PID classifier.
+    return dump_lifecycle_projection(dump_quality).get("associationStatus") == "associated"
 
 
 def _within_anchor_window(timestamp: datetime | None, anchor_timestamp: datetime | None, *, seconds: int) -> bool:
@@ -223,6 +221,9 @@ def build_binder_watchdog_lifecycle(
         "watchdogChecks": [],
         "edges": [],
         "pressure": _pressure_observations(anrmanager_summary, trace_lines),
+        # F2 copies the DQ1-owned dump lifecycle/quality view.  Its Binder and
+        # Watchdog states remain independent source observations only.
+        "dumpLifecycle": dump_lifecycle_projection(dump_quality),
         "gaps": [],
         "eligibleForHighCausalConfidence": False,
         "finalJudgment": False,

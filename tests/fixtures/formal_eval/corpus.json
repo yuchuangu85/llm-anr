@@ -1,6 +1,6 @@
 {
-  "schemaVersion": "anr-formal-eval-corpus-v1",
-  "corpusRevision": "synthetic-a17-formal-gate-2026-09-09",
+  "schemaVersion": "anr-formal-eval-corpus-v3",
+  "corpusRevision": "synthetic-a17-formal-eval-v3-2026-09-09",
   "frozen": true,
   "requiredAndroidReleases": [
     14,
@@ -17,7 +17,106 @@
     "maxModelCalls": 0
   },
   "caseSha256": {
-    "formal_a17_no_focus_binder.json": "0295cbec208b0c713d1d74b2cbc2dc6d524a7e585195ec27e11b995674dad589",
-    "formal_a17_unresponsive_render.json": "a6e3b6313b4306dec638602f666ef6535adb87eac48614150872bd866a45ace6"
+    "formal_a17_no_focus_binder.json": "20ba09804af134c8885fac859fe6becfc1fc122a9a6a75a76cfd926d893133b0",
+    "formal_a17_unresponsive_render.json": "5c6e8c58b0da0aa5fd88794efc57585a86feaf09f1ed2bc757eeac6e5c5d72a4"
+  },
+  "labelingScope": {
+    "fullyLabeledOutputDomains": [
+      "trigger",
+      "blocker",
+      "evidence_status",
+      "citations",
+      "contradictions",
+      "high_confidence_violations"
+    ],
+    "notFullyLabeledOutputDomains": [
+      "final_root_cause",
+      "ranked_candidate_chains",
+      "remediation_quality",
+      "device_profile_compatibility",
+      "lifecycle_freshness"
+    ]
+  },
+  "ruleCoverage": {
+    "trigger:input.no_focused_window": {
+      "positiveCaseIds": [
+        "formal-a17-no-focus-binder"
+      ],
+      "negativeCaseIds": [
+        "formal-a17-unresponsive-render"
+      ]
+    },
+    "trigger:input.window_unresponsive": {
+      "positiveCaseIds": [
+        "formal-a17-unresponsive-render"
+      ],
+      "negativeCaseIds": [
+        "formal-a17-no-focus-binder"
+      ]
+    },
+    "main_thread_binder_reply_wait": {
+      "positiveCaseIds": [
+        "formal-a17-no-focus-binder"
+      ],
+      "negativeCaseIds": [
+        "formal-a17-unresponsive-render"
+      ]
+    },
+    "main_thread_render_fence_wait": {
+      "positiveCaseIds": [
+        "formal-a17-unresponsive-render"
+      ],
+      "negativeCaseIds": [
+        "formal-a17-no-focus-binder"
+      ]
+    }
+  },
+  "realCorpusAdmission": {
+    "schemaVersion": "anr-formal-real-corpus-admission-v1",
+    "splitIsolation": {
+      "developmentSplits": [
+        "development"
+      ],
+      "evaluationSplits": [
+        "evaluation"
+      ],
+      "identityKeys": [
+        "incidentSourceId",
+        "deviceSourceId"
+      ]
+    },
+    "requiredManualLabelDomains": [
+      "trigger",
+      "blocker",
+      "evidence_status",
+      "citations",
+      "contradictions",
+      "high_confidence_violations"
+    ],
+    "minimumSupportByClass": {
+      "blocker:main_thread_binder_reply_wait": 1,
+      "blocker:main_thread_render_fence_wait": 1,
+      "trigger:input.no_focused_window": 1,
+      "trigger:input.window_unresponsive": 1
+    },
+    "statisticalThresholdsEnabled": false,
+    "statisticalThresholds": {
+      "macroF1": 0.95,
+      "top3Accuracy": 0.9
+    }
+  },
+  "acceptanceCriteria": {
+    "schemaVersion": "anr-formal-acceptance-criteria-v1",
+    "requiredMeasurements": [
+      "citation_integrity",
+      "high_confidence_violations",
+      "adversarial_trigger_false_positives"
+    ],
+    "minimumCitationIntegrity": 1.0,
+    "maximumHighConfidenceViolations": 0,
+    "adversarialTriggerRuleIds": [
+      "trigger:input.no_focused_window",
+      "trigger:input.window_unresponsive"
+    ]
   }
 }

@@ -194,15 +194,22 @@ class AospTimeoutResolutionTests(unittest.TestCase):
         self.assertEqual(result["evidenceStatus"], "observed")
         self.assertIsNone(result["directBlocker"])
 
-    def test_unknown_and_unsupported_releases_fail_closed(self) -> None:
+    def test_unknown_and_each_unverified_release_fail_closed_individually(self) -> None:
         unknown = package_with_reason(NO_FOCUS_REASON)
         unknown.pop("android_release")
-        unsupported = package_with_reason(NO_FOCUS_REASON)
-        unsupported["android_release"] = 16
 
         self.assertEqual(resolve_timeout(unknown)["gaps"], ["android_release_unknown"])
-        self.assertEqual(resolve_timeout(unsupported)["gaps"], ["unsupported_android_release"])
-        self.assertIsNone(resolve_timeout(unsupported)["profileId"])
+        for android_release in (14, 15, 16):
+            with self.subTest(android_release=android_release):
+                result = resolve_timeout(package_with_reason(
+                    NO_FOCUS_REASON,
+                    android_release=android_release,
+                ))
+                self.assertEqual(result["gaps"], ["unsupported_android_release"])
+                self.assertIsNone(result["profileId"])
+                self.assertIsNone(result["canonicalTrigger"])
+                self.assertIsNone(result["timeoutKind"])
+                self.assertEqual(result["provenanceRefs"], [])
 
     def test_source_revision_conflict_fails_closed(self) -> None:
         revisions = {
@@ -255,14 +262,26 @@ class AospTimeoutResolutionTests(unittest.TestCase):
         self.assertEqual(result["gaps"], ["supported_reason_not_observed"])
         self.assertIsNone(result["timeoutKind"])
 
-    def test_vendor_overlay_is_explicitly_unsupported_in_b1(self) -> None:
-        result = resolve_timeout(
-            package_with_reason(NO_FOCUS_REASON, vendor_overlays={"example": {}})
-        )
+    def test_vendor_overlay_conflicting_with_source_or_kind_fails_closed(self) -> None:
+        result = resolve_timeout(package_with_reason(
+            NO_FOCUS_REASON,
+            vendor_overlays={
+                "oem.example": {
+                    "sources": {"native": {"revision": "0" * 40}},
+                    "kinds": {
+                        "INPUT_DISPATCH_NO_FOCUSED_WINDOW": {
+                            "trigger": "oem.invented_trigger",
+                        }
+                    },
+                }
+            },
+        ))
 
         self.assertEqual(result["gaps"], ["vendor_overlay_unsupported"])
         self.assertIsNone(result["profileId"])
         self.assertIsNone(result["canonicalTrigger"])
+        self.assertIsNone(result["timeoutKind"])
+        self.assertEqual(result["provenanceRefs"], [])
 
     def test_provided_type_does_not_infer_release_or_change_ontology(self) -> None:
         package = package_with_reason(NO_FOCUS_REASON, provided_type="input_dispatching_timeout")

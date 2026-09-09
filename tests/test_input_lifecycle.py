@@ -125,6 +125,27 @@ class InputLifecycleTests(unittest.TestCase):
         self.assertFalse(wrong_pid["eligibleForHighCausalConfidence"])
         self.assertFalse(late_dump["eligibleForHighCausalConfidence"])
 
+    def test_pending_focus_with_embedded_pid_is_observed_but_not_promoted_to_blame(self) -> None:
+        pending_anchor = "04-12 10:00:05.000 1000 1000 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+        result = build(
+            anchor=pending_anchor,
+            event_log=[pending_anchor],
+            logcat=[
+                "04-12 10:00:04.900 E InputDispatcher: Input dispatching timed out for com.demo pid=1234",
+                "04-12 10:00:04.950 I WindowManager: mPendingFocus=Window{a1b2c3 u0 com.demo/.MainActivity} "
+                "owner=ProcessRecord{abcd 1234:com.demo/u0a123} token=window-1",
+            ],
+        )
+
+        pending = next(event for event in result["events"] if event["id"] == "logcat:1")
+        self.assertEqual(pending["targetPids"], ["1234"])
+        self.assertEqual(pending["targetProcesses"], ["com.demo"])
+        self.assertEqual(pending["associationStatus"], "matched")
+        self.assertEqual(result["focusLifecycle"]["status"], "pending_focus")
+        self.assertEqual(result["focusLifecycle"]["eventIds"], ["logcat:1"])
+        self.assertIsNone(result["blameTarget"])
+        self.assertIn("pending_focus_not_blame_proof", result["gaps"])
+
     def test_recovery_cancel_and_suppression_require_explicit_matched_evidence(self) -> None:
         cancelled = build(
             logcat=[
@@ -151,6 +172,36 @@ class InputLifecycleTests(unittest.TestCase):
         self.assertEqual(recovered["queueLifecycle"]["status"], "unknown")
         self.assertEqual(suppressed["inputLifecycle"]["status"], "timed_out_at_anchor")
         self.assertEqual(suppressed["queueLifecycle"]["status"], "suppressed")
+
+    def test_repeated_suppression_and_recovery_require_explicit_matched_events(self) -> None:
+        result = build(
+            logcat=[
+                TARGET_NO_FOCUS,
+                "04-12 10:00:04.920 I InputDispatcher: input queue suppressed for com.demo pid=1234",
+                "04-12 10:00:04.930 I InputDispatcher: input queue suppressed for com.demo pid=1234",
+                "04-12 10:00:04.950 I InputDispatcher: input dispatch recovered for com.demo pid=1234",
+            ]
+        )
+
+        self.assertEqual(result["inputLifecycle"]["status"], "recovered")
+        self.assertEqual(result["queueLifecycle"]["status"], "suppressed")
+        self.assertEqual(result["queueLifecycle"]["eventIds"], ["logcat:1"])
+        suppressed = [event for event in result["events"] if "queue_suppressed" in event["kinds"]]
+        self.assertEqual([event["associationStatus"] for event in suppressed], ["matched", "matched"])
+        self.assertTrue(any(edge["kind"] == "input_recovered" for edge in result["edges"]))
+
+    def test_missing_lifecycle_events_remain_unknown_not_negative_claims(self) -> None:
+        timeout_anchor = "04-12 10:00:05.000 1000 1000 I am_anr  : [0,1234,com.demo,1,Input dispatching timed out]"
+        result = build(anchor=timeout_anchor, event_log=[timeout_anchor], logcat=[])
+
+        self.assertEqual(result["trigger"]["status"], "observed")
+        self.assertEqual(result["focusLifecycle"]["status"], "unknown")
+        self.assertEqual(result["queueLifecycle"]["status"], "unknown")
+        self.assertEqual(result["recentsLifecycle"]["status"], "unknown")
+        self.assertNotIn("recents_finished", [edge["kind"] for edge in result["edges"]])
+        self.assertNotIn("recents_cancelled", [edge["kind"] for edge in result["edges"]])
+        self.assertIn("queue_lifecycle_unavailable", result["gaps"])
+        self.assertIn("missing_wms_blame_mapping", result["gaps"])
 
     def test_lifecycle_window_keeps_system_recents_lines_without_package_text(self) -> None:
         lines = filter_input_lifecycle_lines(

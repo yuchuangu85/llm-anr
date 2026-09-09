@@ -35,6 +35,12 @@ class BinderWatchdogLifecycleTests(unittest.TestCase):
         ])
 
         self.assertEqual(result["schemaVersion"], "binder-watchdog-lifecycle-v1")
+        shared = result["dumpLifecycle"]
+        self.assertEqual(shared["source"], "none")
+        self.assertEqual(shared["associationStatus"], "associated")
+        self.assertEqual(shared["identityStatus"], "matched")
+        self.assertNotIn("stalenessStatus", result)
+        self.assertNotIn("identityStatus", result)
         txn = result["binderTransactions"][0]
         self.assertEqual(txn["peerStatus"], "verified")
         self.assertEqual(txn["lifecycleStatus"], "reply_observed")
@@ -72,6 +78,40 @@ class BinderWatchdogLifecycleTests(unittest.TestCase):
 
         self.assertEqual(result["binderTransactions"], [])
         self.assertIn("trace_dump_not_associated", result["gaps"])
+        shared = result["dumpLifecycle"]
+        self.assertEqual(shared["identityStatus"], "wrong_pid")
+        self.assertEqual(shared["associationStatus"], "rejected")
+        self.assertEqual(shared["stalenessStatus"], "unknown")
+
+    def test_f2_copies_observed_dq1_snapshot_without_overriding_rejection(self) -> None:
+        result = build_binder_watchdog_lifecycle(
+            group_id="g", anchor=ANCHOR,
+            trace_lines=["BinderTxn: transactionId=txn-snapshot callerPid=1234 callerProcess=com.demo targetPid=4321 targetProcess=com.peer started"],
+            dump_quality={
+                "associationStatus": "rejected",
+                "identityStatus": "wrong_pid",
+                "timeStatus": "within_window",
+                "dumpLifecycle": {
+                    "status": "observed",
+                    "source": "dumpsys_input_window",
+                    "inputStatus": "observed",
+                    "windowStatus": "observed",
+                    "queueStatus": "pending",
+                    "transferStatus": "matched",
+                },
+            },
+        )
+
+        # The observed source-local snapshot is retained, but F2 does not let
+        # it bypass DQ1's wrong-PID rejection or invent a stale decision.
+        shared = result["dumpLifecycle"]
+        self.assertEqual(shared["status"], "observed")
+        self.assertEqual(shared["source"], "dumpsys_input_window")
+        self.assertEqual(shared["identityStatus"], "wrong_pid")
+        self.assertEqual(shared["associationStatus"], "rejected")
+        self.assertEqual(shared["stalenessStatus"], "unknown")
+        self.assertEqual(result["binderTransactions"], [])
+        self.assertIn("trace_dump_not_associated", result["gaps"])
 
     def test_out_of_window_dump_rejects_trace_peer_even_when_transaction_fields_match(self) -> None:
         result = build_binder_watchdog_lifecycle(
@@ -81,6 +121,8 @@ class BinderWatchdogLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(result["binderTransactions"], [])
         self.assertIn("trace_dump_not_associated", result["gaps"])
+        self.assertEqual(result["dumpLifecycle"]["timeStatus"], "outside_window")
+        self.assertEqual(result["dumpLifecycle"]["stalenessStatus"], "unknown")
         self.assertFalse(result["finalJudgment"])
 
     def test_watchdog_start_blocked_finish_is_ordered_and_recovered(self) -> None:

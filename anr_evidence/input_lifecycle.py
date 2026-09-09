@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import re
 from typing import Any, Iterable
 
+from .dump_quality import dump_lifecycle_projection
 from .log_filter import parse_log_timestamp, timestamp_to_raw
 from .log_identity import parse_line_identity
 
@@ -36,6 +37,7 @@ _FOCUS_ENTER_RE = re.compile(
     re.IGNORECASE,
 )
 _FOCUS_LEAVE_RE = re.compile(r"focus\s+leaving\s*[:=]?\s*(?P<target>[^,\]\s]+)?", re.IGNORECASE)
+_PENDING_FOCUS_RE = re.compile(r"\b(?:mPendingFocus|pending[\s_-]+focus)\b", re.IGNORECASE)
 _WINDOW_COMPONENT_RE = re.compile(r"(?P<package>[A-Za-z][\w.]*(?::[\w.-]+)?)/(?P<component>[^\s,}\]]+)")
 _FOR_PROCESS_RE = re.compile(r"\bfor\s+(?P<process>[A-Za-z][\w.]*(?::[\w.-]+)?)\b", re.IGNORECASE)
 _RECENTS_CONSUMER_RE = re.compile(r"\b(?P<consumer>recents_animation_input_consumer)\b", re.IGNORECASE)
@@ -68,6 +70,8 @@ def _kinds_for_line(line: str) -> tuple[str, ...]:
         kinds.append("focus_entered")
     if _FOCUS_LEAVE_RE.search(line):
         kinds.append("focus_left")
+    if _PENDING_FOCUS_RE.search(line):
+        kinds.append("focus_pending")
     if "not_visible" in lowered or "not visible" in lowered:
         kinds.append("window_not_visible")
     if "reportdrawfinished" in lowered or "firstwindowdrawn" in lowered or "alldrawn" in lowered:
@@ -437,14 +441,20 @@ def _recents_lifecycle(events: list[dict[str, Any]], anchor_timestamp: datetime 
 
 
 def _dump_view(dump_quality: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "pid": (dump_quality.get("dump") or {}).get("pid"),
         "timestamp": (dump_quality.get("dump") or {}).get("timestamp"),
         "identityStatus": dump_quality.get("identityStatus"),
         "timeStatus": dump_quality.get("timeStatus"),
         "associationStatus": dump_quality.get("associationStatus"),
         "provenanceStatus": dump_quality.get("provenanceStatus"),
+        # A read-only DQ1 projection; D1 never reclassifies wrong PID/stale.
+        "dumpLifecycle": dump_lifecycle_projection(dump_quality),
     }
+    snapshot = dump_quality.get("dumpsysSnapshot")
+    if isinstance(snapshot, dict):
+        result["dumpsysSnapshot"] = copy.deepcopy(snapshot)
+    return result
 
 
 def refresh_input_lifecycle_dump_quality(lifecycle: dict[str, Any], dump_quality: dict[str, Any]) -> dict[str, Any]:
@@ -538,14 +548,14 @@ def build_input_lifecycle(
     at_anchor_focus = [
         event for event in events
         if event["associationStatus"] == "matched" and _event_at_or_before(event, anchor_timestamp)
-        and any(kind in event["kinds"] for kind in ("focus_entered", "focus_left", "focus_absent"))
+        and any(kind in event["kinds"] for kind in ("focus_entered", "focus_left", "focus_absent", "focus_pending"))
     ]
     blame_candidates = [event for event in at_anchor_focus if event["entity"] and _has_kind(event, "focus_entered")]
     blame_target, blame_conflict = _resolve_entity(blame_candidates)
     post_anchor_focus = [
         event for event in events
         if event["associationStatus"] == "matched" and event["_timestamp"] is not None and anchor_timestamp is not None
-        and event["_timestamp"] > anchor_timestamp and any(kind in event["kinds"] for kind in ("focus_entered", "focus_left", "focus_absent"))
+        and event["_timestamp"] > anchor_timestamp and any(kind in event["kinds"] for kind in ("focus_entered", "focus_left", "focus_absent", "focus_pending"))
     ]
     focus_status = "unknown"
     if at_anchor_focus:
@@ -556,6 +566,10 @@ def build_input_lifecycle(
             focus_status = "focus_present"
         elif _has_kind(latest, "focus_left"):
             focus_status = "focus_left"
+        elif _has_kind(latest, "focus_pending"):
+            # A WMS pending-focus record is an observed state, not a committed
+            # focus owner or a qualified responsibility/blame transfer.
+            focus_status = "pending_focus"
 
     explicit_cancel = next((event for event in events if trigger_event and event["associationStatus"] == "matched" and _has_kind(event, "input_cancelled") and _event_after(trigger_event, event, anchor_timestamp)), None)
     explicit_recovery = next((event for event in events if trigger_event and event["associationStatus"] == "matched" and _has_kind(event, "input_recovered") and _event_after(trigger_event, event, anchor_timestamp)), None)
@@ -585,11 +599,13 @@ def build_input_lifecycle(
     edges.extend(recents_edges)
 
     dump = _dump_view(dump_quality)
+    pending_focus_observed = any(_has_kind(event, "focus_pending") for event in at_anchor_focus)
     gaps = [
         "input_lifecycle_not_causal_proof",
         "queue_lifecycle_unavailable" if queue_status == "unknown" else "",
         "missing_group_associated_input_trigger" if not trigger_event else "",
-        "missing_wms_blame_mapping" if trigger_event and blame_target is None else "",
+        "pending_focus_not_blame_proof" if pending_focus_observed else "",
+        "missing_wms_blame_mapping" if trigger_event and blame_target is None and not pending_focus_observed else "",
         "conflicting_original_target" if original_conflict else "",
         "conflicting_wms_blame_target" if blame_conflict else "",
         *recents_gaps,

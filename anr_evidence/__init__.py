@@ -1,6 +1,6 @@
 """ANR Phase 1 evidence extraction MVP."""
 
-from .ai_context import AiContextOptions, AiContextResult, build_ai_context, build_ai_context_artifacts, build_ai_context_artifacts_from_store, build_ai_context_from_store
+from .ai_context import AiContextOptions, AiContextResult, build_ai_context, build_ai_context_artifacts, build_ai_context_artifacts_from_input_path, build_ai_context_artifacts_from_store, build_ai_context_from_store
 from .ai_agent import (
     AgentConfig,
     AgentMessage,
@@ -13,9 +13,24 @@ from .ai_agent import (
     ProviderKind,
     ReProbeRequest,
     route_sub_agents,
+    prepare_redacted_outbound_view,
     run_ai_agent_analysis,
     run_ai_agent_from_cli,
 )
+from .redaction import (
+    REDACTION_RULESET_VERSION,
+    RedactedEvidenceView,
+    RedactedOutboundAdmission,
+    RedactedAdmissionVerifier,
+    RedactionError,
+    RedactionOccurrence,
+    RedactionReplacement,
+    build_reference_preserving_redacted_view,
+    recipient_id_for_provider,
+    validate_redacted_outbound_admission,
+    validate_redacted_view_against_slices,
+)
+from .loaders import InputResourceBudget
 from .anr_strategy import ANR_TYPE_STRATEGIES, AnrTypeStrategy, infer_anr_type, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
 from .log_filter import AnrManagerBlock, extract_anrmanager_blocks
@@ -28,8 +43,9 @@ from .root_cause_hints import (
     root_cause_hint_details,
 )
 from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
-from .dump_quality import audit_dump_quality, bind_dump_quality_references
+from .dump_quality import audit_dump_quality, annotate_dump_quality_with_dumpsys_snapshot, bind_dump_quality_references, dump_lifecycle_projection
 from .input_lifecycle import build_input_lifecycle, refresh_input_lifecycle_dump_quality
+from .dumpsys_input_window import parse_dumpsys_input_window
 from .binder_watchdog_lifecycle import build_binder_watchdog_lifecycle
 from .framework_timeout_lifecycle import (
     FrameworkTimeoutPackError,
@@ -58,8 +74,14 @@ from .eval import (
 from .formal_eval import (
     FORMAL_CASE_SCHEMA_VERSION,
     FORMAL_CORPUS_SCHEMA_VERSION,
+    FORMAL_V2_CASE_SCHEMA_VERSION,
+    FORMAL_V2_CORPUS_SCHEMA_VERSION,
+    REAL_CORPUS_ADMISSION_SCHEMA_VERSION,
+    FORMAL_ACCEPTANCE_CRITERIA_SCHEMA_VERSION,
+    FORMAL_OUTPUT_DOMAINS,
     FormalEvalAggregate,
     FormalEvalCaseResult,
+    FormalEvalDimensionResult,
     collect_mechanism_ids,
     run_formal_eval_case,
     run_formal_eval_directory,
@@ -84,6 +106,7 @@ from .extractor import (
     load_package_from_directory,
     load_package_from_fixture,
     load_package_from_path,
+    stream_directory_sources_to_store,
     stream_archive_to_store,
 )
 from .analyzer import analyze_normalized_package
@@ -139,13 +162,27 @@ __all__ = [
     "ProviderKind",
     "ReProbeRequest",
     "route_sub_agents",
+    "prepare_redacted_outbound_view",
     "run_ai_agent_analysis",
     "run_ai_agent_from_cli",
+    # redaction
+    "REDACTION_RULESET_VERSION",
+    "RedactedEvidenceView",
+    "RedactedOutboundAdmission",
+    "RedactedAdmissionVerifier",
+    "RedactionError",
+    "RedactionOccurrence",
+    "RedactionReplacement",
+    "build_reference_preserving_redacted_view",
+    "recipient_id_for_provider",
+    "validate_redacted_outbound_admission",
+    "validate_redacted_view_against_slices",
     # ai_context
     "AiContextOptions",
     "AiContextResult",
     "build_ai_context",
     "build_ai_context_artifacts",
+    "build_ai_context_artifacts_from_input_path",
     "build_ai_context_from_store",
     "build_ai_context_artifacts_from_store",
     # anr_strategy
@@ -171,8 +208,11 @@ __all__ = [
     "fuse_cross_source_evidence",
     "FusionScope",
     "audit_dump_quality",
+    "annotate_dump_quality_with_dumpsys_snapshot",
     "bind_dump_quality_references",
+    "dump_lifecycle_projection",
     "build_input_lifecycle",
+    "parse_dumpsys_input_window",
     "refresh_input_lifecycle_dump_quality",
     "build_binder_watchdog_lifecycle",
     "FrameworkTimeoutPackError",
@@ -207,8 +247,14 @@ __all__ = [
     # formal_eval
     "FORMAL_CASE_SCHEMA_VERSION",
     "FORMAL_CORPUS_SCHEMA_VERSION",
+    "FORMAL_V2_CASE_SCHEMA_VERSION",
+    "FORMAL_V2_CORPUS_SCHEMA_VERSION",
+    "REAL_CORPUS_ADMISSION_SCHEMA_VERSION",
+    "FORMAL_ACCEPTANCE_CRITERIA_SCHEMA_VERSION",
+    "FORMAL_OUTPUT_DOMAINS",
     "FormalEvalAggregate",
     "FormalEvalCaseResult",
+    "FormalEvalDimensionResult",
     "collect_mechanism_ids",
     "run_formal_eval_case",
     "run_formal_eval_directory",
@@ -223,6 +269,8 @@ __all__ = [
     "group_slices_by_source",
     "read_ess_jsonl",
     "write_ess_jsonl",
+    # loader resources
+    "InputResourceBudget",
     # extractor
     "extract_baseline_package",
     "extract_evidence_package",
@@ -231,6 +279,7 @@ __all__ = [
     "load_package_from_directory",
     "load_package_from_fixture",
     "load_package_from_path",
+    "stream_directory_sources_to_store",
     "stream_archive_to_store",
     # analyzer
     "analyze_normalized_package",

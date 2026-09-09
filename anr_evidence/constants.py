@@ -11,7 +11,7 @@ SUPPORTED_TYPES = {
 }
 
 SOURCE_KINDS = ("trace", "event_log", "logcat", "kernel_log")
-OPTIONAL_SOURCE_KINDS = ("meminfo",)
+OPTIONAL_SOURCE_KINDS = ("meminfo", "dumpsys_input", "dumpsys_window")
 
 TYPE_PATTERNS = {
     "no_focus_window": (

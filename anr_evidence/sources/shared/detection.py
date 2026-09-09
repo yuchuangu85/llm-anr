@@ -123,11 +123,48 @@ MONKEY_LOGCAT_PATTERN = re.compile(
 )
 
 
+def detect_streaming_source_kind(relative_path: Path) -> str | None:
+    """Classify only path-stable sources before a secure one-pass stream opens.
+
+    The directory C2 reader cannot read a file twice merely to inspect its
+    body.  For the two D2 dumpsys paths, a recognised ``dumpsys/`` location
+    selects an *opaque candidate* artifact; the adapter later requires its
+    labelled body header before reporting any parsed observation.  Thus a
+    filename is sufficient for bounded capture, never for semantic parsing.
+    """
+    detected = detect_source_kind(relative_path, "")
+    if detected is not None:
+        return detected
+    lower_path = normalize_path_text(relative_path).lower()
+    filename = path_name(relative_path).lower()
+    in_dumpsys_tree = lower_path.startswith("dumpsys/") or "/dumpsys/" in lower_path
+    if not in_dumpsys_tree:
+        return None
+    if filename in {"input", "input.txt", "dumpsys_input", "dumpsys_input.txt", "dumpsys-input.txt"}:
+        return "dumpsys_input"
+    if filename in {"window", "window.txt", "dumpsys_window", "dumpsys_window.txt", "dumpsys-window.txt"}:
+        return "dumpsys_window"
+    return None
+
+
 def detect_source_kind(relative_path: Path, content: str) -> str | None:
     lower_path = normalize_path_text(relative_path).lower()
     filename = path_name(relative_path).lower()
     content_sample = content[:8192]
     content_head = "\n".join(content_sample.lower().splitlines()[:20])
+    # D2 adapters intentionally require both a dumpsys-shaped header and a
+    # labelled field.  A file merely named ``input.txt`` / ``window.txt`` is
+    # not sufficient evidence and therefore remains unclassified.
+    if (
+        "input dispatcher state:" in content_head
+        and ("focusedwindow:" in content_sample.lower() or "focusedapplication:" in content_sample.lower())
+    ):
+        return "dumpsys_input"
+    if (
+        "window manager windows" in content_head
+        and ("mcurrentfocus=" in content_sample.lower() or "window #" in content_sample.lower())
+    ):
+        return "dumpsys_window"
     if (
         filename == "meminfo.txt"
         or lower_path.endswith("/system_log/meminfo.txt")

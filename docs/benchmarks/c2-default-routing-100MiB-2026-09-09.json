@@ -1,0 +1,72 @@
+{
+  "benchmark": "c2-default-routing-context",
+  "checks": {
+    "artifactsAndCompleteFilteredBaseline": true,
+    "defaultRouting": true,
+    "disk": true,
+    "rss": true
+  },
+  "configuration": {
+    "coldRuns": 1,
+    "groupCount": 2,
+    "inputKind": "directory",
+    "sizeMiB": 100,
+    "warmRuns": 1
+  },
+  "limits": {
+    "oneGiBMaxRssBytes": 536870912,
+    "storeMaxInputMultiplier": 1.5,
+    "workingTreeMaxInputMultiplier": 3.0
+  },
+  "machine": {
+    "machine": "arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+  },
+  "passed": true,
+  "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "revision": "2bf1e14437b17a22b60dfb0fa336adb0736f99b7",
+  "runs": [
+    {
+      "allGroupArtifactsExist": true,
+      "capturedInputBytes": 104857600,
+      "compactViewCapsPassed": true,
+      "completeFilteredBaselineExists": true,
+      "groupCountExported": 2,
+      "groupCountRequested": 2,
+      "indexExists": true,
+      "inputDiskBytes": 104857600,
+      "inputKind": "directory",
+      "inputSha256": "08bf4a48ccf6ce91e9f68bce5e27e5426dc9ec27fcfdb28c7e007b59fdd3ab84",
+      "legacyPackageMaterialized": false,
+      "maxRssBytes": 57376768,
+      "outputBytes": 56922,
+      "routingMode": "store_backed_default",
+      "runKind": "cold",
+      "sizeMiB": 100,
+      "storeBytes": 128479232,
+      "wallSeconds": 8.046152167022228,
+      "workingTreeBytes": 233393754
+    },
+    {
+      "allGroupArtifactsExist": true,
+      "capturedInputBytes": 104857600,
+      "compactViewCapsPassed": true,
+      "completeFilteredBaselineExists": true,
+      "groupCountExported": 2,
+      "groupCountRequested": 2,
+      "indexExists": true,
+      "inputDiskBytes": 104857600,
+      "inputKind": "directory",
+      "inputSha256": "08bf4a48ccf6ce91e9f68bce5e27e5426dc9ec27fcfdb28c7e007b59fdd3ab84",
+      "legacyPackageMaterialized": false,
+      "maxRssBytes": 57049088,
+      "outputBytes": 56922,
+      "routingMode": "store_backed_default",
+      "runKind": "warm",
+      "sizeMiB": 100,
+      "storeBytes": 128479232,
+      "wallSeconds": 8.053614540956914,
+      "workingTreeBytes": 233393754
+    }
+  ]
+}

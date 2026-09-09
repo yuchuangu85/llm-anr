@@ -61,6 +61,13 @@ class DumpQualityAuditTests(unittest.TestCase):
         self.assertEqual(quality["stalenessStatus"], "unknown")
         self.assertEqual(quality["processLifetimeStatus"], "unknown")
         self.assertEqual(quality["lifecycleStatus"], "unknown")
+        shared = quality["dumpLifecycle"]
+        self.assertEqual(shared["schemaVersion"], "dq1-dump-lifecycle-v1")
+        self.assertEqual(shared["status"], "unavailable")
+        self.assertEqual(shared["source"], "none")
+        self.assertEqual(shared["identityStatus"], quality["identityStatus"])
+        self.assertEqual(shared["associationStatus"], quality["associationStatus"])
+        self.assertEqual(shared["stalenessStatus"], "unknown")
         self.assertFalse(quality["eligibleForHighCausalConfidence"])
 
     def test_wrong_identity_missing_time_invalid_window_and_late_sampling_are_fail_closed(self) -> None:
@@ -127,6 +134,8 @@ class DumpQualityProvenanceTests(unittest.TestCase):
 
         self.assertEqual(quality["referenceStatus"], "verified")
         self.assertEqual(quality["provenanceStatus"], "verified")
+        self.assertEqual(quality["dumpLifecycle"]["provenanceStatus"], "verified")
+        self.assertEqual(quality["dumpLifecycle"]["status"], "unavailable")
         self.assertEqual(quality["associationStatus"], "associated")
         self.assertEqual(set(quality["fieldReferences"]), {
             "anchor", "dumpPid", "dumpTimestamp", "dumpProcess",
@@ -186,3 +195,43 @@ class DumpQualityProvenanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DumpsysSnapshotProjectionTests(unittest.TestCase):
+    def test_snapshot_preserves_dq1_identity_and_lifecycle_unknown(self) -> None:
+        from anr_evidence.dump_quality import annotate_dump_quality_with_dumpsys_snapshot
+        from anr_evidence.dumpsys_input_window import parse_dumpsys_input_window
+
+        snapshot = parse_dumpsys_input_window(
+            dumpsys_input="""Input Dispatcher State:
+  FocusedWindow: Window{a1 u0 com.demo/.MainActivity} inputChannelToken=Token{input-1} mDisplayId=0
+  PendingEvents: seq=17
+""",
+            dumpsys_window="""WINDOW MANAGER WINDOWS (dumpsys window windows)
+  mCurrentFocus=Window{a1 u0 com.demo/.MainActivity}
+  Window #0 Window{a1 u0 com.demo/.MainActivity}:
+    mDisplayId=0
+    mSession=Session{abcd 1234:u0a123}
+    mInputChannelToken=Token{input-1}
+""",
+        )
+        quality = annotate_dump_quality_with_dumpsys_snapshot(audit_dump_quality(scope()), snapshot)
+
+        self.assertEqual(quality["identityStatus"], "matched")
+        self.assertEqual(quality["associationStatus"], "associated")
+        self.assertEqual(quality["lifecycleStatus"], "unknown")
+        shared = quality["dumpLifecycle"]
+        self.assertEqual(shared["status"], "observed")
+        self.assertEqual(shared["source"], "dumpsys_input_window")
+        self.assertEqual(shared["captureTimeStatus"], "unavailable")
+        self.assertEqual(shared["inputStatus"], "observed")
+        self.assertEqual(shared["windowStatus"], "observed")
+        self.assertEqual(shared["queueStatus"], "pending")
+        self.assertEqual(shared["transferStatus"], "matched")
+        self.assertEqual(shared["associationStatus"], quality["associationStatus"])
+        self.assertEqual(shared["stalenessStatus"], "unknown")
+        self.assertEqual(quality["dumpsysSnapshot"]["transferStatus"], "matched")
+        self.assertEqual(quality["dumpsysSnapshot"]["queueStatus"], "pending")
+        self.assertEqual(quality["dumpsysSnapshot"]["blameTransfer"]["status"], "unqualified")
+        self.assertEqual(quality["dumpsysSnapshot"]["blameTransfer"]["reason"], "dumpsys_capture_time_unavailable")
+        self.assertFalse(quality["eligibleForHighCausalConfidence"])

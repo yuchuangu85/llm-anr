@@ -1,6 +1,6 @@
 # C1 证据存储开发说明
 
-状态：C1 原始证据存储已接入；C2 现有目录 EventLog 流式发布，以及 ZIP/TAR 到已打开 store 的 opt-in 流式成员写入。C2 的显式 store-backed multi-group context/export 已保留 EventLog/logcat 过滤输出的 source coordinates、生成同 store span sidecar/ESS，并输出独立 hard-capped compact LLM view；真实 100 MiB/1 GiB 运行证据仍在仓库。默认 directory/ZIP/TAR loader routing 与其完整端到端验收尚未完成，因此仍不代表 C2/G003 完成。
+状态：C1 原始证据存储和 C2 default raw-input path 均已接入。directory/ZIP/TAR 现在由 `build_ai_context_artifacts_from_input_path(...)` 自动 capture 到 fresh store，再执行 store-backed multi-group context/export；过滤输出保留 source coordinates、生成同 store span sidecar/ESS，并输出独立 hard-capped compact LLM view。快 CI 小 fixture 覆盖真实 directory/ZIP/TAR default routing 与完整 filtered baseline；独立 100 MiB/1 GiB default-directory cold/warm 记录在 `docs/benchmarks/c2-default-routing-100MiB-2026-09-09.json`、`docs/benchmarks/c2-default-routing-1GiB-2026-09-09.json`。显式 `build_ai_context_artifacts_from_store(...)` 仍是独立 API，不能被当成 default routing 证据。
 
 ## 目录输入接入
 
@@ -18,7 +18,7 @@ index = build_ai_context_artifacts(
 
 包中的 `source.originalArtifacts` 是 loader 提供的原始快照及来源信息，不是由过滤字符串反编码出来的“原文件”。`load_package_from_archive` 和 `load_package_from_path` 同样提供 `capture_originals=True`。归档在原有预算限定的那次成员读取中捕获 bytes，不重新解压；origin 区分 container/member，并记录 memberOffset 以区分同名成员。混合目录传递已选中来源的快照；capture 模式绕开 smart-discovery，普通默认路径不变。旧 fixture 没有原始快照时，不会伪造 immutable 引用。
 
-## C2 ZIP/TAR 直接流式写入（opt-in）
+## C2 ZIP/TAR 显式直接流式写入 API
 
 ```python
 from anr_evidence import stream_archive_to_store
@@ -36,7 +36,7 @@ with EvidenceStore("/local/context-output/evidence.sqlite3") as store:
 
 该接口直接消费一个已打开的 `EvidenceStore`，因此调用方可在同一数据库中按 group 顺序写入多个归档；它不调用 `load_package_from_archive`、不构造 `originalBase64`，也不建立兼容的全文 text/package view。每个 regular member 仅打开一次，按 `chunk_size` 交给 `add_streamed_group`；目录名可识别的成员保留既有 source kind，其他 regular member 使用 `archive_member`，以免在该原始 baseline 路径中静默丢弃证据。origin 固定为 archive container/member/memberOffset。
 
-ZIP/TAR 在读取前沿用 member count、路径、link/special-member 和声明解压大小检查；成员 reader 再限制实际单成员字节数，store 的共享预算采用调用方预算和全局 archive hard limit 的较小者。任何成员读取、预算或完整性失败都会回滚该 group，不留下部分 artifact 或 group 关联。此接口尚未接入 `build_ai_context_artifacts` 的兼容导出路径；后者仍可能依赖既有 base64/全文 package 数据，不能把本接口或小型单测外推为 C2 端到端内存验收。
+ZIP/TAR 在读取前沿用 member count、路径、link/special-member 和声明解压大小检查；成员 reader 再限制实际单成员字节数，store 的共享预算采用调用方预算和全局 archive hard limit 的较小者。任何成员读取、预算或完整性失败都会回滚该 group，不留下部分 artifact 或 group 关联。这个显式 API 本身不调用 `build_ai_context_artifacts`，也不构造 legacy package view；raw `build_ai_context_artifacts_from_input_path(...)` 已将 fresh capture 接到 store-backed multi-group export。两者必须保持区分：显式 API 的成功或小型单测不能单独证明 default routing，default-path 证据需要其自身的 directory/ZIP/TAR 端到端回归和大输入基准。
 
 ## C2 store-native source reader（基础 seam）
 
@@ -99,6 +99,17 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 
 快照不随后续输入文件变化而更新，重新捕获产生新的 artifact identity。
 
+## C2 默认 directory/ZIP/TAR 单路径
+
+`build_ai_context_artifacts_from_input_path(input_path, options)` 是 raw input 的默认入口：
+
+- directory：安全 descriptor-rooted reader capture 所有 loose regular files；已识别的 trace/EventLog/logcat/kernel/meminfo 保留 source kind，未分类文件以 `archive_member` 保存，使 shared byte budget 覆盖整个 loose input。已发布的 `anr_ai_context` tree 会排除，重跑使用 fresh `input-capture` group 替换旧 snapshot，不累积前一代 artifact。
+- ZIP/TAR：direct member streaming 进入同一 fresh group；directory 下的直系 archive 也在同一个 group 中追加，和 loose input 共享 2 GiB accepted-input byte budget。
+- export：从这个 store 运行多组 `_build_groups(...)`，完整 filtered `logcat.txt` 与 512 KiB hard-capped `compact_evidence.jsonl` 分开写出。trace/meminfo 仍有明确 materialization cap；超过 cap 是 fail-closed/unsupported，不回退到 legacy 全文输入。
+- routing contract：只有该默认入口在 `index.json` 写 `inputRouting.mode = "store_backed_default"`、`legacyPackageMaterialized = false` 和 capture accounting。`build_ai_context_artifacts_from_store(...)` 不写这个字段，因此显式 export 不会被误报为 default routing。
+
+`scripts/anr_to_ai.py` 和 `python -m anr_evidence --build-ai-context` 在 raw directory/ZIP/TAR 输入时自动调用该入口；fixture JSON 是已经归一化的 package，仍走 legacy fixture route。实际 CI fixture 仅证明规则和 artifact behavior；100 MiB/1 GiB directory benchmark 是当前 macOS machine 的 measured RSS/disk evidence，**不是**跨设备硬 RSS/壁钟墙、压缩格式 parser 上限或真实设备兼容性保证。
+
 ## C2 目录流式 staged publication
 
 `stream_directory_event_logs_to_store(input_root, store_path, ...)` 的安全边界分为两个不同信任域：
@@ -142,7 +153,7 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 - wheel/发布产物级验收仍未执行；本地单元回归不等同正式发布验收。
 - smart-discovery 原始快照优化（当前 capture 模式绕开），更多 loader 边界和混合来源兼容验收。
 - 更广的 Agent/V1 语义覆盖与正式评测仍未执行。当前 manager V1 已有窄的 immutable direct-blocker qualification，但字段引用不等于 freshness、process lifetime 或最终根因证明。
-- 除新增 ZIP/TAR direct-to-store 接口外，非目录兼容捕获路径仍可能使用 base64/完整文本视图；目录与归档的两个 C2 流式接口尚未形成 multi-group context/export 单路径。
+- fixture JSON 与显式 legacy package API 仍可能使用 base64/完整文本 view；这是为已归一化 fixture/backward compatibility 保留的路径，不是 raw directory/ZIP/TAR 默认 workflow。
 
 ## ESS 与 compact view 开发接入
 
@@ -158,7 +169,11 @@ legacy package writer 在 `AiContextOptions` 同时设置 `build_evidence_store=
 
 `audit_dump_quality(...)` is the shared DQ1 boundary for D1/D2/F2 consumers.  It reports a versioned (`dq1-v1`) target/dump identity record, nullable PID/process/TID/timestamps, identity and time status, an explicit ANR-group `associationStatus`, immutable reference/provenance status, supporting field references, and explicit gaps.  TID is metadata only: a matching TID never establishes dump identity.  `bind_dump_quality_references(...)` accepts only original-byte readback references for the ANR anchor, ART dump-header PID/timestamp, and exact `Cmd line` process; an evidence reference from another group is marked invalid and is never reused.
 
-The contract intentionally keeps `freshnessStatus`, `stalenessStatus`, `processLifetimeStatus`, and `lifecycleStatus` at `unknown` until a separate audited source proves them.  An out-of-window dump is `associationStatus=rejected`, **not** a stale claim.  Immutable field provenance proves only those named observations; it does not prove queue/suppression lifecycle, process lifetime, freshness, causal mechanism, or final root cause.  D2 owns the later queue/suppression lifecycle increment and must extend this shared record rather than introduce a parallel stale/wrong-PID classifier.
+`dumpLifecycle` is the only shared lifecycle projection for D1/D2/F2 and future dump/graph adapters.  It carries source-local snapshot availability (`status`, `source`, `inputStatus`, `windowStatus`, `queueStatus`, `transferStatus`, `captureTimeStatus`) plus exact copies of DQ1 identity/time/association/provenance statuses.  It is a view of DQ1, not an independent classifier: consumers must not rederive stale, wrong-PID, wrong-process, ANR-group association, freshness, or process lifetime locally.
+
+The contract intentionally keeps `freshnessStatus`, `stalenessStatus`, `processLifetimeStatus`, and generic `lifecycleStatus` at `unknown` until a separate audited source proves them.  An out-of-window dump is `associationStatus=rejected`, **not** a stale claim.  Immutable field provenance proves only those named observations; it does not prove queue/suppression lifecycle, process lifetime, freshness, causal mechanism, or final root cause.
+
+D2 的首个 `dumpsysSnapshot` 与 `dumpLifecycle` 投影现在挂在同一 DQ1 record：前者报告严格 parser 的 input/window/queue/transfer status 与 candidate window PID/process/token/display；后者只总结 source-local snapshot availability，并精确复用 DQ1 quality statuses。两者都 **不**修改 DQ1 identity、time、association、freshness、staleness、process lifetime 或 generic `lifecycleStatus`。即使 token/display/window identity 精确匹配，原始 dump body 没有可信 capture timestamp 时 `blameTransfer.status` 仍是 `unqualified`；不能填充 `inputLifecycle.blameTarget` 或 high confidence。F2 的 trace admission 与输出读取同一 DQ1 projection，不另建 stale/wrong-PID 判定。`dumpsys/` 路径仅用于 C2 一次 capture 的候选 artifact 选择，semantic parser 仍要求明确 header/field。具体 grammar、预算与 fail-closed matrix 见 [D2 dumpsys adapter contract](dumpsys-input-window-adapter-contract.md)。
 
 ## Agent / V1 首批引用消费
 
@@ -175,6 +190,15 @@ V1 对 `high` 的接受是窄而确定性的：候选必须引用当前轮、同
 
 `AiAgentResult.validation_status` 区分 `not_accepted`、`structure_only`（旧路径、仅 low/medium）、`references_verified_causality_unverified`（引用模式但没有 accepted high）与 `references_verified_causality_qualified_v1`（至少一个 high 通过 V1）。旧路径保持原 schema，不因此获得引用已验证标记。
 真实日志外发仍默认拒绝；仅合成测试可以显式启用已有 `synthetic_only` 边界。
+
+### 引用保真私有外发 view（S1）
+
+`EvidenceStore` 的原始 bytes、artifact commitment、byte-range 与完整 `EvidenceSlice.evidence_ref` 仍只用于**本地**校验。对经过人工/组织 release 的私有数据，`prepare_redacted_outbound_view(...)` 仅接受已经由 store + sidecar 成功 readback 绑定的 retained slices，并创建另一个 view：它保留 `groupId` / `sourceKind` / timestamp / line index / 原始 `spanId`，将可识别内容替换为 view-local opaque token。
+
+- `RedactedEvidenceView.replacement_map` 包含原文以便本地复核，绝不序列化、写入 audit，或与 outbound view 一起打包；commitment 只包含 token、类别、原文 SHA-256 与非内容坐标。
+- manager / specialist 只接收此 redacted view；本地 `validate_report_references()` 仍接收 raw slices 并从 store 回读原始 bytes。因此脱敏 view 不能代替 `attach_store_references()` 或 V1 readback。
+- `redacted_private` 还要求 `RedactedOutboundAdmission` 精确绑定 view commitment、map commitment、provider/model receiver、purpose、approval/approver、ruleset、expiry 和不出站 authorization token；这些字段不是自认证。每次调用还必须传入 deployment-controlled `RedactedAdmissionVerifier`（签名 capability / policy service 等外部信任根），并在每个实际 HTTP attempt 前重新返回严格 `True`。请求还受单次规范化 message permit、固定官方 endpoint、精确 provider body 和 no-redirect transport 约束；缺少/过期/撤销/变更的对象、permit 或 re-probe 都 fail closed、零次后续 HTTP。
+- tokenization 是数据最小化，不是对任意自由文本的匿名化证明。真实数据的 release 仍必须有来源许可、组织审批、适用的人工隐私审查和独立 verifier；`synthetic_only`、fake test verifier 和敏感标记检测永远不能升级为该批准。
 
 JSONL 中的 `evidence_ref` 不受信任：`read_ess_jsonl(path)` 默认清空引用；提供
 `store=store, references=refs_by_group` 才执行原始回读并恢复可用引用。

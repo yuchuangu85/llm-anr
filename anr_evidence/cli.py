@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .ai_context import AiContextOptions, build_ai_context_artifacts
+from .ai_context import AiContextOptions, build_ai_context_artifacts, build_ai_context_artifacts_from_input_path
 from .delivery import render_final_delivery
 from .extractor import ArchiveLoadError, load_package_from_archive, load_package_from_directory, load_package_from_fixture
 from .pipeline import payload_phase, run_until
@@ -41,40 +41,42 @@ def main() -> int:
     if args.replay:
         result = run_replay_manifest(input_path, args.replay_out)
     else:
+        context_options = AiContextOptions(
+            out_dir=args.out_dir or "anr_ai_context",
+            event_before_seconds=args.event_before_seconds,
+            logcat_before_seconds=args.logcat_before_seconds,
+            logcat_after_seconds=args.logcat_after_seconds,
+            group_tolerance_seconds=args.group_tolerance_seconds,
+            package_name=args.package_name,
+            anr_type=args.anr_type,
+        )
         try:
-            if input_path.is_dir():
-                payload = load_package_from_directory(input_path, package_name=args.package_name)
-            elif _is_archive_path(input_path):
-                payload = load_package_from_archive(input_path, package_name=args.package_name)
+            if args.build_ai_context and (input_path.is_dir() or _is_archive_path(input_path)):
+                # The raw directory/ZIP/TAR workflow has one default C2 route:
+                # capture the source once in a fresh store, then export from it.
+                result = build_ai_context_artifacts_from_input_path(input_path, context_options)
             else:
-                payload = load_package_from_fixture(input_path)
+                if input_path.is_dir():
+                    payload = load_package_from_directory(input_path, package_name=args.package_name)
+                elif _is_archive_path(input_path):
+                    payload = load_package_from_archive(input_path, package_name=args.package_name)
+                else:
+                    payload = load_package_from_fixture(input_path)
+                if args.build_ai_context:
+                    result = build_ai_context_artifacts(payload, context_options)
+                else:
+                    result = _transform_payload(
+                        payload,
+                        normalize=args.normalize,
+                        analyze=args.analyze,
+                        hypothesize=args.hypothesize,
+                        report=args.report,
+                        root_cause=args.root_cause,
+                        remediate=args.remediate,
+                        deliver=args.deliver,
+                    )
         except ArchiveLoadError as exc:
             raise SystemExit(str(exc)) from exc
-
-        if args.build_ai_context:
-            result = build_ai_context_artifacts(
-                payload,
-                AiContextOptions(
-                    out_dir=args.out_dir or "anr_ai_context",
-                    event_before_seconds=args.event_before_seconds,
-                    logcat_before_seconds=args.logcat_before_seconds,
-                    logcat_after_seconds=args.logcat_after_seconds,
-                    group_tolerance_seconds=args.group_tolerance_seconds,
-                    package_name=args.package_name,
-                    anr_type=args.anr_type,
-                ),
-            )
-        else:
-            result = _transform_payload(
-                payload,
-                normalize=args.normalize,
-                analyze=args.analyze,
-                hypothesize=args.hypothesize,
-                report=args.report,
-                root_cause=args.root_cause,
-                remediate=args.remediate,
-                deliver=args.deliver,
-            )
 
     rendered = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
     if args.output:

@@ -108,6 +108,8 @@ The adapter itself does not download tools.  It cannot prove that an arbitrary e
 
 A verified archive is reported as `capabilityMode: "metadata_only"`.  The P1 result explicitly retains `winscope_graphical_query_adapter_not_implemented`: it does not open or render a trace, parse a graphical trace, infer data sources from a filename, launch `winscope-launcher`, or claim that an artifact is compatible with a device capture.
 
+If a future graphical dump adapter is attached to an ANR group, it must accept and project that group’s existing DQ1 `dumpLifecycle` record.  It may add source-local, immutable-reference-backed observations only after an explicit parser/consumer exists; it must not create an adapter-local stale/wrong-PID/wrong-process/association classifier, use archive validity as identity proof, or promote freshness, process lifetime, capture-time alignment, causal confidence, or root cause.  The current metadata-only WinScope adapter is intentionally not such a consumer.
+
 ## Result safety invariant
 
 All capability, scheduling, and archive reports include:

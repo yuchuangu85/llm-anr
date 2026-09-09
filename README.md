@@ -101,7 +101,8 @@ Notes:
 
 - `index.json` is the authoritative directory index for all generated ANR groups.
 - `anr_analysis.md` is the human/AI workspace: instructions, filtered evidence summaries, source-specific analysis slots, and the final synthesis slot live together.
-- `logcat.txt` contains the filtered logcat lines for that one ANR group.
+- `logcat.txt` contains the complete filtered logcat baseline for that one ANR group; it is separate from the compact LLM view.
+- Raw **directory/ZIP/TAR** inputs automatically use the C2 store-backed default route. `index.json` records `inputRouting.mode = "store_backed_default"`; fixture JSON remains the backward-compatible normalized-package route. An explicit store export is not evidence that default routing was selected.
 - Legacy top-level `cache.md`, `ai_prompt.md`, and `summary.json` artifacts are no longer the primary workflow; stale files are cleaned during artifact generation.
 
 ## Four-phase AI analysis contract

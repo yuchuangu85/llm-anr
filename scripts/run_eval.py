@@ -64,6 +64,16 @@ def _print_formal_eval(aggregate, eval_dir: str | Path) -> None:
         print(f"  - Android {release}: {metrics}")
     print(f"Source classes: {aggregate.source_class_counts}")
     print(f"Deterministic resource totals: {aggregate.resource_totals}")
+    print(f"Labeling scope: {aggregate.labeling_scope}")
+    print("Per-output metrics (only complete labels can be counted as correct):")
+    for domain, metrics in aggregate.output_dimension_metrics.items():
+        print(f"  - {domain}: {metrics}")
+    print("Rule positive/negative coverage:")
+    for rule_id, coverage in aggregate.rule_coverage.items():
+        print(f"  - {rule_id}: {coverage}")
+    print(f"Corpus governance: {aggregate.corpus_governance}")
+    print(f"Acceptance metrics: {aggregate.acceptance_metrics}")
+    print("Formal eval does not claim end-to-end root-cause, ranking, remediation, device-compatibility, private-log eligibility, macro-F1, or top-3 accuracy unless a separately measured frozen corpus says so.")
     print()
     print("Per-case results:")
     for case in aggregate.cases:
@@ -93,7 +103,7 @@ def main() -> int:
         default=None,
         help="Directory containing eval fixture JSON files",
     )
-    parser.add_argument("--formal", action="store_true", help="Run formal-eval-v1 instead of legacy hint eval")
+    parser.add_argument("--formal", action="store_true", help="Run frozen formal-eval-v3 admission gate instead of legacy hint eval")
     parser.add_argument("--corpus-manifest", help="Optional formal corpus manifest path (only with --formal)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a table")
     args = parser.parse_args()

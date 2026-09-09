@@ -97,6 +97,9 @@ class AiContextTests(unittest.TestCase):
             group_dir = out_dir / index['groups'][0]['id']
             self.assertTrue((group_dir / 'anr_analysis.md').exists())
             self.assertTrue((group_dir / 'logcat.txt').exists())
+            self.assertEqual(index['inputRouting']['mode'], 'store_backed_default')
+            self.assertEqual(index['inputRouting']['inputKind'], 'archive')
+            self.assertFalse(index['inputRouting']['legacyPackageMaterialized'])
             self.assertIn('1 ANR analysis file(s)', completed.stdout)
             self.assertIn(str(ROOT / 'docs/anr-ai-analysis-guide.md'), completed.stdout)
 
@@ -131,6 +134,9 @@ class AiContextTests(unittest.TestCase):
             out = root / 'anr_ai_context'
             self.assertTrue((out / 'index.json').exists())
             self.assertTrue((out / 'anr-20260412-110003-000' / 'anr_analysis.md').exists())
+            default_index = json.loads((out / 'index.json').read_text(encoding='utf-8'))
+            self.assertEqual(default_index['inputRouting']['mode'], 'store_backed_default')
+            self.assertEqual(default_index['inputRouting']['inputKind'], 'directory')
             self.assertIn(str(out), completed.stdout)
             self.assertFalse((Path(tmpdir) / 'anr_ai_context').exists())
 
@@ -857,6 +863,9 @@ class AiContextTests(unittest.TestCase):
             self.assertTrue((out / 'index.json').exists())
             self.assertTrue((group_dir / 'anr_analysis.md').exists())
             self.assertTrue((group_dir / 'logcat.txt').exists())
+            module_index = json.loads((out / 'index.json').read_text(encoding='utf-8'))
+            self.assertEqual(module_index['inputRouting']['mode'], 'store_backed_default')
+            self.assertEqual(module_index['inputRouting']['inputKind'], 'directory')
             self.assertFalse((group_dir / 'cache.md').exists())
             self.assertFalse((group_dir / 'ai_prompt.md').exists())
             self.assertFalse((group_dir / 'analysis.md').exists())

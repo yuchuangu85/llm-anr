@@ -36,7 +36,7 @@ from ..evidence_store import (
     EvidenceStore, EvidenceStoreBudgetExceeded, EvidenceStoreError,
 )
 from ..log_filter import parse_log_timestamp
-from ..sources.shared.detection import detect_source_kind
+from ..sources.shared.detection import detect_source_kind, detect_streaming_source_kind
 from .package import build_package_from_entries
 
 
@@ -54,7 +54,65 @@ class ArchivePolicyError(ArchiveLoadError):
 MAX_ARCHIVE_MEMBERS = 10_000
 MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+# A universal mixed input (loose files plus direct-child archives) gets one
+# cumulative accounting boundary.  This is an accepted-input byte/entry limit,
+# not a process RSS, wall-clock, decompressor-CPU or ZIP-central-directory cap.
+MAX_INPUT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_INPUT_ENTRIES = 20_000
 MAX_STREAM_DISCOVERY_ENTRIES = 100_000
+
+
+@dataclass
+class InputResourceBudget:
+    """Fail-closed accepted-input accounting for one loader invocation.
+
+    The object is intentionally mutable and must be passed through each nested
+    loader participating in a mixed input.  It meters the bytes actually read
+    into a package and source/member entries accepted for inspection; it does
+    not claim to bound interpreter memory, external command work, CPU, or ZIP
+    central-directory allocation.
+    """
+
+    max_bytes: int = MAX_INPUT_TOTAL_BYTES
+    max_entries: int = MAX_INPUT_ENTRIES
+    consumed_bytes: int = 0
+    consumed_entries: int = 0
+
+    def __post_init__(self) -> None:
+        for name in ("max_bytes", "max_entries", "consumed_bytes", "consumed_entries"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"InputResourceBudget.{name} must be a nonnegative integer")
+        if self.consumed_bytes > self.max_bytes or self.consumed_entries > self.max_entries:
+            raise ValueError("InputResourceBudget consumed values cannot exceed their limits")
+
+    @property
+    def remaining_bytes(self) -> int:
+        return self.max_bytes - self.consumed_bytes
+
+    @property
+    def remaining_entries(self) -> int:
+        return self.max_entries - self.consumed_entries
+
+    def consume_bytes(self, count: int, *, label: str) -> None:
+        if type(count) is not int or count < 0:
+            raise ValueError("Input resource byte count must be a nonnegative integer")
+        if count > self.remaining_bytes:
+            raise ArchivePolicyError(
+                f"Input resource byte budget exceeded while reading {label}: "
+                f"{self.consumed_bytes}+{count}>{self.max_bytes}."
+            )
+        self.consumed_bytes += count
+
+    def consume_entries(self, count: int, *, label: str) -> None:
+        if type(count) is not int or count < 0:
+            raise ValueError("Input resource entry count must be a nonnegative integer")
+        if count > self.remaining_entries:
+            raise ArchivePolicyError(
+                f"Input resource entry budget exceeded while inspecting {label}: "
+                f"{self.consumed_entries}+{count}>{self.max_entries}."
+            )
+        self.consumed_entries += count
 MAX_STREAM_ARTIFACTS = 10_000
 MAX_STREAM_LINE_INDEX_ROWS = 1_000_000
 
@@ -76,25 +134,28 @@ class DirectoryEventLogConsumer:
     _commitments: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        commitments: dict[str, tuple[str, str]] = {}
+        commitments: dict[str, tuple[str, str, str]] = {}
         for descriptor in self.artifacts:
             artifact_id = descriptor.get("artifactId") if isinstance(descriptor, dict) else None
-            if not isinstance(artifact_id, str) or not artifact_id or artifact_id in commitments:
-                raise EvidenceStoreError("Streamed descriptors require unique artifact IDs")
+            source_kind = descriptor.get("sourceKind") if isinstance(descriptor, dict) else None
+            if (not isinstance(artifact_id, str) or not artifact_id
+                    or not isinstance(source_kind, str) or not source_kind
+                    or artifact_id in commitments):
+                raise EvidenceStoreError("Streamed descriptors require unique artifact IDs and source kinds")
             commitment = EvidenceStore.validate_artifact_commitment(
                 descriptor.get("artifactCommitment")
             )
-            commitments[artifact_id] = (commitment["scheme"], commitment["root"])
+            commitments[artifact_id] = (commitment["scheme"], commitment["root"], source_kind)
         self._commitments = MappingProxyType(commitments)
         self._store = self._prepared_store or EvidenceStore.open_read_only(self.store_path)
         self._prepared_store = None
 
-    def _commitment_for(self, artifact_id: str) -> dict[str, str]:
+    def _artifact_details(self, artifact_id: str) -> tuple[dict[str, str], str]:
         try:
-            scheme, root = self._commitments[artifact_id]
+            scheme, root, source_kind = self._commitments[artifact_id]
         except (KeyError, TypeError) as exc:
             raise EvidenceStoreError("Unknown streamed artifact ID") from exc
-        return {"scheme": scheme, "root": root}
+        return {"scheme": scheme, "root": root}, source_kind
 
     def close(self) -> None:
         self._store.close()
@@ -111,17 +172,19 @@ class DirectoryEventLogConsumer:
         self.close()
 
     def read_span(self, artifact_id: str, start_byte: int, end_byte: int) -> dict[str, Any]:
+        commitment, source_kind = self._artifact_details(artifact_id)
         return self._store.read_artifact_span(
-            group_id=self.group_id, artifact_id=artifact_id, source_kind="event_log",
+            group_id=self.group_id, artifact_id=artifact_id, source_kind=source_kind,
             start_byte=start_byte, end_byte=end_byte, max_bytes=self.max_read_bytes,
-            expected_artifact_commitment=self._commitment_for(artifact_id),
+            expected_artifact_commitment=commitment,
         )
 
     def read_lines(self, artifact_id: str, start_line: int, line_count: int) -> list[dict[str, Any]]:
+        commitment, source_kind = self._artifact_details(artifact_id)
         return self._store.read_artifact_lines(
-            group_id=self.group_id, artifact_id=artifact_id, source_kind="event_log",
+            group_id=self.group_id, artifact_id=artifact_id, source_kind=source_kind,
             start_line=start_line, line_count=line_count, max_bytes=self.max_read_bytes,
-            expected_artifact_commitment=self._commitment_for(artifact_id),
+            expected_artifact_commitment=commitment,
         )
 
 
@@ -136,8 +199,28 @@ def stream_directory_event_logs_to_store(
     max_discovery_entries: int = MAX_STREAM_DISCOVERY_ENTRIES,
     max_artifacts: int = MAX_STREAM_ARTIFACTS,
     max_line_index_rows: int = MAX_STREAM_LINE_INDEX_ROWS,
+    source_kinds: Iterable[str] | None = None,
+    include_all_regular_files: bool = False,
+    allow_empty: bool = False,
+    excluded_relative_roots: Iterable[str | Path] = (),
 ) -> DirectoryEventLogConsumer:
-    """Stage, validate, and atomically publish descriptor-rooted EventLog shards."""
+    """Stage, validate, and atomically publish descriptor-rooted source files.
+
+    The historical default remains EventLog-only.  ``stream_directory_sources_to_store``
+    selects every regular loose file for the default C2 input path, retaining
+    unclassified files as ``archive_member`` artifacts so the accepted-input
+    byte budget covers the whole directory rather than only detected logs.
+    """
+    selected_source_kinds = frozenset(source_kinds or ("event_log",))
+    if not selected_source_kinds or any(not isinstance(kind, str) or not kind for kind in selected_source_kinds):
+        raise EvidenceStoreError("Directory source kinds must be nonempty strings")
+    excluded_roots: tuple[Path, ...] = tuple(Path(value) for value in excluded_relative_roots)
+    for excluded in excluded_roots:
+        if excluded.is_absolute() or not excluded.parts or ".." in excluded.parts:
+            raise EvidenceStoreError("Excluded directory roots must be nonempty relative paths")
+
+    def is_excluded(relative: Path) -> bool:
+        return any(relative == excluded or excluded in relative.parents for excluded in excluded_roots)
     root = Path(path)
     sqlite_path = Path(store_path)
     if str(sqlite_path) == ":memory:":
@@ -494,7 +577,7 @@ def stream_directory_event_logs_to_store(
                 os.close(parent_descriptor)
 
         revalidate_root_identity()
-        shards: list[tuple[Path, tuple[int, int]]] = []
+        shards: list[tuple[Path, tuple[int, int], str]] = []
         discovered = 0
         pending_directories: list[tuple[Path, tuple[int, int]]] = [
             (Path(), root_identity)
@@ -514,6 +597,8 @@ def stream_directory_event_logs_to_store(
                                 f"Recursive discovery entry count exceeds limit {max_discovery_entries}"
                             )
                         relative = current / entry.name
+                        if is_excluded(relative):
+                            continue
                         try:
                             metadata = entry.stat(follow_symlinks=False)
                         except FileNotFoundError:
@@ -528,22 +613,32 @@ def stream_directory_event_logs_to_store(
                             or identity in current_internal_identities()
                         ):
                             continue
-                        if detect_source_kind(relative, "") != "event_log":
-                            continue
+                        detected_source_kind = detect_streaming_source_kind(relative)
+                        if include_all_regular_files:
+                            source_kind = detected_source_kind or "archive_member"
+                        else:
+                            source_kind = detected_source_kind
+                            if source_kind not in selected_source_kinds:
+                                continue
+                        if metadata.st_size > MAX_ARCHIVE_MEMBER_BYTES:
+                            raise ArchivePolicyError(
+                                f"Loose file `{relative}` declared size {metadata.st_size} exceeds "
+                                f"per-file limit {MAX_ARCHIVE_MEMBER_BYTES}."
+                            )
                         if len(shards) >= max_artifacts:
                             raise EvidenceStoreBudgetExceeded(
                                 f"Streamed artifact count exceeds limit {max_artifacts}"
                             )
-                        shards.append((relative, identity))
+                        shards.append((relative, identity, source_kind))
             finally:
                 os.close(descriptor)
 
         shards.sort(key=lambda item: str(item[0]))
-        if not shards:
-            raise EvidenceStoreError("No directory EventLog shards selected")
+        if not shards and not allow_empty:
+            raise EvidenceStoreError("No directory source files selected")
 
         def artifact_streams():
-            for relative, discovered_identity in shards:
+            for relative, discovered_identity, source_kind in shards:
                 descriptor = open_relative_file(relative)
                 try:
                     opened_metadata = os.fstat(descriptor)
@@ -554,7 +649,7 @@ def stream_directory_event_logs_to_store(
                         or opened_identity in current_internal_identities()
                     ):
                         raise EvidenceStoreError(
-                            f"Directory EventLog shard changed after discovery: {relative}"
+                            f"Directory source file changed after discovery: {relative}"
                         )
                     reader = os.fdopen(descriptor, "rb")
                     descriptor = -1
@@ -564,7 +659,7 @@ def stream_directory_event_logs_to_store(
                 with reader:
                     yield {
                         "reader": reader,
-                        "source_kind": "event_log",
+                        "source_kind": source_kind,
                         "logical_path": str(relative),
                         "origin": {
                             "type": "directory_fd_snapshot",
@@ -699,16 +794,127 @@ def stream_directory_event_logs_to_store(
             raise cleanup_error
 
 
+def stream_directory_sources_to_store(
+    path: str | Path,
+    store_path: str | Path,
+    *,
+    group_id: str,
+    shared_byte_budget: int,
+    chunk_size: int = 64 * 1024,
+    max_read_bytes: int = 256 * 1024,
+    max_discovery_entries: int = MAX_STREAM_DISCOVERY_ENTRIES,
+    max_artifacts: int = MAX_STREAM_ARTIFACTS,
+    max_line_index_rows: int = MAX_STREAM_LINE_INDEX_ROWS,
+    allow_empty: bool = False,
+    excluded_relative_roots: Iterable[str | Path] = (),
+) -> DirectoryEventLogConsumer:
+    """Store every regular loose directory input through the secure C2 reader.
+
+    Detected trace/EventLog/logcat/kernel/meminfo files keep their source kind;
+    other regular files are retained as ``archive_member``.  This is the
+    default-input companion to ``stream_archive_to_store`` and deliberately
+    avoids the legacy full-text package/base64 materialization path.
+    """
+    return stream_directory_event_logs_to_store(
+        path,
+        store_path,
+        group_id=group_id,
+        shared_byte_budget=shared_byte_budget,
+        chunk_size=chunk_size,
+        max_read_bytes=max_read_bytes,
+        max_discovery_entries=max_discovery_entries,
+        max_artifacts=max_artifacts,
+        max_line_index_rows=max_line_index_rows,
+        include_all_regular_files=True,
+        allow_empty=allow_empty,
+        excluded_relative_roots=excluded_relative_roots,
+    )
+
+
+def _read_loose_input_file(
+    file_path: Path,
+    *,
+    root: Path,
+    budget: InputResourceBudget,
+    capture_originals: bool,
+) -> dict[str, Any]:
+    """Read one loose regular file under the shared bounded input contract."""
+    relative_path = str(file_path.relative_to(root))
+    budget.consume_entries(1, label=f"loose file `{relative_path}`")
+    maximum = min(MAX_ARCHIVE_MEMBER_BYTES, budget.remaining_bytes)
+    if maximum <= 0:
+        raise ArchivePolicyError(
+            f"Input resource byte budget exhausted before loose file `{relative_path}`."
+        )
+    try:
+        with file_path.open("rb") as handle:
+            raw = handle.read(maximum + 1)
+    except OSError as exc:
+        raise ArchiveLoadError(f"Failed to read loose file `{relative_path}`: {exc}") from exc
+    if len(raw) > maximum:
+        raise ArchivePolicyError(
+            f"Loose file `{relative_path}` exceeds accepted-input byte limit {maximum}."
+        )
+    budget.consume_bytes(len(raw), label=f"loose file `{relative_path}`")
+    try:
+        content = raw.decode("utf-8")
+        readable = True
+    except UnicodeDecodeError:
+        content = raw.decode("utf-8", errors="replace")
+        readable = False
+    entry: dict[str, Any] = {
+        "path": relative_path,
+        "content": content.replace("\r\n", "\n").replace("\r", "\n"),
+        "readable": readable,
+    }
+    if capture_originals:
+        entry.update({
+            "originalBase64": base64.b64encode(raw).decode("ascii"),
+            "origin": {"type": "file", "path": str(file_path.absolute())},
+        })
+    return entry
+
+
+def _preflight_loose_input_tree(path: Path, budget: InputResourceBudget) -> None:
+    """Bound smart-discovery's separate reader without claiming TOCTOU immunity."""
+    count = 0
+    total = 0
+    try:
+        candidates = path.rglob("*")
+        for candidate in candidates:
+            if not candidate.is_file() or is_archive_path(candidate):
+                continue
+            count += 1
+            size = candidate.stat().st_size
+            if size > MAX_ARCHIVE_MEMBER_BYTES:
+                raise ArchivePolicyError(
+                    f"Loose file `{candidate.relative_to(path)}` declared size {size} exceeds "
+                    f"per-file limit {MAX_ARCHIVE_MEMBER_BYTES}."
+                )
+            total += size
+            if count > budget.remaining_entries or total > budget.remaining_bytes:
+                raise ArchivePolicyError(
+                    "Input resource preflight exceeds the remaining shared loose-input budget."
+                )
+    except OSError as exc:
+        raise ArchiveLoadError(f"Failed to preflight loose input under `{path}`: {exc}") from exc
+
+
 def load_package_from_directory(
     path: str | Path,
     package_name: str | None = None,
     event_anchor_dt: datetime | None = None,
     *,
     capture_originals: bool = False,
+    input_budget: InputResourceBudget | None = None,
 ) -> dict[str, Any]:
     root = Path(path)
+    budget = input_budget or InputResourceBudget()
     if event_anchor_dt is None:
         event_anchor_dt = find_event_anr_timestamp_by_command(root, package_name)
+    # Smart discovery owns a separate reader.  Preflight its loose candidate
+    # universe first; full fallback below meters every actual byte again.
+    _preflight_loose_input_tree(root, budget)
     # Try smart Monkey-test discovery first (System_log/ directory with
     # System_MT_logcat* files). Falls back to full recursive traversal.
     smart_entries = None if capture_originals else try_smart_monkey_discovery(root, package_name=package_name)
@@ -724,36 +930,9 @@ def load_package_from_directory(
     # Original fallback: load everything recursively.
     entries = []
     for file_path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        original = {}
-        if capture_originals:
-            raw = file_path.read_bytes()
-            try:
-                content = raw.decode("utf-8")
-                readable = True
-            except UnicodeDecodeError:
-                content = raw.decode("utf-8", errors="replace")
-                readable = False
-            # Keep the legacy text view's universal-newline behavior.
-            content = content.replace("\r\n", "\n").replace("\r", "\n")
-            original = {
-                "originalBase64": base64.b64encode(raw).decode("ascii"),
-                "origin": {"type": "file", "path": str(file_path.absolute())},
-            }
-        else:
-            try:
-                content = file_path.read_text(encoding="utf-8")
-                readable = True
-            except UnicodeDecodeError:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
-                readable = False
-        entries.append(
-            {
-                **original,
-                "path": str(file_path.relative_to(root)),
-                "content": content,
-                "readable": readable,
-            }
-        )
+        entries.append(_read_loose_input_file(
+            file_path, root=root, budget=budget, capture_originals=capture_originals,
+        ))
     return build_package_from_entries(root.name, entries, package_name=package_name, event_anchor_dt=event_anchor_dt)
 
 
@@ -763,6 +942,7 @@ def _load_loose_package_from_directory(
     event_anchor_dt: datetime | None = None,
     *,
     capture_originals: bool = False,
+    input_budget: InputResourceBudget | None = None,
 ) -> dict[str, Any] | None:
     """Load non-archive files that sit beside bugreport archives.
 
@@ -773,40 +953,14 @@ def _load_loose_package_from_directory(
     to a timeless or stale ``anr-unanchored`` group.
     """
 
+    budget = input_budget or InputResourceBudget()
     entries = []
     for file_path in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
         if is_archive_path(file_path):
             continue
-        original = {}
-        if capture_originals:
-            raw = file_path.read_bytes()
-            try:
-                content = raw.decode("utf-8")
-                readable = True
-            except UnicodeDecodeError:
-                content = raw.decode("utf-8", errors="replace")
-                readable = False
-            # Keep the legacy text view's universal-newline behavior.
-            content = content.replace("\r\n", "\n").replace("\r", "\n")
-            original = {
-                "originalBase64": base64.b64encode(raw).decode("ascii"),
-                "origin": {"type": "file", "path": str(file_path.absolute())},
-            }
-        else:
-            try:
-                content = file_path.read_text(encoding="utf-8")
-                readable = True
-            except UnicodeDecodeError:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
-                readable = False
-        entries.append(
-            {
-                **original,
-                "path": str(file_path.relative_to(path)),
-                "content": content,
-                "readable": readable,
-            }
-        )
+        entries.append(_read_loose_input_file(
+            file_path, root=path, budget=budget, capture_originals=capture_originals,
+        ))
     if not entries:
         return None
     package = build_package_from_entries(path.name, entries, package_name=package_name, event_anchor_dt=event_anchor_dt)
@@ -814,8 +968,10 @@ def _load_loose_package_from_directory(
 
 
 def load_package_from_archive(path: str | Path, package_name: str | None = None, *,
-                              capture_originals: bool = False) -> dict[str, Any]:
+                              capture_originals: bool = False,
+                              input_budget: InputResourceBudget | None = None) -> dict[str, Any]:
     archive_path = Path(path)
+    budget = input_budget or InputResourceBudget()
     suffixes = [suffix.lower() for suffix in archive_path.suffixes]
     entries: list[dict[str, Any]] = []
     if suffixes and suffixes[-1] == ".zip":
@@ -823,6 +979,7 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None,
             with zipfile.ZipFile(archive_path) as archive:
                 members = archive.infolist()
                 _validate_archive_member_count(archive_path, len(members))
+                budget.consume_entries(len(members), label=f"archive `{archive_path.name}`")
                 for member in members:
                     _validate_archive_member_name(archive_path, member.filename)
                     if _zip_member_is_link(member):
@@ -836,17 +993,28 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None,
                 )
                 actual_total = 0
                 for member in sorted(files, key=lambda item: item.filename):
+                    if member.file_size > budget.remaining_bytes:
+                        raise ArchivePolicyError(
+                            f"Input resource byte budget exceeded before archive member "
+                            f"`{archive_path.name}/{member.filename}`: "
+                            f"{member.file_size}>{budget.remaining_bytes} remaining."
+                        )
                     original = {}
                     try:
                         with archive.open(member) as extracted:
                             content, readable, actual_size = _read_archive_member(
                                 extracted,
                                 member.filename,
-                                max_bytes=min(MAX_ARCHIVE_MEMBER_BYTES, MAX_ARCHIVE_TOTAL_BYTES - actual_total),
+                                max_bytes=min(
+                                    MAX_ARCHIVE_MEMBER_BYTES,
+                                    MAX_ARCHIVE_TOTAL_BYTES - actual_total,
+                                    budget.remaining_bytes,
+                                ),
                                 original_out=original if capture_originals else None,
                             )
                     except OSError as exc:
                         raise ArchiveLoadError(f"Failed to read zip member `{member.filename}` from `{archive_path.name}`: {exc}") from exc
+                    budget.consume_bytes(actual_size, label=f"archive member `{archive_path.name}/{member.filename}`")
                     actual_total += actual_size
                     if capture_originals:
                         original["origin"] = {"type": "archive_member", "container": str(archive_path.absolute()),
@@ -861,6 +1029,7 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None,
                 declared_total = 0
                 for count, member in enumerate(archive, 1):
                     _validate_archive_member_count(archive_path, count)
+                    budget.consume_entries(1, label=f"archive `{archive_path.name}`")
                     _validate_archive_member_name(archive_path, member.name)
                     if member.issym() or member.islnk():
                         raise ArchivePolicyError(
@@ -880,17 +1049,28 @@ def load_package_from_archive(path: str | Path, package_name: str | None = None,
                     extracted = archive.extractfile(member)
                     if extracted is None:
                         raise ArchiveLoadError("Unable to read declared TAR file member")
+                    if member.size > budget.remaining_bytes:
+                        raise ArchivePolicyError(
+                            f"Input resource byte budget exceeded before archive member "
+                            f"`{archive_path.name}/{member.name}`: "
+                            f"{member.size}>{budget.remaining_bytes} remaining."
+                        )
                     original = {}
                     try:
                         with extracted:
                             content, readable, actual_size = _read_archive_member(
                                 extracted,
                                 member.name,
-                                max_bytes=min(MAX_ARCHIVE_MEMBER_BYTES, MAX_ARCHIVE_TOTAL_BYTES - actual_total),
+                                max_bytes=min(
+                                    MAX_ARCHIVE_MEMBER_BYTES,
+                                    MAX_ARCHIVE_TOTAL_BYTES - actual_total,
+                                    budget.remaining_bytes,
+                                ),
                                 original_out=original if capture_originals else None,
                             )
                     except OSError as exc:
                         raise ArchiveLoadError(f"Failed to read tar member `{member.name}` from `{archive_path.name}`: {exc}") from exc
+                    budget.consume_bytes(actual_size, label=f"archive member `{archive_path.name}/{member.name}`")
                     actual_total += actual_size
                     if capture_originals:
                         original["origin"] = {"type": "archive_member", "container": str(archive_path.absolute()),
@@ -993,7 +1173,7 @@ def stream_archive_to_store(
                 archive_kind=archive_kind,
                 max_bytes=MAX_ARCHIVE_MEMBER_BYTES,
             ),
-            "source_kind": detect_source_kind(Path(member_name), "") or "archive_member",
+            "source_kind": detect_streaming_source_kind(Path(member_name)) or "archive_member",
             "logical_path": member_name,
             "origin": {
                 "type": "archive_member",
@@ -1124,7 +1304,8 @@ def find_archives_in_directory(directory: Path) -> list[Path]:
 
 
 def load_package_from_path(input_path: str | Path, package_name: str | None = None, *,
-                           capture_originals: bool = False) -> dict[str, Any]:
+                           capture_originals: bool = False,
+                           input_budget: InputResourceBudget | None = None) -> dict[str, Any]:
     """Universal loader that auto-detects the input type.
 
     Handles:
@@ -1134,6 +1315,7 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
     - A directory containing one or more archives → auto-extracts all, merges
     """
     path = Path(input_path)
+    budget = input_budget or InputResourceBudget()
     if not path.exists():
         raise ArchiveLoadError(f"Path does not exist: `{path}`")
 
@@ -1141,7 +1323,10 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
         if path.suffix.lower() == ".json":
             return load_package_from_fixture(path)
         if is_archive_path(path):
-            return load_package_from_archive(path, package_name=package_name, capture_originals=capture_originals)
+            return load_package_from_archive(
+                path, package_name=package_name, capture_originals=capture_originals,
+                input_budget=budget,
+            )
         raise ArchiveLoadError(f"Unsupported file type: `{path.name}`")
 
     if path.is_dir():
@@ -1151,6 +1336,7 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
         # exist — the directory may contain System_log/ files that are more
         # complete than what's in the archive (especially for Monkey test
         # results where the zip only contains a partial bugreport snapshot).
+        _preflight_loose_input_tree(path, budget)
         smart_package = None if capture_originals else try_load_smart_package(path, package_name=package_name, event_anchor_dt=event_anchor_dt)
         if smart_package is not None and _has_core_anr_sources(smart_package):
             return smart_package
@@ -1158,13 +1344,19 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
             if smart_package is not None:
                 return smart_package
             # No archives — load directory directly
-            return load_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt, capture_originals=capture_originals)
+            return load_package_from_directory(
+                path, package_name=package_name, event_anchor_dt=event_anchor_dt,
+                capture_originals=capture_originals, input_budget=budget,
+            )
 
         # Extract all archives found and merge into a single package.
         all_entries: list[dict[str, Any]] = []
         for archive_path in archives:
             try:
-                package = load_package_from_archive(archive_path, package_name=package_name, capture_originals=capture_originals)
+                package = load_package_from_archive(
+                    archive_path, package_name=package_name, capture_originals=capture_originals,
+                    input_budget=budget,
+                )
             except ArchivePolicyError:
                 raise
             except ArchiveLoadError:
@@ -1184,7 +1376,10 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
             return smart_package
         if not all_entries:
             # Fallback: try loading directory directly
-            return load_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt, capture_originals=capture_originals)
+            return load_package_from_directory(
+                path, package_name=package_name, event_anchor_dt=event_anchor_dt,
+                capture_originals=capture_originals, input_budget=budget,
+            )
 
         archive_pkg = build_package_from_entries(
             path.name,
@@ -1192,7 +1387,10 @@ def load_package_from_path(input_path: str | Path, package_name: str | None = No
             package_name=package_name,
             event_anchor_dt=event_anchor_dt,
         )
-        loose_package = _load_loose_package_from_directory(path, package_name=package_name, event_anchor_dt=event_anchor_dt, capture_originals=capture_originals)
+        loose_package = _load_loose_package_from_directory(
+            path, package_name=package_name, event_anchor_dt=event_anchor_dt,
+            capture_originals=capture_originals, input_budget=budget,
+        )
         if smart_package is None:
             if loose_package is None:
                 return archive_pkg

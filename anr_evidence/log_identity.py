@@ -63,7 +63,14 @@ def parse_line_identity(line: str) -> LineIdentity:
         for match in pattern.finditer(without_timestamp if pattern is _AM_ANR else payload):
             values["pid"].add(match.group("pid"))
             processes.add(match.group("process"))
-    processes.update(m.group("process") for m in _PROCESS_FIELD.finditer(payload))
+    for match in _PROCESS_FIELD.finditer(payload):
+        # ``owner=ProcessRecord{...}`` is a framework object wrapper, not a
+        # process name.  Its embedded ``pid:process/`` form is parsed by
+        # ``_PROCESS_RECORD`` above; accepting the wrapper would manufacture a
+        # contradictory second target process.
+        if payload[match.end():].lstrip().startswith("{"):
+            continue
+        processes.add(match.group("process"))
     return LineIdentity(
         emitter_pid=pid, emitter_tid=tid,
         target_pids=tuple(sorted(values["pid"], key=int)),

@@ -1,9 +1,9 @@
 {
-  "schemaVersion": "anr-formal-eval-case-v1",
+  "schemaVersion": "anr-formal-eval-case-v3",
   "id": "formal-a17-unresponsive-render",
   "description": "Synthetic Android 17 unresponsive-window event with an observed render fence wait.",
   "corpus": {
-    "corpusRevision": "synthetic-a17-formal-gate-2026-09-09",
+    "corpusRevision": "synthetic-a17-formal-eval-v3-2026-09-09",
     "split": "evaluation",
     "sourceClass": "synthetic",
     "sourceLicense": "repository synthetic fixture",
@@ -12,6 +12,20 @@
     "device": {
       "model": "synthetic-emulator",
       "buildFingerprint": "synthetic/a17/formal-gate:17/TEST/2:userdebug/test-keys"
+    },
+    "sampleIdentity": {
+      "incidentSourceId": "synthetic-incident-window-render",
+      "deviceSourceId": "synthetic-device-a17-render"
+    },
+    "supportClassIds": [
+      "trigger:input.window_unresponsive",
+      "blocker:main_thread_render_fence_wait"
+    ],
+    "manualAnnotation": {
+      "status": "not_applicable",
+      "labeledOutputDomains": [],
+      "missingOutputDomains": [],
+      "unsupportedOutputDomains": []
     }
   },
   "package": {
@@ -38,17 +52,95 @@
   },
   "expected": {
     "packageNameFilter": "com.render",
-    "requiredHintIds": ["MAIN_RENDER_WAIT_FENCE"],
-    "forbiddenHintIds": ["DEADLOCK_CYCLE", "MAIN_BINDER_WAIT_REPLY"],
+    "requiredHintIds": [
+      "MAIN_RENDER_WAIT_FENCE"
+    ],
+    "forbiddenHintIds": [
+      "DEADLOCK_CYCLE",
+      "MAIN_BINDER_WAIT_REPLY"
+    ],
     "primaryRootCauseHintId": "MAIN_RENDER_WAIT_FENCE",
-    "requiredMechanismIds": ["trigger:input.window_unresponsive", "main_thread_render_fence_wait"],
-    "forbiddenMechanismIds": ["thread_deadlock_cycle", "main_thread_binder_reply_wait"],
-    "requiredCitationSourceKinds": ["event_log", "trace"],
+    "requiredMechanismIds": [
+      "trigger:input.window_unresponsive",
+      "main_thread_render_fence_wait"
+    ],
+    "forbiddenMechanismIds": [
+      "thread_deadlock_cycle",
+      "main_thread_binder_reply_wait"
+    ],
+    "requiredCitationSourceKinds": [
+      "event_log",
+      "trace"
+    ],
     "minVerifiedEvidenceRefs": 2,
     "timeoutOntology": {
       "canonicalTrigger": "input.window_unresponsive",
       "evidenceStatus": "observed",
-      "requiredProvenanceSymbols": ["TimeoutRecord.TimeoutKind", "InputDispatcher::onAnrLocked"]
+      "requiredProvenanceSymbols": [
+        "TimeoutRecord.TimeoutKind",
+        "InputDispatcher::onAnrLocked"
+      ]
+    },
+    "outputLabels": {
+      "trigger": {
+        "coverage": "complete",
+        "requiredIds": [
+          "input.window_unresponsive"
+        ],
+        "forbiddenIds": [],
+        "allowedIds": [
+          "input.window_unresponsive"
+        ]
+      },
+      "blocker": {
+        "coverage": "complete",
+        "requiredIds": [
+          "main_thread_render_fence_wait"
+        ],
+        "forbiddenIds": [
+          "main_thread_binder_reply_wait"
+        ],
+        "allowedIds": [
+          "main_thread_render_fence_wait"
+        ]
+      },
+      "evidence_status": {
+        "coverage": "complete",
+        "requiredIds": [
+          "observed"
+        ],
+        "forbiddenIds": [
+          "unknown"
+        ],
+        "allowedIds": [
+          "observed"
+        ]
+      },
+      "citations": {
+        "coverage": "complete",
+        "requiredIds": [
+          "event_log",
+          "trace"
+        ],
+        "forbiddenIds": [],
+        "allowedIds": [
+          "event_log",
+          "logcat",
+          "trace"
+        ]
+      },
+      "contradictions": {
+        "coverage": "complete",
+        "requiredIds": [],
+        "forbiddenIds": [],
+        "allowedIds": []
+      },
+      "high_confidence_violations": {
+        "coverage": "complete",
+        "requiredIds": [],
+        "forbiddenIds": [],
+        "allowedIds": []
+      }
     }
   }
 }

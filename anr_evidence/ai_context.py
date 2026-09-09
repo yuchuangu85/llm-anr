@@ -18,11 +18,11 @@ from typing import Any, Iterable
 from .am_anr import package_name_from_am_anr_line
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
 from .anrmanager_parser import parse_anrmanager_block
-from .constants import TIME_ANCHOR_PRECEDENCE
+from .constants import TIME_ANCHOR_PRECEDENCE, TYPE_PATTERNS
 from .cross_source_fusion import FusionScope, fuse_cross_source_evidence
 from .binder_watchdog_lifecycle import build_binder_watchdog_lifecycle
 from .framework_timeout_lifecycle import build_framework_timeout_lifecycle
-from .dump_quality import audit_dump_quality, bind_dump_quality_references
+from .dump_quality import audit_dump_quality, annotate_dump_quality_with_dumpsys_snapshot, bind_dump_quality_references
 from .log_identity import parse_line_identity
 from .input_lifecycle import (
     build_input_lifecycle,
@@ -30,6 +30,7 @@ from .input_lifecycle import (
     refresh_input_lifecycle_dump_quality,
 )
 from .input_window_evidence import build_input_window_digest
+from .dumpsys_input_window import parse_dumpsys_input_window
 from .root_cause_hints import (
     infer_root_cause_pattern_hints_from_ids,
     infer_root_cause_pattern_hints_from_texts,
@@ -159,7 +160,7 @@ class _StoreLineSource:
     def __bool__(self) -> bool:
         if self._available is None:
             self._available = bool(self._store.list_group_artifacts(
-                self._group_id, source_kind=self._source_kind, max_artifacts=128,
+                self._group_id, source_kind=self._source_kind, max_artifacts=10_000,
             ))
         return self._available
 
@@ -167,7 +168,7 @@ class _StoreLineSource:
         for row in self._store.iter_group_source_lines(
             self._group_id,
             source_kind=self._source_kind,
-            max_artifacts=128,
+            max_artifacts=10_000,
             max_total_lines=self._max_total_lines,
             max_total_bytes=self._max_total_bytes,
             page_line_count=512,
@@ -202,9 +203,17 @@ def _materialize_store_source(source: _StoreLineSource, *, max_bytes: int) -> st
     parts: list[str] = []
     consumed = 0
     for line in source:
+        # ``_StoreLineSource`` exposes logical lines with their physical CR/LF
+        # removed.  Whole-text consumers (trace, meminfo, and D2 dumpsys
+        # adapters) still require a delimiter between consecutive records; do
+        # not concatenate distinct original lines into a new synthetic line.
         encoded = line.encode("utf-8")
-        if consumed + len(encoded) > max_bytes:
+        separator_bytes = 1 if parts else 0
+        if consumed + separator_bytes + len(encoded) > max_bytes:
             raise ValueError("Store-backed source exceeds the materialization budget")
+        if parts:
+            parts.append("\n")
+            consumed += 1
         parts.append(line)
         consumed += len(encoded)
     return "".join(parts)
@@ -239,7 +248,7 @@ def build_ai_context_from_store(
         raise ValueError("Store source budgets must be positive")
     with EvidenceStore.open_read_only(store_path) as store:
         sources: dict[str, dict[str, Any]] = {}
-        for source_kind in ("event_log", "logcat", "kernel_log", "trace", "meminfo"):
+        for source_kind in ("event_log", "logcat", "kernel_log", "trace", "meminfo", "dumpsys_input", "dumpsys_window"):
             view = _StoreLineSource(
                 store, source_group_id, source_kind,
                 max_total_lines=max_stream_source_lines,
@@ -251,7 +260,7 @@ def build_ai_context_from_store(
                 "path": f"store://{source_group_id}/{source_kind}",
                 "content": view,
             }
-            if source_kind in {"trace", "meminfo"}:
+            if source_kind in {"trace", "meminfo", "dumpsys_input", "dumpsys_window"}:
                 source["content"] = _materialize_store_source(
                     view, max_bytes=max_materialized_source_bytes,
                 )
@@ -292,6 +301,7 @@ def build_ai_context_artifacts_from_store(
     max_stream_source_bytes: int = 256 * 1024 * 1024,
     max_stream_source_lines: int = 1_000_000,
     max_materialized_source_bytes: int = 64 * 1024 * 1024,
+    input_routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically export multi-group artifacts built from an existing store.
 
@@ -448,12 +458,283 @@ def build_ai_context_artifacts_from_store(
             ],
             "groups": index_groups,
         }
+        if input_routing is not None:
+            index["inputRouting"] = copy.deepcopy(input_routing)
         index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         _publish_workspace_stage(stage_dir, published_out_dir)
         return index
     finally:
         if stage_dir.exists():
             shutil.rmtree(stage_dir)
+
+_DEFAULT_STORE_SOURCE_GROUP_ID = "input-capture"
+_DEFAULT_STORE_INPUT_BYTES = 2 * 1024 * 1024 * 1024
+_DEFAULT_STORE_INPUT_LINES = 1_000_000
+_DEFAULT_STORE_MATERIALIZED_BYTES = 64 * 1024 * 1024
+_CONTEXT_SOURCE_KINDS = ("event_log", "logcat", "kernel_log", "trace", "meminfo", "dumpsys_input", "dumpsys_window")
+
+
+def _dumpsys_snapshot_for_sources(sources: dict[str, Any]) -> dict[str, Any]:
+    """Parse raw optional sources without giving them ANR-group authority."""
+    def content(source_kind: str) -> str | None:
+        source = sources.get(source_kind)
+        value = source.get("content") if isinstance(source, dict) else None
+        return value if isinstance(value, str) else None
+
+    return parse_dumpsys_input_window(
+        dumpsys_input=content("dumpsys_input"),
+        dumpsys_window=content("dumpsys_window"),
+    )
+
+
+def _path_is_within(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.resolve(strict=False).relative_to(root.resolve(strict=True))
+    except ValueError:
+        return False
+    return True
+
+
+def _default_input_store_path(input_path: Path, published_out_dir: Path) -> Path:
+    """Choose a stable store beside, never inside, a directory input tree."""
+    parent = published_out_dir.parent.resolve(strict=False)
+    if input_path.is_dir():
+        input_root = input_path.resolve(strict=True)
+        while _path_is_within(parent, input_root):
+            next_parent = parent.parent
+            if next_parent == parent:
+                raise ValueError("Could not choose an evidence-store parent outside the input directory")
+            parent = next_parent
+    parent.mkdir(parents=True, exist_ok=True)
+    input_identity = hashlib.sha256(
+        os.fsencode(str(input_path.resolve(strict=True)))
+    ).hexdigest()[:16]
+    return parent / f".{published_out_dir.name}.{input_identity}.evidence.sqlite3"
+
+
+def _temporary_store_path(final_store_path: Path) -> Path:
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{final_store_path.name}.ingest-", suffix=".sqlite3",
+        dir=final_store_path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(raw_path)
+    temporary_path.unlink()
+    return temporary_path
+
+
+def _store_inferred_anr_type(
+    store_path: Path,
+    *,
+    source_group_id: str,
+    explicit_type: str | None,
+    max_source_bytes: int,
+    max_source_lines: int,
+) -> str:
+    """Infer a strategy from bounded store lines without rebuilding package text."""
+    if explicit_type:
+        return strategy_for_package({"sources": {}}, explicit_type).anr_type
+    from .evidence_store import EvidenceStore
+
+    scores = {anr_type: 0 for anr_type in TYPE_PATTERNS}
+    with EvidenceStore.open_read_only(store_path) as store:
+        for source_kind in _CONTEXT_SOURCE_KINDS:
+            for row in store.iter_group_source_lines(
+                source_group_id,
+                source_kind=source_kind,
+                max_artifacts=10_000,
+                max_total_lines=max_source_lines,
+                max_total_bytes=max_source_bytes,
+                page_line_count=512,
+                page_max_bytes=min(4 * 1024 * 1024, max_source_bytes),
+            ):
+                lowered = row["content"].decode("utf-8", errors="replace").lower()
+                for anr_type, patterns in TYPE_PATTERNS.items():
+                    scores[anr_type] += sum(lowered.count(pattern) for pattern in patterns)
+    matched = [anr_type for anr_type, score in scores.items() if score > 0]
+    return matched[0] if len(matched) == 1 else "unknown"
+
+
+def _stream_input_path_to_store(
+    input_path: Path,
+    temporary_store_path: Path,
+    *,
+    source_group_id: str,
+    published_out_dir: Path,
+    max_input_bytes: int,
+) -> tuple[str, int, int]:
+    """Capture directory/ZIP/TAR input in one fresh store without legacy packages."""
+    from .evidence_store import EvidenceStore
+    from .loaders.core import (
+        ArchiveLoadError,
+        find_archives_in_directory,
+        is_archive_path,
+        stream_archive_to_store,
+        stream_directory_sources_to_store,
+    )
+
+    if type(max_input_bytes) is not int or max_input_bytes <= 0:
+        raise ValueError("Default store input byte budget must be a positive integer")
+    remaining_bytes = max_input_bytes
+    captured_entries = 0
+
+    def account(artifacts: Iterable[dict[str, Any]]) -> None:
+        nonlocal remaining_bytes, captured_entries
+        records = list(artifacts)
+        consumed = sum(record.get("byteCount", 0) for record in records)
+        if any(type(record.get("byteCount")) is not int or record["byteCount"] < 0 for record in records):
+            raise ValueError("Streamed evidence descriptor has an invalid byte count")
+        if consumed > remaining_bytes:
+            raise ValueError("Streamed evidence exceeded the shared input byte budget")
+        remaining_bytes -= consumed
+        captured_entries += len(records)
+
+    if input_path.is_dir():
+        relative_output: Path | None = None
+        if _path_is_within(published_out_dir, input_path):
+            relative_output = published_out_dir.resolve(strict=False).relative_to(input_path.resolve(strict=True))
+            if not relative_output.parts:
+                raise ValueError("AI context output directory must not be the input directory itself")
+        consumer = stream_directory_sources_to_store(
+            input_path,
+            temporary_store_path,
+            group_id=source_group_id,
+            shared_byte_budget=remaining_bytes,
+            allow_empty=True,
+            excluded_relative_roots=(relative_output,) if relative_output is not None else (),
+        )
+        try:
+            account(consumer.artifacts)
+        finally:
+            consumer.close()
+        temporary_lock = temporary_store_path.with_name(f".{temporary_store_path.name}.lock")
+        temporary_lock.unlink(missing_ok=True)
+        for archive_path in find_archives_in_directory(input_path):
+            with EvidenceStore(temporary_store_path) as store:
+                store.connection.execute("PRAGMA journal_mode=DELETE")
+                account(stream_archive_to_store(
+                    archive_path,
+                    store,
+                    group_id=source_group_id,
+                    shared_byte_budget=remaining_bytes,
+                ))
+    elif is_archive_path(input_path):
+        with EvidenceStore(temporary_store_path) as store:
+            store.connection.execute("PRAGMA journal_mode=DELETE")
+            account(stream_archive_to_store(
+                input_path,
+                store,
+                group_id=source_group_id,
+                shared_byte_budget=remaining_bytes,
+            ))
+    else:
+        raise ArchiveLoadError(
+            f"Store-backed AI context accepts a directory or supported archive, not `{input_path.name}`."
+        )
+
+    with EvidenceStore.open_read_only(temporary_store_path) as store:
+        source_kinds = {
+            descriptor["sourceKind"]
+            for descriptor in store.list_group_artifacts(source_group_id, max_artifacts=10_000)
+        }
+    if not source_kinds.intersection(_CONTEXT_SOURCE_KINDS):
+        raise ArchiveLoadError("No recognizable ANR log sources found in input.")
+    return ("directory" if input_path.is_dir() else "archive", max_input_bytes - remaining_bytes, captured_entries)
+
+
+def build_ai_context_artifacts_from_input_path(
+    input_path: str | Path,
+    options: AiContextOptions,
+    *,
+    max_input_bytes: int = _DEFAULT_STORE_INPUT_BYTES,
+    max_stream_source_bytes: int = _DEFAULT_STORE_INPUT_BYTES,
+    max_stream_source_lines: int = _DEFAULT_STORE_INPUT_LINES,
+    max_materialized_source_bytes: int = _DEFAULT_STORE_MATERIALIZED_BYTES,
+) -> dict[str, Any]:
+    """Default C2 directory/ZIP/TAR workflow: capture once, then export from store.
+
+    This is intentionally distinct from the explicit
+    :func:`build_ai_context_artifacts_from_store` API.  It owns ingestion of a
+    raw path, writes one fresh source snapshot, infers only the ANR strategy
+    from bounded committed lines, and publishes the normal grouped workspace.
+    Fixture JSON remains on the legacy fixture route because it is already a
+    normalized package, not a raw directory/archive input.
+    """
+    from .loaders.core import ArchiveLoadError, is_archive_path
+
+    resolved_input = Path(input_path)
+    if not resolved_input.exists():
+        raise ArchiveLoadError(f"Path does not exist: `{resolved_input}`")
+    if not resolved_input.is_dir() and not is_archive_path(resolved_input):
+        raise ArchiveLoadError(
+            "Default store-backed AI context supports directory, ZIP, and TAR inputs only; "
+            "fixture JSON stays on the legacy fixture route."
+        )
+    if options.build_evidence_store:
+        raise ValueError("Default store-backed input already creates its only evidence store")
+    if min(max_input_bytes, max_stream_source_bytes, max_stream_source_lines, max_materialized_source_bytes) <= 0:
+        raise ValueError("Default store-backed input budgets must be positive")
+
+    published_out_dir = Path(options.out_dir or "anr_ai_context")
+    store_path = _default_input_store_path(resolved_input, published_out_dir)
+    temporary_store_path = _temporary_store_path(store_path)
+    try:
+        input_kind, captured_bytes, captured_entries = _stream_input_path_to_store(
+            resolved_input,
+            temporary_store_path,
+            source_group_id=_DEFAULT_STORE_SOURCE_GROUP_ID,
+            published_out_dir=published_out_dir,
+            max_input_bytes=max_input_bytes,
+        )
+        inferred_type = _store_inferred_anr_type(
+            temporary_store_path,
+            source_group_id=_DEFAULT_STORE_SOURCE_GROUP_ID,
+            explicit_type=options.anr_type,
+            max_source_bytes=max_stream_source_bytes,
+            max_source_lines=max_stream_source_lines,
+        )
+        os.replace(temporary_store_path, store_path)
+        effective_options = AiContextOptions(
+            out_dir=options.out_dir,
+            event_before_seconds=options.event_before_seconds,
+            logcat_before_seconds=options.logcat_before_seconds,
+            logcat_after_seconds=options.logcat_after_seconds,
+            meminfo_before_seconds=options.meminfo_before_seconds,
+            meminfo_after_seconds=options.meminfo_after_seconds,
+            group_tolerance_seconds=options.group_tolerance_seconds,
+            package_name=options.package_name,
+            anr_type=inferred_type,
+            build_ess=options.build_ess,
+            delta_t_normalized=options.delta_t_normalized,
+            compact_llm_view_max_bytes=options.compact_llm_view_max_bytes,
+        )
+        routing = {
+            "mode": "store_backed_default",
+            "entrypoint": "build_ai_context_artifacts_from_input_path",
+            "inputKind": input_kind,
+            "legacyPackageMaterialized": False,
+            "sourceStoreGroupId": _DEFAULT_STORE_SOURCE_GROUP_ID,
+            "capturedBytes": captured_bytes,
+            "capturedEntries": captured_entries,
+            "inputByteBudget": max_input_bytes,
+            "inferredAnrType": inferred_type,
+        }
+        return build_ai_context_artifacts_from_store(
+            store_path,
+            source_group_id=_DEFAULT_STORE_SOURCE_GROUP_ID,
+            package_id=resolved_input.name,
+            options=effective_options,
+            max_stream_source_bytes=max_stream_source_bytes,
+            max_stream_source_lines=max_stream_source_lines,
+            max_materialized_source_bytes=max_materialized_source_bytes,
+            input_routing=routing,
+        )
+    finally:
+        temporary_store_path.unlink(missing_ok=True)
+        temporary_store_path.with_name(f"{temporary_store_path.name}-journal").unlink(missing_ok=True)
+        temporary_store_path.with_name(f"{temporary_store_path.name}-wal").unlink(missing_ok=True)
+        temporary_store_path.with_name(f"{temporary_store_path.name}-shm").unlink(missing_ok=True)
+
 
 def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOptions) -> dict[str, Any]:
     """Build a complete AI workspace, then publish it through a recoverable swap.
@@ -922,6 +1203,7 @@ def _resolve_options(options: AiContextOptions, strategy: AnrTypeStrategy) -> Ai
 
 
 def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: AnrTypeStrategy) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    dumpsys_snapshot = _dumpsys_snapshot_for_sources(package.get("sources", {}))
     sources = package.get("sources", {})
     events: list[dict[str, Any]] = []
     anchors = _event_anchors(sources.get("event_log", {}).get("content", ""), options.package_name)
@@ -971,14 +1253,17 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         if input_window_digest is not None:
             group["inputWindowDigest"] = input_window_digest
         metadata = trace.get("metadata") or {}
-        group["dumpQuality"] = audit_dump_quality(
-            FusionScope(
-                group_id=group["id"], target_pid=None, target_process=options.package_name,
-                trace_pid=metadata.get("pid"), trace_process=metadata.get("processName"),
-                anchor_timestamp=None, trace_timestamp=inferred_anr_dt,
-                before_seconds=options.logcat_before_seconds, after_seconds=options.logcat_after_seconds,
+        group["dumpQuality"] = annotate_dump_quality_with_dumpsys_snapshot(
+            audit_dump_quality(
+                FusionScope(
+                    group_id=group["id"], target_pid=None, target_process=options.package_name,
+                    trace_pid=metadata.get("pid"), trace_process=metadata.get("processName"),
+                    anchor_timestamp=None, trace_timestamp=inferred_anr_dt,
+                    before_seconds=options.logcat_before_seconds, after_seconds=options.logcat_after_seconds,
+                ),
+                trace_tid=(metadata.get("mainThread") or {}).get("tid"),
             ),
-            trace_tid=(metadata.get("mainThread") or {}).get("tid"),
+            dumpsys_snapshot,
         )
         if strategy.anr_type in _INPUT_WINDOW_DIGEST_STRATEGIES:
             group["inputLifecycle"] = build_input_lifecycle(
@@ -1146,9 +1431,12 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "rootCausePatternHints": root_cause_hints,
             "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
             "trace": {**trace, "sourceCoordinates": [None] * len(trace.get("lines", []))},
-            "dumpQuality": audit_dump_quality(
-                dump_scope,
-                trace_tid=(trace_metadata.get("mainThread") or {}).get("tid"),
+            "dumpQuality": annotate_dump_quality_with_dumpsys_snapshot(
+                audit_dump_quality(
+                    dump_scope,
+                    trace_tid=(trace_metadata.get("mainThread") or {}).get("tid"),
+                ),
+                dumpsys_snapshot,
             ),
             "eventLog": {
                 "lines": event_lines,
@@ -1901,8 +2189,13 @@ def _render_cache_markdown(
                 f"- Freshness: `{quality['freshnessStatus']}`; staleness: `{quality['stalenessStatus']}`; process lifetime: `{quality['processLifetimeStatus']}`; lifecycle: `{quality['lifecycleStatus']}`; provenance: `{quality['provenanceStatus']}`",
                 "- 窗口内不证明 dump 新鲜或 PID 未复用；窗口外不直接标记 stale。",
                 "- Gaps: " + ", ".join(f"`{gap}`" for gap in quality["gaps"]),
-                "",
             ])
+            shared_dump_lifecycle = quality.get("dumpLifecycle")
+            if isinstance(shared_dump_lifecycle, dict):
+                lines.append(
+                    f"- Shared DQ1 dump lifecycle: source-local status=`{shared_dump_lifecycle.get('status')}`, source=`{shared_dump_lifecycle.get('source')}`, capture time=`{shared_dump_lifecycle.get('captureTimeStatus')}`. It reuses DQ1 identity/association and never creates an adapter-local stale/wrong-PID decision."
+                )
+            lines.append("")
         _append_deadlock_section(lines, group["trace"].get("lockGraph"), group["trace"].get("deadlockHints", []))
         _append_trace_hints_section(lines, group["trace"].get("traceHints", []), group["trace"].get("deadlockHints", []))
         annotated_trace_lines = _inject_hint_markers(
@@ -2022,6 +2315,18 @@ def _append_input_lifecycle_section(lines: list[str], lifecycle: dict[str, Any])
         f"- Trigger: `{trigger.get('status')}` / `{trigger.get('kind')}`; original target: {_render_lifecycle_entity(lifecycle.get('originalTarget'))}; observed WMS focus target: {_render_lifecycle_entity(lifecycle.get('blameTarget'))}.",
         f"- Input: `{input_state.get('status')}`; focus: `{focus_state.get('status')}`; queue/suppression: `{queue_state.get('status')}`; Recents: `{recents_state.get('status')}`.",
         f"- DQ1 dump: pid=`{dump.get('pid')}`, timestamp=`{dump.get('timestamp')}`, association=`{dump.get('associationStatus')}`, provenance=`{dump.get('provenanceStatus')}`.",
+    ])
+    shared_dump_lifecycle = dump.get("dumpLifecycle")
+    if isinstance(shared_dump_lifecycle, dict):
+        lines.append(
+            f"- Shared DQ1 dump lifecycle: status=`{shared_dump_lifecycle.get('status')}`, source=`{shared_dump_lifecycle.get('source')}`, capture time=`{shared_dump_lifecycle.get('captureTimeStatus')}`. It is source-local only and does not change DQ1 stale/wrong-PID/freshness decisions."
+        )
+    snapshot = dump.get("dumpsysSnapshot")
+    if isinstance(snapshot, dict):
+        lines.append(
+            f"- Dumpsys snapshot: input=`{snapshot.get('inputStatus')}`, window=`{snapshot.get('windowStatus')}`, queue=`{snapshot.get('queueStatus')}`, token/display transfer=`{snapshot.get('transferStatus')}`, blame transfer=`{(snapshot.get('blameTransfer') or {}).get('status')}`. This snapshot has no capture time and cannot establish blame."
+        )
+    lines.extend([
         f"- Evidence events: `{len(lifecycle.get('events', []))}`; verified transitions: `{len(lifecycle.get('edges', []))}`.",
         "- A missing WMS map leaves blame target unknown; unkeyed Recents events are not linked; an out-of-window dump is not stale.",
         "- Gaps: " + ", ".join(f"`{gap}`" for gap in lifecycle.get("gaps", [])),
@@ -2040,6 +2345,13 @@ def _append_binder_watchdog_lifecycle_section(lines: list[str], lifecycle: dict[
         "- A Watchdog chain requires an ordered explicit checker start and blocked event; an absent finish remains unknown/pending rather than proving a timeout cause.",
         f"- Binder transactions: `{len(binder)}`; Watchdog checks: `{len(watchdog)}`; evidence edges: `{len(lifecycle.get('edges', []))}`.",
         f"- Pressure: causeCandidates=`{len(pressure.get('causeCandidates', []))}`, amplifiers=`{len(pressure.get('amplifiers', []))}`, context=`{len(pressure.get('context', []))}`. RUNNABLE/CPU/RSS observations are never a standalone cause.",
+    ])
+    shared_dump_lifecycle = lifecycle.get("dumpLifecycle")
+    if isinstance(shared_dump_lifecycle, dict):
+        lines.append(
+            f"- Shared DQ1 dump lifecycle: status=`{shared_dump_lifecycle.get('status')}`, association=`{shared_dump_lifecycle.get('associationStatus')}`, identity=`{shared_dump_lifecycle.get('identityStatus')}`. F2 reuses this view and does not derive a separate stale/wrong-PID result."
+        )
+    lines.extend([
         "- Gaps: " + ", ".join(f"`{gap}`" for gap in lifecycle.get("gaps", [])),
         "",
     ])

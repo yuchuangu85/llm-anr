@@ -28,6 +28,7 @@ from .extraction import (
 )
 from .loaders import (
     ArchiveLoadError,
+    InputResourceBudget,
     build_package_from_entries,
     find_archives_in_directory,
     is_archive_path,
@@ -36,6 +37,7 @@ from .loaders import (
     load_package_from_fixture,
     load_package_from_path,
     stream_archive_to_store,
+    stream_directory_sources_to_store,
     trace_anr_timestamp_from_entry_list,
 )
 from .sources.shared import select_preceding_entries_for_anchor
