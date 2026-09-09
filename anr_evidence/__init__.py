@@ -1,6 +1,6 @@
 """ANR Phase 1 evidence extraction MVP."""
 
-from .ai_context import AiContextOptions, AiContextResult, build_ai_context, build_ai_context_artifacts
+from .ai_context import AiContextOptions, AiContextResult, build_ai_context, build_ai_context_artifacts, build_ai_context_artifacts_from_store, build_ai_context_from_store
 from .ai_agent import (
     AgentConfig,
     AgentMessage,
@@ -117,6 +117,8 @@ __all__ = [
     "AiContextResult",
     "build_ai_context",
     "build_ai_context_artifacts",
+    "build_ai_context_from_store",
+    "build_ai_context_artifacts_from_store",
     # anr_strategy
     "ANR_TYPE_STRATEGIES",
     "AnrTypeStrategy",

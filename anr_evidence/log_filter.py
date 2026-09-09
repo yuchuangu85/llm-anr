@@ -283,16 +283,22 @@ def parse_tags_from_markdown(md_paths: Iterable[str | Path]) -> set[str]:
 DEFAULT_EVENT_LOG_TAGS = load_event_log_tags_from_docs()
 
 
-def iter_text_lines(content: str, *, skip_empty: bool = False) -> Iterable[str]:
-    """Yield lines from a string without materializing ``content.splitlines()``.
+def iter_text_lines(content: str | Iterable[str], *, skip_empty: bool = False) -> Iterable[str]:
+    """Yield normalized lines from in-memory text or a re-iterable source view.
 
-    The ANR pipeline frequently receives tens or hundreds of megabytes of
-    logcat/EventLog text already loaded by package loaders.  Calling
-    ``splitlines()`` creates a second list-sized copy before filtering starts.
-    This generator walks newline offsets instead, preserving ``splitlines()``
-    style CR stripping for Android logs.
+    The string path avoids ``splitlines()``.  The iterable path lets C2 callers
+    stream authenticated store lines without reconstructing a package-wide text
+    string; each input element may include its original line terminator.
     """
 
+    if not isinstance(content, str):
+        for raw_line in content:
+            if not isinstance(raw_line, str):
+                raise TypeError("Text line iterables must yield strings")
+            line = raw_line.rstrip("\n").rstrip("\r")
+            if not skip_empty or line.strip():
+                yield line
+        return
     start = 0
     length = len(content)
     while start < length:

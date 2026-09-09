@@ -123,11 +123,11 @@
 
 ### C2 · P2 · 单路径流式迁移与资源预算（G003 余项；依赖 C1/S1）
 
-开发状态（2026-09-09）：目录 EventLog 已可经 staging → store → 单 group consumer；ZIP/TAR 可经 opt-in 成员流写入已打开 store，保留 container/member provenance、实际共享预算和原子回滚，且不走 legacy 全文/base64 loader。store 现提供 group/source-scoped、分页且有总行/字节预算的已承诺行读取 seam，供后续 anchor/window/multi-group context 迁移使用。它仍未替换 `ai_context` 的全文 package 输入，未完成 multi-group context/export、完整过滤 baseline/compact view 单路径或 100 MiB/1 GiB 基准，以下 C2 条目继续保持未完成。
+开发状态（2026-09-09）：目录 EventLog 已可经 staging → store → 单 group consumer；ZIP/TAR 可经 opt-in 成员流写入已打开 store，保留 container/member provenance、实际共享预算和原子回滚，且不走 legacy 全文/base64 loader。`build_ai_context_from_store(...)` 现把 `ai_context._build_groups(...)` 的 EventLog/logcat/kernel source view 改为 commitment-checked、可重迭代的 store reader；trace/meminfo 仍明确受 materialization budget 限制。`build_ai_context_artifacts_from_store(...)` 可从同一个 capture group 原子导出多组 Markdown/logcat/index，不重建 `originalArtifacts` 或 package-wide logcat。实际 100 MiB 与 1 GiB 磁盘输入的 cold/warm 运行证据在 `docs/benchmarks/c2-store-context-2026-09-09.json`；1 GiB 两次峰值 RSS 分别为 55,050,240 和 57,737,216 bytes，低于 512 MiB。但 ESS/store-span 输出尚未保留过滤时的精确 source coordinates，legacy default loader 也尚未自动选择该入口，compact LLM view 尚未设独立硬上限；因此 C2/G003 **仍未完成**。
 
-- [ ] 优化：先目录/shard → store → 单 ANR consumer，再迁移 ZIP/TAR、多组和完整导出。迭代读取后不得由兼容 adapter 再构造全量大字符串。
-- [ ] 验收：13 MiB 回归后分级运行 100 MiB / 1 GiB；记录 revision、机器、Python、输入哈希、group 数、冷暖运行次数、端到端 wall/峰值 RSS/磁盘成本；1 GiB 端到端峰值 RSS 目标 ≤512 MiB。
-- [ ] 验收：保留完整过滤后的外部 baseline，以流式写出满足预算；compact LLM view 独立有界。快 CI 跑小 fixture，大基准独立执行；本轮不将旧 13 MiB 结果外推为 1 GiB 达标。
+- [x] 新增：store-backed multi-group context/export 入口读取已承诺 source lines；EventLog/logcat/kernel 不重建全文 package，explicit `anr_type` 防止为推断而扫描大 source，trace/meminfo materialization 受预算拒绝。
+- [x] 验收：真实磁盘 100 MiB / 1 GiB、2 group、各 1 次 cold + 1 次 warm 已运行；记录 revision、机器、Python、输入 hash、group 数、wall、峰值 RSS 与 input/store/output/working-tree 磁盘成本。1 GiB 两次 RSS 均 ≤512 MiB。详见 `docs/benchmarks/c2-store-context-2026-09-09.json`。
+- [ ] 验收：保留完整过滤后的外部 baseline，以流式写出满足预算；compact LLM view 独立有界；filter output 保留可验证 source coordinates 后才能启用 ESS/store-span sidecars。默认 directory/ZIP/TAR workflow 也须自动选择这个单路径入口；快 CI 跑小 fixture，大基准独立执行。
 
 ### D2 · P2 · WMS/AMS/Recents 扩展（G004 余项；依赖 D1）
 

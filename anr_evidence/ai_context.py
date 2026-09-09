@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import uuid
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from .am_anr import package_name_from_am_anr_line
 from .anr_strategy import AnrTypeStrategy, strategy_for_package
@@ -98,6 +98,105 @@ class AiContextResult:
         }
 
 
+class _StoreLineSource:
+    """Re-iterable, commitment-checked source view backed by one store group."""
+
+    def __init__(self, store: Any, group_id: str, source_kind: str, *,
+                 max_total_lines: int, max_total_bytes: int) -> None:
+        self._store = store
+        self._group_id = group_id
+        self._source_kind = source_kind
+        self._max_total_lines = max_total_lines
+        self._max_total_bytes = max_total_bytes
+        self._available: bool | None = None
+
+    def __bool__(self) -> bool:
+        if self._available is None:
+            self._available = bool(self._store.list_group_artifacts(
+                self._group_id, source_kind=self._source_kind, max_artifacts=128,
+            ))
+        return self._available
+
+    def __iter__(self) -> Iterable[str]:
+        for row in self._store.iter_group_source_lines(
+            self._group_id,
+            source_kind=self._source_kind,
+            max_artifacts=128,
+            max_total_lines=self._max_total_lines,
+            max_total_bytes=self._max_total_bytes,
+            page_line_count=512,
+            page_max_bytes=min(4 * 1024 * 1024, self._max_total_bytes),
+        ):
+            try:
+                yield row["content"].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ValueError(
+                    f"Store-backed {self._source_kind} source contains non-UTF-8 lines"
+                ) from error
+
+
+def _materialize_store_source(source: _StoreLineSource, *, max_bytes: int) -> str:
+    """Materialize only sources whose whole-file algorithms still require text."""
+    parts: list[str] = []
+    consumed = 0
+    for line in source:
+        encoded = line.encode("utf-8")
+        if consumed + len(encoded) > max_bytes:
+            raise ValueError("Store-backed source exceeds the materialization budget")
+        parts.append(line)
+        consumed += len(encoded)
+    return "".join(parts)
+
+
+def build_ai_context_from_store(
+    store_path: str | Path,
+    *,
+    source_group_id: str,
+    package_id: str | None,
+    options: AiContextOptions,
+    max_stream_source_bytes: int = 256 * 1024 * 1024,
+    max_stream_source_lines: int = 1_000_000,
+    max_materialized_source_bytes: int = 64 * 1024 * 1024,
+) -> AiContextResult:
+    """Build normal multi-group context from store readers, not package text.
+
+    EventLog/logcat/kernel views remain re-iterable streams through grouping and
+    window filtering.  Trace and meminfo use their existing whole-text parsers,
+    so they are explicitly capped instead of silently allocating without bound.
+    The store must already contain the input artifacts attached to
+    ``source_group_id``; this API neither reconstructs legacy base64 input nor
+    writes a new store snapshot.
+    """
+    from .evidence_store import EvidenceStore
+
+    if not isinstance(source_group_id, str) or not source_group_id:
+        raise ValueError("A nonempty store source_group_id is required")
+    if not options.anr_type:
+        raise ValueError("Store-backed context requires an explicit anr_type; it does not scan a full source to infer one")
+    if max_stream_source_bytes <= 0 or max_stream_source_lines <= 0 or max_materialized_source_bytes <= 0:
+        raise ValueError("Store source budgets must be positive")
+    with EvidenceStore.open_read_only(store_path) as store:
+        sources: dict[str, dict[str, Any]] = {}
+        for source_kind in ("event_log", "logcat", "kernel_log", "trace", "meminfo"):
+            view = _StoreLineSource(
+                store, source_group_id, source_kind,
+                max_total_lines=max_stream_source_lines,
+                max_total_bytes=max_stream_source_bytes,
+            )
+            if not view:
+                continue
+            source: dict[str, Any] = {
+                "path": f"store://{source_group_id}/{source_kind}",
+                "content": view,
+            }
+            if source_kind in {"trace", "meminfo"}:
+                source["content"] = _materialize_store_source(
+                    view, max_bytes=max_materialized_source_bytes,
+                )
+            sources[source_kind] = source
+        return build_ai_context({"package_id": package_id, "sources": sources}, options)
+
+
 def build_ai_context(package: dict[str, Any], options: AiContextOptions) -> AiContextResult:
     """Build AI context without writing files. Suitable for CLI and Web adapters."""
 
@@ -120,6 +219,122 @@ def build_ai_context(package: dict[str, Any], options: AiContextOptions) -> AiCo
         cache_markdown=cache_md,
         ai_prompt_markdown=prompt_md,
     )
+
+
+def build_ai_context_artifacts_from_store(
+    store_path: str | Path,
+    *,
+    source_group_id: str,
+    package_id: str | None,
+    options: AiContextOptions,
+    max_stream_source_bytes: int = 256 * 1024 * 1024,
+    max_stream_source_lines: int = 1_000_000,
+    max_materialized_source_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, Any]:
+    """Atomically export multi-group artifacts built from an existing store.
+
+    This C2 path uses the store as the source of EventLog/logcat input and does
+    not reconstruct an ``originalArtifacts`` package.  Store-span sidecars and
+    ESS rebinding remain unavailable until filtering preserves exact source
+    coordinates, so requesting either legacy export mode fails closed.
+    """
+    if options.build_evidence_store or options.build_ess:
+        raise ValueError(
+            "Store-backed artifact export does not support legacy store export or ESS rebinding "
+            "until displayed source coordinates are retained"
+        )
+    published_out_dir = Path(options.out_dir or "anr_ai_context")
+    published_out_dir.parent.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_workspace_publish(published_out_dir)
+    stage_dir = Path(tempfile.mkdtemp(
+        prefix=f".{published_out_dir.name}.staging-", dir=published_out_dir.parent,
+    ))
+    try:
+        if published_out_dir.exists():
+            if not published_out_dir.is_dir():
+                raise ValueError(f"AI context output path is not a directory: {published_out_dir}")
+            shutil.copytree(published_out_dir, stage_dir, dirs_exist_ok=True)
+        staged_options = AiContextOptions(
+            out_dir=stage_dir,
+            event_before_seconds=options.event_before_seconds,
+            logcat_before_seconds=options.logcat_before_seconds,
+            logcat_after_seconds=options.logcat_after_seconds,
+            meminfo_before_seconds=options.meminfo_before_seconds,
+            meminfo_after_seconds=options.meminfo_after_seconds,
+            group_tolerance_seconds=options.group_tolerance_seconds,
+            package_name=options.package_name,
+            anr_type=options.anr_type,
+        )
+        result = build_ai_context_from_store(
+            store_path,
+            source_group_id=source_group_id,
+            package_id=package_id,
+            options=staged_options,
+            max_stream_source_bytes=max_stream_source_bytes,
+            max_stream_source_lines=max_stream_source_lines,
+            max_materialized_source_bytes=max_materialized_source_bytes,
+        )
+        strategy = strategy_for_package({"sources": {}}, result.options.anr_type)
+        _clean_stale_generated_artifacts(
+            stage_dir,
+            current_group_ids={group["id"] for group in result.groups},
+            retain_evidence_store=True,
+            retain_ess=False,
+        )
+        index_groups: list[dict[str, Any]] = []
+        for group in result.groups:
+            group_dir = stage_dir / group["id"]
+            group_dir.mkdir(parents=True, exist_ok=True)
+            analysis_path = group_dir / "anr_analysis.md"
+            logcat_path = group_dir / "logcat.txt"
+            logcat_lines = group.get("logcat", {}).get("lines", [])
+            logcat_path.write_text(("\n".join(logcat_lines) + "\n") if logcat_lines else "", encoding="utf-8")
+            group_for_render = _with_logcat_artifact_reference(group, logcat_path.name)
+            existing = _read_existing_analyses(analysis_path) if analysis_path.exists() else {}
+            analysis = _render_cache_markdown(
+                {"package_id": package_id}, [group_for_render], result.options, strategy,
+                include_analysis_slots=True,
+            )
+            if existing:
+                analysis = _merge_analyses(analysis, existing)
+            analysis_path.write_text(analysis + "\n", encoding="utf-8")
+            slots = _analysis_slot_statuses_from_text(analysis)
+            artifact_paths = {
+                "analysis": _published_artifact_path(analysis_path, stage_dir, published_out_dir),
+                "logcat": _published_artifact_path(logcat_path, stage_dir, published_out_dir),
+            }
+            index_groups.append({
+                "id": group["id"], "anchor": group.get("anchor"),
+                "fallbackUsed": group.get("fallbackUsed", False),
+                "completeness": group["completeness"],
+                "rootCausePatternHints": group.get("rootCausePatternHints", []),
+                "rootCausePatternHintDetails": group.get("rootCausePatternHintDetails", []),
+                "dumpQuality": group.get("dumpQuality"),
+                "analysisSlots": slots,
+                "analysisComplete": all(status == "filled" for status in slots.values()),
+                "warningCount": _group_warning_count(group),
+                "artifactPaths": artifact_paths,
+                "anrManager": {"anchor": group.get("anrManager", {}).get("anchor"), "metadata": group.get("anrManager", {}).get("metadata", {})},
+            })
+        index_path = stage_dir / "index.json"
+        index = {
+            "packageId": package_id,
+            "strategy": result.strategy,
+            "artifactPaths": {
+                "index": _published_artifact_path(index_path, stage_dir, published_out_dir),
+                "evidenceStore": str(Path(store_path)),
+            },
+            "sourceStoreGroupId": source_group_id,
+            "groupCount": len(result.groups),
+            "events": result.events + [_event("cache_rendered", "completed", groupCount=len(result.groups))],
+            "groups": index_groups,
+        }
+        index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _publish_workspace_stage(stage_dir, published_out_dir)
+        return index
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)
 
 
 def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOptions) -> dict[str, Any]:

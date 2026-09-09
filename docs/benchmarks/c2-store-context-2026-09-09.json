@@ -1,0 +1,108 @@
+{
+  "date": "2026-09-09",
+  "note": "Generated from the then-dirty C2 worktree; sourceRevision identifies the committed parent only. This evidence proves the store-backed context/export harness, not C2 completion.",
+  "runs": [
+    {
+      "benchmark": "c2-store-backed-context",
+      "configuration": {
+        "coldRuns": 1,
+        "groupCount": 2,
+        "sizeMiB": 100,
+        "warmRuns": 1
+      },
+      "limits": {
+        "oneGiBMaxRssBytes": 536870912
+      },
+      "machine": {
+        "machine": "arm64",
+        "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+      },
+      "passed": true,
+      "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+      "revision": "bccb8e4b0ece88e78abb179fbe7d09cc26b5d3c6",
+      "runs": [
+        {
+          "allGroupArtifactsExist": true,
+          "groupCountExported": 2,
+          "groupCountRequested": 2,
+          "indexExists": true,
+          "inputBytes": 104857600,
+          "inputSha256": "17f1a8902f31f97b6f180ca9418789791604fa4fe4a80a6a772660ceb90d602b",
+          "maxRssBytes": 52789248,
+          "outputBytes": 24768,
+          "runKind": "cold",
+          "sizeMiB": 100,
+          "storeBytes": 128479232,
+          "wallSeconds": 3.3705936250044033,
+          "workingTreeBytes": 233361600
+        },
+        {
+          "allGroupArtifactsExist": true,
+          "groupCountExported": 2,
+          "groupCountRequested": 2,
+          "indexExists": true,
+          "inputBytes": 104857600,
+          "inputSha256": "17f1a8902f31f97b6f180ca9418789791604fa4fe4a80a6a772660ceb90d602b",
+          "maxRssBytes": 53673984,
+          "outputBytes": 24768,
+          "runKind": "warm",
+          "sizeMiB": 100,
+          "storeBytes": 128479232,
+          "wallSeconds": 3.4353610829566605,
+          "workingTreeBytes": 233361600
+        }
+      ]
+    },
+    {
+      "benchmark": "c2-store-backed-context",
+      "configuration": {
+        "coldRuns": 1,
+        "groupCount": 2,
+        "sizeMiB": 1024,
+        "warmRuns": 1
+      },
+      "limits": {
+        "oneGiBMaxRssBytes": 536870912
+      },
+      "machine": {
+        "machine": "arm64",
+        "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+      },
+      "passed": true,
+      "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+      "revision": "bccb8e4b0ece88e78abb179fbe7d09cc26b5d3c6",
+      "runs": [
+        {
+          "allGroupArtifactsExist": true,
+          "groupCountExported": 2,
+          "groupCountRequested": 2,
+          "indexExists": true,
+          "inputBytes": 1073741824,
+          "inputSha256": "13a0c566068369ea9c9f680c1189fb97107ad21a124ab0cf00d3bf18a1a71bb8",
+          "maxRssBytes": 55050240,
+          "outputBytes": 24768,
+          "runKind": "cold",
+          "sizeMiB": 1024,
+          "storeBytes": 1317527552,
+          "wallSeconds": 34.56262116704602,
+          "workingTreeBytes": 2391294144
+        },
+        {
+          "allGroupArtifactsExist": true,
+          "groupCountExported": 2,
+          "groupCountRequested": 2,
+          "indexExists": true,
+          "inputBytes": 1073741824,
+          "inputSha256": "13a0c566068369ea9c9f680c1189fb97107ad21a124ab0cf00d3bf18a1a71bb8",
+          "maxRssBytes": 57737216,
+          "outputBytes": 24768,
+          "runKind": "warm",
+          "sizeMiB": 1024,
+          "storeBytes": 1317380096,
+          "wallSeconds": 34.908539750031196,
+          "workingTreeBytes": 2391146688
+        }
+      ]
+    }
+  ]
+}

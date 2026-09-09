@@ -838,13 +838,19 @@ class EvidenceStore:
             while next_line < line_count and remaining_lines and remaining_bytes:
                 page_bytes = min(page_max_bytes, remaining_bytes)
                 requested_lines = min(page_line_count, remaining_lines, page_bytes + 1)
+                # ``max_bytes`` also bounds committed chunk verification.  A
+                # final page can have fewer output bytes remaining than the
+                # chunk containing its first line; keep that authentication
+                # overhead inside the caller's finite page cap instead of
+                # falsely rejecting an exact total-output boundary.
+                read_budget = max(page_bytes, min(page_max_bytes, artifact["byteCount"]))
                 rows = self.read_artifact_lines(
                     group_id=group_id,
                     artifact_id=artifact["artifactId"],
                     source_kind=source_kind,
                     start_line=next_line,
                     line_count=requested_lines,
-                    max_bytes=page_bytes,
+                    max_bytes=read_budget,
                     expected_artifact_commitment=artifact["artifactCommitment"],
                 )
                 if not rows:

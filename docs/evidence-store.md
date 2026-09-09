@@ -1,6 +1,6 @@
 # C1 证据存储开发说明
 
-状态：C1 原始证据存储已接入；C2 现有目录 EventLog 流式发布，以及 ZIP/TAR 到已打开 store 的 opt-in 流式成员写入。两者都只是 C2 的分阶段接口，尚不代表完整 loader、multi-group context 导出或 100 MiB/1 GiB 验收完成。
+状态：C1 原始证据存储已接入；C2 现有目录 EventLog 流式发布，以及 ZIP/TAR 到已打开 store 的 opt-in 流式成员写入。C2 另有 store-backed multi-group context/export 入口与真实 100 MiB/1 GiB 运行证据，但 ESS/source-span coordinates、compact-view hard cap 与默认 loader routing 尚未完成；因此仍不代表 C2/G003 完成。
 
 ## 目录输入接入
 
