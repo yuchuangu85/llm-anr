@@ -11,7 +11,7 @@
 | 任务 | 当前状态 | 本次核对的剩余缺口 / 证据 |
 | --- | --- | --- |
 | G001 / R2 / R1 | 已完成、已提交 | 摘要已存在；`a7a1347` 包含结构化实体匹配、真实 Agent 按组隔离、完整 selected-trace 库存、scope/conflict 门禁、保守 hint 与回归 |
-| S1 | 首批门禁已实现，整体未完成（P0） | 已有归档预算、默认外发拒绝、合成测试路径敏感标记检查、HTTP 字节/次数预算及 manager 结构/保守字段校验；引用保真脱敏和完整安全验收仍待完成 |
+| S1 | 离线 default-deny 已验证；完整私有外发验收仍 blocked（P0） | 已有归档 accepted bytes/entries 账本、默认外发拒绝、local/mock 脱敏/permit/verifier 拒绝路径、HTTP 字节/次数预算及 manager 结构/保守字段校验；仍缺真实 deployment 的不可伪造/可撤销 verifier、脱敏映射与出站契约审计、跨 archive+loose 的实际运行资源边界、完整自由文本/恶意 payload 对抗语料、组织 DLP/隐私审查、来源许可与真实受许可语料。V1 不替代这些外发安全 gate |
 | B1 / B2 | B1 Android 17 已实现并本地验证；B2 未完成 | B1 已增加双仓库固定 revision manifest、两类 Input reason resolver 和 Phase 1 additive 字段，其余八类明确 unsupported；14 项 ontology 专项、18 项 ontology+legacy 专项、全量 unittest discovery 运行 418 项并整体通过（1 项跳过），compileall/diff 检查均通过。B2 的 Android 14–16 profiles 与 OEM overlays 仍未完成；B1 provenance 校验仅覆盖 manifest 自洽性与 canonical source URL，不会重新下载并重算上游源码 blob，也不证明设备兼容 |
 | C1 / C2 / G003 | 已完成本地 default-routing 验收 | C1 引用/ESS/rollback 契约保持；C2 现在让 raw directory/ZIP/TAR 默认走 fresh store capture → store-backed multi-group export，而 fixture JSON 仍是 legacy package 路径。小型端到端回归逐项比较完整 filtered `logcat.txt` baseline；独立 100 MiB、1 GiB directory cold/warm 基准均记录 RSS 与磁盘成本并通过声明预算。该本地证据不替代真实设备、S1 出站安全或 full-roadmap 其他 gate |
 | V1 | manager 门禁已完成、已验证 | `e7a03bf` 后的 V1 增量在 manager 接受边界结合当前轮 immutable span、同组 ANR anchor、主线程 direct-blocker、PID/时间/scope 与字段引用资格；还要求受信任的 `eligibleForHighCausalConfidence=true`。当前 auditor 明确保持该值为 false，因此所有现有 high 均 fail-closed；旧无 store 路径仍仅为 low/medium 的 `structure_only` |
@@ -71,7 +71,7 @@
 
 - [ ] 新增：Android 14、15、16 各为独立 profile/验收；OEM overlay 为单独 story，只有明确厂商来源时启用，不默认覆盖 AOSP。
 - [x] 工具：新增官方 Gitiles source-byte 捕获器；tag ref 必须解析为同仓库 immutable commit，`?format=TEXT` 必须严格 Base64 解码并由本地 SHA-256 记录。网络、JSON、revision 或编码异常 fail closed，且不写入 Android 14–16 profile。
-- [ ] 验收：版本差异逐项测试；没有已核验 profile 的输入明确 unsupported；overlay 冲突 fail closed。2026-09-09 已新增 Android 14/15/16 分别返回 `unsupported_android_release`、以及冲突 source/kind overlay 返回 `vendor_overlay_unsupported` 的回归；这只锁定当前无 profile 时的 fail-closed 行为。实际 Gitiles 获取三版均超时，尚无可比较的版本语义、raw bytes/SHA-256 或设备证据；合成 fixture 只能证明规则行为，不证明真实设备兼容。
+- [ ] 验收：B2-14、B2-15、B2-16 分别以各自 profile 的 source bytes、manifest、规则正/反例与设备证据验收；任一 release 通过不得启用或计入另两个 release。没有已核验 profile 的输入明确 unsupported；AOSP profile 不默认加载 OEM 规则。OEM overlay 是按厂商/产品/版本独立创建的 story，只有明确厂商来源及其可核验 source provenance 时才能启用，overlay source/kind 冲突或来源缺失均 fail closed。2026-09-09 已新增 Android 14/15/16 分别返回 `unsupported_android_release`、以及冲突 source/kind overlay 返回 `vendor_overlay_unsupported` 的回归；这只锁定当前无 profile/overlay 时的 fail-closed 行为。实际 Gitiles 获取三版均超时，尚无可比较的版本语义、raw bytes/SHA-256 或设备证据；合成 fixture 只能证明规则行为，不证明真实设备兼容。
 
 ### C1 · P1 · 最小证据引用契约（G003 第一部分；V1/D1 前置）
 

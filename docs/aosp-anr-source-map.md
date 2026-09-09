@@ -1,6 +1,6 @@
-# Android 17 ANR profile：来源与开发边界
+# Android ANR timeout profiles：来源与开发边界
 
-状态：Android 17 B1 已实现并完成本地验证；B2 的 Android 14–16 profiles 与 OEM overlays 仍未完成，因此不得宣称 G002 完成。
+状态：Android 17 B1 已实现并完成本地验证；B2-14、B2-15、B2-16 是互不替代的独立 profile/验收，OEM overlay 另作来源绑定的 story。三者和任何 OEM story 均未完成，因此不得宣称 G002 完成。
 
 ## 固定来源
 
@@ -24,6 +24,12 @@ python3 scripts/fetch_aosp_source_provenance.py \
 ```
 
 截至 **2026-09-09**，此开发环境无法连接 `android.googlesource.com:443`，因此尚未取得 Android 14、15、16 的 raw bytes 或 SHA-256；没有新增这些 release 的 manifest，B2 和 G002 继续保持未完成。本轮对 `android-14.0.0_r1`、`android-15.0.0_r1`、`android-16.0.0_r1` 分别运行通用捕获器，均在官方 Gitiles 请求阶段超时且没有输出记录；IPv4/HTTP/1.1 的 5 秒连接探测也超时。工具的 mocked 单测只证明抓取协议、严格解码和 fail-closed 行为，不能替代实际的上游字节获取。
+
+## B2 profile 与 OEM story 的隔离
+
+- **B2-14、B2-15、B2-16 是三个独立验收单元。** 每个 release 必须各自拥有 release tag → 同仓库 immutable commit → Gitiles raw bytes → SHA-256 → path/symbol → manifest/profile 的证据，以及该 release 自己的规则正例、反例和设备/系统镜像兼容证据。一个 release 的 profile、hash、规则或验收结果不能回填、fallback 或签署另一个 release。
+- **OEM overlay 不是 AOSP profile 的默认层。** AOSP 输入只按其显式 Android release 的已核验 AOSP profile 解析；没有明确厂商来源时不得猜测厂商、加载 overlay 或扩大 AOSP 结论。
+- **每个 OEM overlay 是独立 story。** 启用前必须明确厂商/产品/构建或版本身份，并提供可核验的厂商来源与 source provenance；其规则、revision、hash、path/symbol、冲突处理、正反例和设备证据均与 AOSP profile 分开审计。来源缺失、身份不匹配、与 AOSP 或同厂商 overlay 冲突时必须 fail closed。当前没有任何已注册 OEM story，因此传入 `vendor_overlays` 仍返回 `vendor_overlay_unsupported`，而不是隐式覆盖 Android 17 或未来 AOSP profile。
 
 ## F1 · Android 14–17 Framework timeout pack 获取与观察边界
 

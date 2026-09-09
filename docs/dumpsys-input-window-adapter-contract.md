@@ -69,6 +69,21 @@ DQ1 新增的 `dumpsysSnapshot` 只是 source-local 投影：
 
 `blameTransfer` 的 candidate 仅表示字段可映射，**不是** `inputLifecycle.blameTarget`，不是责任归因，也不改变 `finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`。原始 dumpsys body 没有可信 capture timestamp 时，不能证明它发生在 ANR anchor；因此 DQ1 的 generic `lifecycleStatus`、freshness、staleness、process lifetime 与 high-confidence 资格保持原有 fail-closed 值。
 
+## Production qualified-blame 与 queue/dump lifecycle gate（D2 余项，blocked）
+
+后续 D2 不得把当前 snapshot candidate 直接升级成 production `qualified`。每个新 adapter 都必须先具备下列三个前提；任何一项缺失时只保留 `unknown` / `unqualified` / `unsupported`，不能用日志相邻、名称相似、token 猜测或缺事件来补齐：
+
+1. **可信 capture timestamp**：timestamp 必须有明确 source coordinate、时钟域与可审计的 ANR-anchor 对齐依据；仅由文件 mtime、解析时刻、无来源 body 文本或推断的日志时间不能合格。
+2. **同组 provenance**：参与 transfer/lifecycle 的 Input、Window、AMS 或 Recents source 必须可回读地绑定到同一个 ANR group；跨组、来源变更、缺 immutable/source coordinate 或关联冲突必须 fail closed。
+3. **实际 consumer**：先指定消费哪个字段、由哪个既有输出读取、何种有限结论会改变以及该 consumer 的正反例。没有消费者时不创建通用因果图、全局 token graph 或跨模块 lifecycle 推断层。
+
+在这三个前提满足后，交付仍拆成两个独立 adapter：
+
+- **production token/display qualified-blame transfer**：仅在 exact window identity、token、display、可信 capture-time 和同组 provenance 全部成立时，向明确 consumer 提供受限的 `qualified` transfer；它仍不是最终根因或自动 `blameTarget` 写入。任一 timestamp/provenance/identity 冲突必须降级。
+- **queue/dump lifecycle adapter**：只消费定义明确、具有实际 consumer 的 queue/dump 状态与 transition；重复、抑制、恢复、缺 transition、乱序或时间不合格均按该 adapter 的有限 schema 记录，缺口保持 `unknown`。它必须投影共享 DQ1 `dumpLifecycle`，不得重新建立 stale/wrong-PID/process-lifetime 判定器。
+
+验收必须包含同组/跨组、capture-time 合格/缺失/过期、token/display 误配、重复/抑制/恢复、缺 transition 和 consumer 端到端正反例；synthetic fixture 只证明规则，不证明真实设备/OEM dump 兼容。
+
 ## 已验证与未验证
 
 本地测试覆盖：严格 header、精确 token/display/window transfer、token/display mismatch、缺字段、非 dump 文本、DQ1 projection 不改变 identity/lifecycle、以及 raw directory 和 ZIP default route 到 `anr_analysis.md` 的现有 `inputLifecycle` consumer。

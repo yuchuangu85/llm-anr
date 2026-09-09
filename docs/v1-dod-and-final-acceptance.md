@@ -17,7 +17,7 @@
 
 core v1 acceptance 只有在下面的用户可见支持声明随候选一起发布时才有效：
 
-- 真实/私有日志默认保持本地；`ProviderConfig.outbound_policy` 保持默认 `deny`。`synthetic_only` 仅是 fixture 调用方 attestation，不能成为真实日志出站许可。经独立审批的 `redacted_private` 是受限扩展路径：必须使用当前 verified span 的 reference-preserving view，并绑定 provider/model、purpose、approval、ruleset、expiry 与 view/map commitments；这不等于自动匿名化认证。
+- 真实/私有日志默认保持本地；`ProviderConfig.outbound_policy` 保持默认 `deny`。`synthetic_only` 仅是 fixture 调用方 attestation，不能成为真实日志出站许可。经独立审批的 `redacted_private` 是受限扩展路径：必须使用当前 verified span 的 reference-preserving view，并绑定 provider/model、purpose、approval、ruleset、expiry 与 view/map commitments；这不等于自动匿名化认证。完整私有外发 S1 仍必须有真实 deployment 的不可伪造/可撤销 verifier、脱敏映射与出站契约审计、实际运行资源边界、组织 DLP/隐私审查、来源许可和真实受许可语料；V1 引用/因果门禁不能替代其中任何一项。
 - Android timeout ontology 只声明已核验的 Android 17 Input 范围；Android 14、15、16、OEM overlay、未知版本、冲突 provenance 或未映射 kind 必须报告 unsupported/unknown，不能猜测 direct blocker。
 - 结论始终保持 `finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`。高置信只有在 V1/DQ1 全部资格满足时才可能出现；当前 auditor 保持 high fail-closed。
 - 任何未实现的真实 dumpsys lifecycle、external tool/viewer、external search/expand、production corpus 或 device evidence 都不得出现在 core v1 的能力声明中；C2 的 default raw-input route 只能按其本地验证范围声明，不能外推为跨设备硬资源保证。
@@ -123,14 +123,14 @@ python3 scripts/run_eval.py tests/fixtures/eval
 | Gate | 适用验收范围 | DoD 与必需证据 | 当前快照 |
 | --- | --- | --- | --- |
 | G001 / R2 / R1 | core | 组内 identity/scope/time/fusion 负例和真实 Agent grouping regression；完整 selected-trace inventory；压力线索不升级根因 | `verified-local-slice`，历史提交 `a7a1347`；候选仍需重跑 |
-| S1 | core（离线 default-deny）/扩展（受限私有出站） | core 必须验证 default deny、synthetic-only 边界、预算与结构拒绝。私有扩展还必须验证 verified-span redacted view、local-only replacement map、exact admission **及外部 verifier**、单请求 permit、fixed endpoint/no redirect、每 retry 复验、零 HTTP 负例、re-probe fail closed，以及 mixed ZIP/TAR/loose accepted-input accounting | local code/mock regression 已验证；真实受许可 corpus、可审计独立 verifier、隐私/DLP 审查和完整对抗语料仍 `blocked`。shared budget 不宣称 RSS/wall/CPU/ZIP-central-directory 保证，不得列入 core scope |
+| S1 | core（离线 default-deny）/扩展（受限私有出站） | core 必须验证 default deny、synthetic-only 边界、预算与结构拒绝。私有扩展还必须验证 verified-span redacted view、local-only replacement map、精确 admission、真实 deployment 的不可伪造/可撤销外部 verifier、单请求 permit、fixed endpoint/no redirect、每 retry 复验、脱敏映射/出站契约审计、零 HTTP 负例、re-probe fail closed、混合 ZIP/TAR/loose accounting，以及自由文本/恶意 payload 对抗语料 | local code/mock regression 已验证；真实 verifier、组织审计、DLP/隐私审查、来源许可、真实受许可语料和混合输入的端到端资源 envelope 仍 `blocked`。accepted bytes/entries 账本不宣称 RSS/硬墙钟/解压 CPU/ZIP central-directory 内存保证；V1 不替代这些外发安全结论，不得列入 core scope |
 | G002 / B1 | core（Android 17） | Android 17 manifest/path/symbol、Input reason 正反例、unknown/矛盾/无版本均降级；不从 trigger 推断 blocker | `verified-local-slice` |
-| G002 / B2 | full-roadmap | Android 14–16 各自 tag → peeled commit → Gitiles blob → SHA-256 → symbol；OEM 来源/冲突和设备 evidence | `blocked`：14–16 raw bytes/SHA-256 与 OEM evidence 缺失 |
+| G002 / B2 | full-roadmap | B2-14、B2-15、B2-16 各自独立完成 tag → peeled commit → Gitiles blob → SHA-256 → path/symbol → profile、版本正反例与设备 evidence；一个 release 的验收不得覆盖另一个。OEM overlay 按厂商/产品/版本单独建 story，只有明确厂商来源与可核验 provenance 才能启用，默认不覆盖 AOSP | `blocked`：14–16 raw bytes/SHA-256、各 profile/device evidence 及 OEM source-bound stories 均缺失；缺 profile/来源或 overlay 冲突必须 `unsupported`/fail closed |
 | G003 / C1 | core | store/ESS/ref integrity、winner provenance、rollback、四槽位与 baseline 保留 | `verified-local-slice`；候选仍需重跑 |
 | G003 / C2 | full-roadmap | default directory/ZIP/TAR routing 的端到端 baseline、资源与磁盘证据 | `verified-local-slice`：`tests/test_c2_default_routing.py` 覆盖真实 temporary directory/ZIP/TAR 与完整 filtered baseline；100 MiB/1 GiB default-directory cold/warm 记录见下方 artifacts。仅为当前机器实测，不是跨设备硬 RSS/壁钟保证 |
 | V1 / DQ1 | core | immutable anchor/direct blocker、PID/time/scope/quality/provenance 的 acceptance/negative regression；DQ1 source-local `dumpLifecycle` 仅由 D1/F2/未来 dump adapter 复用，证据不足保持 low/medium/unknown | `verified-local-slice`；current high 仍 fail-closed，source-local lifecycle 不证明 freshness/staleness/process lifetime |
 | G004 / D1 | core | Input → WMS/AMS/Recents 的 target/blame/lifecycle fixture；wrong PID、late dump、pending-focus、embedded PID、重复 suppression、recovery、Recents cancel/finish 与 missing-event=`unknown` 负例 | `verified-local-slice`；synthetic/local rule evidence only，不证明真实设备或 OEM 格式兼容 |
-| G004 / D2 | full-roadmap | 真实 dumpsys input/window、token/display transfer、queue/dump lifecycle 与 Recents 状态机 evidence | `implemented-pending-evidence`：首个 strict raw snapshot adapter 已由 `tests/test_dumpsys_input_window.py` 覆盖 direct parser 与 raw directory/ZIP/TAR default route，且只投影到 DQ1 / existing inputLifecycle；capture timestamp、qualified blame、真实设备/OEM profile、完整 queue/dump lifecycle 与 Recents 状态机仍 `blocked` |
+| G004 / D2 | full-roadmap | 真实 dumpsys input/window、token/display transfer、queue/dump lifecycle 与 Recents 状态机 evidence。production qualified-blame / lifecycle adapter 必须各自具备可信 capture timestamp、同组可回读 provenance 与明确实际 consumer；没有 consumer 不建通用因果图，缺时间/来源/identity 保持 unknown/unqualified | `implemented-pending-evidence`：首个 strict raw snapshot adapter 已由 `tests/test_dumpsys_input_window.py` 覆盖 direct parser 与 raw directory/ZIP/TAR default route，且只投影到 DQ1 / existing inputLifecycle；capture timestamp、qualified blame、真实设备/OEM profile、完整 queue/dump lifecycle 与 Recents 状态机仍 `blocked` |
 | G005 / F1 | full-roadmap | Android 14–17 verified timeout packs、kind/cancel/recovery/错误 provenance/OEM/device evidence | recipe/verifier 与受限 lifecycle 已有；实际 packs/device `blocked` |
 | G006 / F2 | full-roadmap | exact transaction/caller-peer、Watchdog 顺序、lock-owner、生产 dump adapter 和设备 regression | 首个观察链与 DQ1 shared `dumpLifecycle` projection 已验证；F2 不另建 stale/wrong-PID 门；其余 `blocked` |
 | G007 / P1 | full-roadmap | capability manifest、hash/version rejection、trace/capture manifest、clock mapping、viewer/device compatibility | fixed query/metadata-only verifier 已验证；viewer/capture/device `blocked` |
@@ -169,6 +169,7 @@ python3 scripts/run_eval.py tests/fixtures/eval
 
 - `core-v1-minimum-reliable-input = not-evaluated`：局部工程证据存在，但必须从 clean candidate 重新采集；candidate 必须保持 offline、Android 17 已核验范围和上述非声明项。
 - `full-roadmap-v1 = blocked`：B2、D2、F1、F2、P1、A1、Q1 的扩展证据仍不完整；formal gate 的 blocked 输出必须保留，不能用 core 测试覆盖。
+- `private-outbound-S1 = blocked`：本地 redacted view/admission/mock 证据不等于真实 deployment verifier、组织审计/DLP/隐私审查、来源许可、真实受许可语料或端到端资源硬边界；V1 不替代此 gate。
 - C2/G003 只有明确列出的 `verified-local-slice` 已验证，不能被外推为跨设备、真实设备或全路线图签核。
 
 ## 8. 最终验收顺序
@@ -210,6 +211,7 @@ verification:
 gates:
   G001_R1_R2: { status: accepted, evidence: ["..."] }
   S1_core_default_deny: { status: accepted, evidence: ["..."] }
+  S1_private_outbound: { status: blocked, evidence: [], blockers: ["external-deployment-verifier", "outbound-contract-audit", "organization-dlp-privacy-license", "real-corpus", "runtime-resource-envelope"] }
   B1_android17: { status: accepted, evidence: ["..."] }
   C1: { status: accepted, evidence: ["..."] }
   V1_DQ1: { status: accepted, evidence: ["..."] }
