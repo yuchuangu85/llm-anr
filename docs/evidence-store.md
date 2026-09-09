@@ -152,7 +152,13 @@ legacy package writer 在 `AiContextOptions` 同时设置 `build_evidence_store=
 
 `EvidenceSlice.evidence_ref` 为新增可选字段；没有引用的旧 JSONL 字段保持原状。`attach_store_references` 不信任已有 JSONL 引用，而是使用侧车候选回读数据库，检查 group/source 和解码后的完整行内容，仅保留唯一且匹配的 span。失败时保留原 slice 并清空引用；AnrManager 展示来源映射回原 logcat artifact。
 
-字段绑定本身不等于因果资格。V1 在 manager 接受点额外校验 matched PID/进程身份、in-window 时间、eligible scope、完整 immutable field references、受信任的 `eligibleForHighCausalConfidence=true`、同组 ANR anchor 与主线程 direct-blocker；DQ1/D1 仍需扩展 freshness、process lifetime 和机制闭环。当前 auditor 保守地将该 eligibility 保持为 false。真实 Agent 主循环在调用方同时提供 `evidence_store` 与逐组 sidecar 引用时会重建 ESS、回读绑定，并在完整性失败时于任何 HTTP 请求前停止。
+字段绑定本身不等于因果资格。V1 在 manager 接受点额外校验 matched PID/进程身份、`associationStatus=associated` 的 in-window ANR 归属、eligible scope、完整 immutable field references、`provenanceStatus=verified`、受信任的 `eligibleForHighCausalConfidence=true`、同组 ANR anchor 与主线程 direct-blocker；DQ1/D1 仍需扩展 freshness、process lifetime 和机制闭环。当前 auditor 保守地将该 eligibility 保持为 false。真实 Agent 主循环在调用方同时提供 `evidence_store` 与逐组 sidecar 引用时会重建 ESS、回读绑定，并在完整性失败时于任何 HTTP 请求前停止。
+
+### DQ1 shared dump-quality contract
+
+`audit_dump_quality(...)` is the shared DQ1 boundary for D1/D2/F2 consumers.  It reports a versioned (`dq1-v1`) target/dump identity record, nullable PID/process/TID/timestamps, identity and time status, an explicit ANR-group `associationStatus`, immutable reference/provenance status, supporting field references, and explicit gaps.  TID is metadata only: a matching TID never establishes dump identity.  `bind_dump_quality_references(...)` accepts only original-byte readback references for the ANR anchor, ART dump-header PID/timestamp, and exact `Cmd line` process; an evidence reference from another group is marked invalid and is never reused.
+
+The contract intentionally keeps `freshnessStatus`, `stalenessStatus`, `processLifetimeStatus`, and `lifecycleStatus` at `unknown` until a separate audited source proves them.  An out-of-window dump is `associationStatus=rejected`, **not** a stale claim.  Immutable field provenance proves only those named observations; it does not prove queue/suppression lifecycle, process lifetime, freshness, causal mechanism, or final root cause.  D2 owns the later queue/suppression lifecycle increment and must extend this shared record rather than introduce a parallel stale/wrong-PID classifier.
 
 ## Agent / V1 首批引用消费
 

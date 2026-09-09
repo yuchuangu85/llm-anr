@@ -112,8 +112,8 @@
 
 已有基础：`FusionScope` 与跨 trace 比对已有局部身份/窗口门禁；以下任务是统一接口、引用和质量语义，不重做 R1。
 
-- [ ] 优化：在 R1 已收紧的判定上统一 dump PID、采样时间、ANR 归属及 stale/wrong-PID/unknown 状态，返回支撑引用与缺口；由 D1/D2/F2 复用，不另建平行规则。
-- [ ] 验收：跨 dump 同 TID、PID 复用但时间不重叠、缺时间、晚采样、错组引用均无法满足高置信门槛；没有证据时状态 unknown，不凭统一固定延迟推断所有版本 stale。完整 queue/suppression 生命周期仍由 D2 增量接入。
+- [x] 优化：`anr_evidence.dump_quality` 已作为唯一 DQ1 边界统一 dump PID/进程/TID 元数据、采样时间、ANR group 归属、wrong-PID/unknown 和 immutable provenance；`associationStatus` 与 `stalenessStatus` 分离，V1 已消费该契约。D1/D2/F2 后续实现必须复用此接口，不另建平行 stale/wrong-PID 判定器。
+- [x] 验收：回归覆盖跨 dump 同 TID、PID 复用但时间不重叠、缺时间、晚采样、NaN 窗口、wrong PID/process、错组引用和非 header PID 文本；它们均无法满足高置信门槛。无证据状态保持 `unknown`，窗口外仅拒绝归属而不标记 stale。完整 queue/suppression 生命周期仍明确由 D2 增量接入。
 
 ### D1 · P1 · 最小 Input 证据闭环（G004 第一部分；依赖 B1/C1/R1/R2/V1/DQ1/E1）
 
@@ -196,7 +196,7 @@
 - `python3 -m compileall -q anr_evidence tests scripts` 与 `git diff --check`：通过。
 - 验证范围只证明当前检出的 Android 17 B1 规则、manifest 约束和 legacy 兼容行为；未重新下载/重算固定 URL 对应的上游源码 blob，未执行 Android 14–16/OEM overlay 验收，也未执行真实设备兼容性验证。因此 G002 仍未完成。
 
-C1 最小证据引用契约与 V1 manager 高置信资格门禁已完成；后续按 **DQ1 → D1** 推进，C2 另行完成 G003 的共享流式/预算与 100 MiB/1 GiB 验证。S1/E1 的前置约束不变，不得将 V1 的窄 manager qualification 等同于完整脱敏/出站安全、process lifetime/freshness 证明、机制评测或最终根因结论。
+C1 最小证据引用契约、V1 manager 高置信资格门禁与 DQ1 共享 dump 身份/质量/provenance 边界已完成；后续按 **D1（复用 DQ1）→ D2 lifecycle** 推进，C2 另行完成 G003 的共享流式/预算与 100 MiB/1 GiB 验证。S1/E1 的前置约束不变，不得将 V1 的窄 manager qualification 等同于完整脱敏/出站安全、process lifetime/freshness 证明、机制评测或最终根因结论。
 
 - [ ] 验收：每个后续代码故事先补针对性回归，再实现，执行专项 → 全量 unittest → compileall → diff 检查；适用时补 eval/benchmark/真实样本，明确 skip 与外部门禁。
 - [ ] 验收：baseline、CLI/产物兼容、四槽位保留、三项保守字段持续成立；只有证据与复核齐全才更新任务完成状态。

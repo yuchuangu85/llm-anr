@@ -182,9 +182,11 @@ class CausalQualificationV1Tests(unittest.TestCase):
         cases = (
             ("identityStatus", "unknown", "identityStatus=matched"),
             ("timeStatus", "unknown", "timeStatus=within_window"),
+            ("associationStatus", "unknown", "associationStatus=associated"),
             ("scopeEligibility", "ineligible", "scopeEligibility=eligible"),
             ("scopeRejectionReason", "wrong_trace_identity", "scopeRejectionReason=null"),
             ("referenceStatus", "partial", "referenceStatus=verified"),
+            ("provenanceStatus", "partial", "provenanceStatus=verified"),
             ("eligibleForHighCausalConfidence", False, "eligibleForHighCausalConfidence=true"),
         )
         for field, changed, expected in cases:

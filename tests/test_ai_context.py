@@ -562,6 +562,8 @@ class AiContextTests(unittest.TestCase):
         self.assertEqual(metadata['mainThread']['lockOwnerTid'], '19')
         self.assertEqual(metadata['ownerThread']['threadName'], 'worker')
         self.assertEqual(metadata['threadSummary']['ownerThreadTid'], '19')
+        self.assertEqual(result.groups[0]['dumpQuality']['dump']['tid'], '1')
+        self.assertEqual(result.groups[0]['dumpQuality']['schemaVersion'], 'dq1-v1')
         self.assertNotIn('#### Structured Metadata', cache)
         self.assertNotIn('"schedstatParsed"', cache)
         self.assertNotIn('"ownerThread"', cache)

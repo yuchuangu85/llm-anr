@@ -37,9 +37,11 @@ _ANR_MANAGER_ANCHOR = re.compile(
 _REQUIRED_QUALITY = {
     "identityStatus": "matched",
     "timeStatus": "within_window",
+    "associationStatus": "associated",
     "scopeEligibility": "eligible",
     "scopeRejectionReason": None,
     "referenceStatus": "verified",
+    "provenanceStatus": "verified",
     # dump_quality intentionally keeps this false until a future deterministic
     # lifecycle/freshness auditor proves it.  V1 must not invent that evidence.
     "eligibleForHighCausalConfidence": True,

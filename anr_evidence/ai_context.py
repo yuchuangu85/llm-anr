@@ -946,12 +946,15 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
         if input_window_digest is not None:
             group["inputWindowDigest"] = input_window_digest
         metadata = trace.get("metadata") or {}
-        group["dumpQuality"] = audit_dump_quality(FusionScope(
-            group_id=group["id"], target_pid=None, target_process=options.package_name,
-            trace_pid=metadata.get("pid"), trace_process=metadata.get("processName"),
-            anchor_timestamp=None, trace_timestamp=inferred_anr_dt,
-            before_seconds=options.logcat_before_seconds, after_seconds=options.logcat_after_seconds,
-        ))
+        group["dumpQuality"] = audit_dump_quality(
+            FusionScope(
+                group_id=group["id"], target_pid=None, target_process=options.package_name,
+                trace_pid=metadata.get("pid"), trace_process=metadata.get("processName"),
+                anchor_timestamp=None, trace_timestamp=inferred_anr_dt,
+                before_seconds=options.logcat_before_seconds, after_seconds=options.logcat_after_seconds,
+            ),
+            trace_tid=(metadata.get("mainThread") or {}).get("tid"),
+        )
         events.extend(_group_step_events(group))
         return [group], events
 
@@ -1104,7 +1107,10 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "rootCausePatternHints": root_cause_hints,
             "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
             "trace": {**trace, "sourceCoordinates": [None] * len(trace.get("lines", []))},
-            "dumpQuality": audit_dump_quality(dump_scope),
+            "dumpQuality": audit_dump_quality(
+                dump_scope,
+                trace_tid=(trace_metadata.get("mainThread") or {}).get("tid"),
+            ),
             "eventLog": {
                 "lines": event_lines,
                 "sourceCoordinates": _source_coordinates(event_lines),
@@ -1788,8 +1794,8 @@ def _render_cache_markdown(
         if quality:
             lines.extend([
                 "### Dump 身份与质量（确定性观察，非因果结论）",
-                f"- Identity: `{quality['identityStatus']}`; time: `{quality['timeStatus']}`; scope: `{quality['scopeEligibility']}`",
-                f"- Freshness: `{quality['freshnessStatus']}`; process lifetime: `{quality['processLifetimeStatus']}`; references: `{quality['referenceStatus']}`",
+                f"- Identity: `{quality['identityStatus']}`; association: `{quality['associationStatus']}`; time: `{quality['timeStatus']}`; scope: `{quality['scopeEligibility']}`",
+                f"- Freshness: `{quality['freshnessStatus']}`; staleness: `{quality['stalenessStatus']}`; process lifetime: `{quality['processLifetimeStatus']}`; lifecycle: `{quality['lifecycleStatus']}`; provenance: `{quality['provenanceStatus']}`",
                 "- 窗口内不证明 dump 新鲜或 PID 未复用；窗口外不直接标记 stale。",
                 "- Gaps: " + ", ".join(f"`{gap}`" for gap in quality["gaps"]),
                 "",
