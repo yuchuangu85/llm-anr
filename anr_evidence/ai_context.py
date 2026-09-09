@@ -62,6 +62,9 @@ class AiContextOptions:
     build_ess: bool = False
     delta_t_normalized: bool = False
     build_evidence_store: bool = False
+    # Independent final-artifact cap for the compact LLM view.  This is not
+    # the store ingestion/read budget nor the agent outbound request budget.
+    compact_llm_view_max_bytes: int = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,39 @@ class AiContextResult:
         }
 
 
+class _StoreBackedLine(str):
+    """Displayed source line plus the exact committed origin coordinate.
+
+    The object remains a ``str`` so existing filter APIs can consume it.  The
+    coordinate is intentionally available only while a filter returns the
+    original line object unchanged; any stripping, synthesis, or deduplication
+    that creates a plain string becomes unresolved rather than guessed.
+    """
+
+    __slots__ = ("_source_coordinate",)
+
+    def __new__(cls, content: str, source_coordinate: dict[str, Any]):
+        instance = super().__new__(cls, content)
+        instance._source_coordinate = source_coordinate
+        return instance
+
+    @property
+    def source_coordinate(self) -> dict[str, Any]:
+        return copy.deepcopy(self._source_coordinate)
+
+
+def _source_coordinate_from_line(line: str) -> dict[str, Any] | None:
+    if isinstance(line, _StoreBackedLine):
+        return line.source_coordinate
+    return None
+
+
+def _source_coordinates(lines: list[str]) -> list[dict[str, Any] | None]:
+    """Return a view-aligned coordinate sidecar without textual re-matching."""
+
+    return [_source_coordinate_from_line(line) for line in lines]
+
+
 class _StoreLineSource:
     """Re-iterable, commitment-checked source view backed by one store group."""
 
@@ -128,11 +164,27 @@ class _StoreLineSource:
             page_max_bytes=min(4 * 1024 * 1024, self._max_total_bytes),
         ):
             try:
-                yield row["content"].decode("utf-8")
+                # Store line rows include their physical terminator in the
+                # authenticated byte span.  Filters consume displayed lines,
+                # so remove only CR/LF while retaining the original span in a
+                # sidecar carried by this str subclass.
+                content = row["content"].decode("utf-8")
             except UnicodeDecodeError as error:
                 raise ValueError(
                     f"Store-backed {self._source_kind} source contains non-UTF-8 lines"
                 ) from error
+            displayed = content.removesuffix("\n").removesuffix("\r")
+            yield _StoreBackedLine(displayed, {
+                "sourceStoreGroupId": row["groupId"],
+                "artifactId": row["artifactId"],
+                "sourceKind": row["sourceKind"],
+                "sha256": row["sha256"],
+                "artifactCommitment": row["artifactCommitment"],
+                "lineNumber": row["lineNumber"],
+                "startByte": row["startByte"],
+                "endByte": row["endByte"],
+                "coordinateSpace": "original_artifact_bytes",
+            })
 
 
 def _materialize_store_source(source: _StoreLineSource, *, max_bytes: int) -> str:
@@ -233,16 +285,19 @@ def build_ai_context_artifacts_from_store(
 ) -> dict[str, Any]:
     """Atomically export multi-group artifacts built from an existing store.
 
-    This C2 path uses the store as the source of EventLog/logcat input and does
-    not reconstruct an ``originalArtifacts`` package.  Store-span sidecars and
-    ESS rebinding remain unavailable until filtering preserves exact source
-    coordinates, so requesting either legacy export mode fails closed.
+    The source store remains the single original-byte snapshot.  This C2 path
+    carries coordinates selected by filtering into group sidecars, creates
+    generated-group spans in that same store, and rebinds ESS through bounded
+    commitment-authenticated reads.  It never reconstructs legacy base64 input
+    or reverse-matches rendered strings against original artifacts.
     """
-    if options.build_evidence_store or options.build_ess:
+    if options.build_evidence_store:
         raise ValueError(
-            "Store-backed artifact export does not support legacy store export or ESS rebinding "
-            "until displayed source coordinates are retained"
+            "Store-backed artifact export already has an evidence store; it cannot create a second legacy snapshot"
         )
+    if type(options.compact_llm_view_max_bytes) is not int or options.compact_llm_view_max_bytes <= 0:
+        raise ValueError("compact LLM view max_bytes must be a positive integer")
+
     published_out_dir = Path(options.out_dir or "anr_ai_context")
     published_out_dir.parent.mkdir(parents=True, exist_ok=True)
     _recover_interrupted_workspace_publish(published_out_dir)
@@ -264,6 +319,9 @@ def build_ai_context_artifacts_from_store(
             group_tolerance_seconds=options.group_tolerance_seconds,
             package_name=options.package_name,
             anr_type=options.anr_type,
+            build_ess=options.build_ess,
+            delta_t_normalized=options.delta_t_normalized,
+            compact_llm_view_max_bytes=options.compact_llm_view_max_bytes,
         )
         result = build_ai_context_from_store(
             store_path,
@@ -274,12 +332,16 @@ def build_ai_context_artifacts_from_store(
             max_stream_source_lines=max_stream_source_lines,
             max_materialized_source_bytes=max_materialized_source_bytes,
         )
+        # Sidecars are generated from coordinates that survived filtering; this
+        # is the only write to the original store and adds logical generated
+        # group/span attribution without copying original artifacts.
+        store_refs = _store_backed_references(store_path, result.groups)
         strategy = strategy_for_package({"sources": {}}, result.options.anr_type)
         _clean_stale_generated_artifacts(
             stage_dir,
             current_group_ids={group["id"] for group in result.groups},
             retain_evidence_store=True,
-            retain_ess=False,
+            retain_ess=options.build_ess,
         )
         index_groups: list[dict[str, Any]] = []
         for group in result.groups:
@@ -288,8 +350,48 @@ def build_ai_context_artifacts_from_store(
             analysis_path = group_dir / "anr_analysis.md"
             logcat_path = group_dir / "logcat.txt"
             logcat_lines = group.get("logcat", {}).get("lines", [])
+            # This remains the complete filtered baseline.  It is deliberately
+            # independent from the compact LLM-view cap written below.
             logcat_path.write_text(("\n".join(logcat_lines) + "\n") if logcat_lines else "", encoding="utf-8")
+
+            refs_path = group_dir / "evidence_refs.json"
+            refs_path.write_text(json.dumps({
+                "groupId": group["id"],
+                "store": str(Path(store_path)),
+                "sourceStoreGroupId": source_group_id,
+                "warning": "Original store bytes are local-only; resolved rows were selected by preserved coordinates, not text matching.",
+                "references": store_refs[group["id"]],
+            }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            from .evidence_slice import build_ess_from_ai_context_result, attach_store_references, write_ess_jsonl
+            from .evidence_store import EvidenceStore
+
+            slices = build_ess_from_ai_context_result([group])
+            with EvidenceStore(store_path) as store:
+                slices = attach_store_references(slices, store, store_refs)
+                group["dumpQuality"] = bind_dump_quality_references(
+                    group["dumpQuality"], slices, store,
+                    anchor_line=(group.get("anchor") or {}).get("line"),
+                )
             group_for_render = _with_logcat_artifact_reference(group, logcat_path.name)
+            artifact_paths = {
+                "analysis": _published_artifact_path(analysis_path, stage_dir, published_out_dir),
+                "logcat": _published_artifact_path(logcat_path, stage_dir, published_out_dir),
+                "evidenceRefs": _published_artifact_path(refs_path, stage_dir, published_out_dir),
+            }
+            if options.build_ess:
+                ess_path = group_dir / "evidence.jsonl"
+                write_ess_jsonl(slices, ess_path)
+                artifact_paths["evidenceSlices"] = _published_artifact_path(ess_path, stage_dir, published_out_dir)
+
+            compact_path, compact_metadata_path, compact_metadata = _write_compact_evidence_view(
+                group_dir, slices, max_bytes=options.compact_llm_view_max_bytes,
+            )
+            artifact_paths["compactEvidence"] = _published_artifact_path(compact_path, stage_dir, published_out_dir)
+            artifact_paths["compactEvidenceMetadata"] = _published_artifact_path(
+                compact_metadata_path, stage_dir, published_out_dir,
+            )
+
             existing = _read_existing_analyses(analysis_path) if analysis_path.exists() else {}
             analysis = _render_cache_markdown(
                 {"package_id": package_id}, [group_for_render], result.options, strategy,
@@ -299,10 +401,6 @@ def build_ai_context_artifacts_from_store(
                 analysis = _merge_analyses(analysis, existing)
             analysis_path.write_text(analysis + "\n", encoding="utf-8")
             slots = _analysis_slot_statuses_from_text(analysis)
-            artifact_paths = {
-                "analysis": _published_artifact_path(analysis_path, stage_dir, published_out_dir),
-                "logcat": _published_artifact_path(logcat_path, stage_dir, published_out_dir),
-            }
             index_groups.append({
                 "id": group["id"], "anchor": group.get("anchor"),
                 "fallbackUsed": group.get("fallbackUsed", False),
@@ -314,6 +412,7 @@ def build_ai_context_artifacts_from_store(
                 "analysisComplete": all(status == "filled" for status in slots.values()),
                 "warningCount": _group_warning_count(group),
                 "artifactPaths": artifact_paths,
+                "compactView": compact_metadata,
                 "anrManager": {"anchor": group.get("anrManager", {}).get("anchor"), "metadata": group.get("anrManager", {}).get("metadata", {})},
             })
         index_path = stage_dir / "index.json"
@@ -326,7 +425,10 @@ def build_ai_context_artifacts_from_store(
             },
             "sourceStoreGroupId": source_group_id,
             "groupCount": len(result.groups),
-            "events": result.events + [_event("cache_rendered", "completed", groupCount=len(result.groups))],
+            "events": result.events + [
+                _event("cache_rendered", "completed", groupCount=len(result.groups)),
+                _event("compact_view_built", "completed", groupCount=len(result.groups), maxBytes=options.compact_llm_view_max_bytes),
+            ],
             "groups": index_groups,
         }
         index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -335,7 +437,6 @@ def build_ai_context_artifacts_from_store(
     finally:
         if stage_dir.exists():
             shutil.rmtree(stage_dir)
-
 
 def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOptions) -> dict[str, Any]:
     """Build a complete AI workspace, then publish it through a recoverable swap.
@@ -392,6 +493,10 @@ def _build_ai_context_artifacts_in_directory(
         group_tolerance_seconds=options.group_tolerance_seconds,
         package_name=options.package_name,
         anr_type=options.anr_type,
+        build_ess=options.build_ess,
+        delta_t_normalized=options.delta_t_normalized,
+        build_evidence_store=options.build_evidence_store,
+        compact_llm_view_max_bytes=options.compact_llm_view_max_bytes,
     ), strategy)
     events = [_event("source_loaded", "loaded", packageId=package.get("package_id"), sourceKinds=sorted(package.get("sources", {}).keys()))]
     events.append(_event("anr_type_selected", "completed", anrType=strategy.anr_type, label=strategy.label))
@@ -508,6 +613,150 @@ def _published_artifact_path(path: Path, write_out_dir: Path, published_out_dir:
     return str(published_out_dir / path.relative_to(write_out_dir))
 
 
+_STORE_REFERENCE_SECTIONS = (
+    ("trace", "trace"),
+    ("eventLog", "event_log"),
+    ("logcat", "logcat"),
+    ("anrManager", "logcat"),
+    ("meminfo", "meminfo"),
+)
+
+
+def _write_compact_evidence_view(
+    group_dir: Path,
+    slices: list[Any],
+    *,
+    max_bytes: int,
+) -> tuple[Path, Path, dict[str, Any]]:
+    """Write a strict UTF-8 compact view and its non-LLM metadata sidecar."""
+
+    from .compact_evidence import build_compact_evidence_view
+
+    result = build_compact_evidence_view(slices, max_bytes=max_bytes)
+    compact_path = group_dir / "compact_evidence.jsonl"
+    compact_metadata_path = group_dir / "compact_evidence.meta.json"
+    compact_path.write_bytes(result.content)
+    compact_metadata_path.write_text(
+        json.dumps(result.metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+    )
+    return compact_path, compact_metadata_path, result.metadata
+
+
+def _unresolved_store_reference(
+    section: str,
+    source_kind: str,
+    view_line_index: int,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "section": section,
+        "sourceKind": source_kind,
+        "viewLineIndex": view_line_index,
+        "status": "unresolved",
+        "reason": reason,
+    }
+
+
+def _store_backed_references(
+    store_path: str | Path,
+    groups: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Create verified generated-group sidecars from preserved coordinates.
+
+    This path never searches artifact text for the displayed string.  A sidecar
+    is resolved only when a filter returned the original store-backed line
+    object and its retained source coordinate independently authenticates a
+    bounded span in the same store.  Derived, trimmed, and de-duplicated text
+    is represented as unresolved.
+    """
+
+    from .evidence_store import EvidenceStore, EvidenceStoreError
+
+    refs_by_group: dict[str, list[dict[str, Any]]] = {}
+    with EvidenceStore(store_path) as store:
+        for group in groups:
+            group_id = group["id"]
+            store.add_group(group_id)
+            group_refs: list[dict[str, Any]] = []
+            for section, expected_source_kind in _STORE_REFERENCE_SECTIONS:
+                source_data = group.get(section, {})
+                lines = source_data.get("lines", [])
+                coordinates = source_data.get("sourceCoordinates", [])
+                for index, line in enumerate(lines):
+                    ref = _unresolved_store_reference(
+                        section, expected_source_kind, index, "source_coordinate_unavailable",
+                    )
+                    coordinate = coordinates[index] if (
+                        isinstance(coordinates, list) and index < len(coordinates)
+                    ) else None
+                    if not isinstance(coordinate, dict):
+                        group_refs.append(ref)
+                        continue
+                    try:
+                        artifact_id = coordinate["artifactId"]
+                        source_kind = coordinate["sourceKind"]
+                        source_store_group_id = coordinate["sourceStoreGroupId"]
+                        start_byte = coordinate["startByte"]
+                        end_byte = coordinate["endByte"]
+                        line_number = coordinate["lineNumber"]
+                        commitment = coordinate["artifactCommitment"]
+                        if (
+                            source_kind != expected_source_kind
+                            or not isinstance(artifact_id, str)
+                            or not isinstance(source_store_group_id, str)
+                            or type(start_byte) is not int
+                            or type(end_byte) is not int
+                            or type(line_number) is not int
+                        ):
+                            raise EvidenceStoreError("Malformed store source coordinate")
+                        # Prove that the coordinate still names an artifact in
+                        # the capture group before assigning it to this emitted
+                        # ANR group.  The retained commitment is the external
+                        # authentication input for both reads.
+                        if store.artifact_commitment(source_store_group_id, artifact_id) != commitment:
+                            raise EvidenceStoreError("Store source commitment changed")
+                        store.attach_artifact(group_id, artifact_id)
+                        span_id = store.add_span(group_id, artifact_id, start_byte, end_byte)
+                        value = store.read_span(
+                            span_id,
+                            group_id=group_id,
+                            source_kind=source_kind,
+                            max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES,
+                            expected_artifact_commitment=commitment,
+                        )
+                        if value["content"].decode("utf-8").rstrip("\r\n") != line:
+                            raise EvidenceStoreError("Store coordinate content differs from displayed line")
+                        if (
+                            value["startByte"] != start_byte
+                            or value["endByte"] != end_byte
+                            or value["sha256"] != coordinate.get("sha256")
+                        ):
+                            raise EvidenceStoreError("Store coordinate identity differs from verified span")
+                    except (EvidenceStoreError, KeyError, TypeError, UnicodeError):
+                        ref["reason"] = "source_coordinate_integrity_failed"
+                    else:
+                        ref = {
+                            "section": section,
+                            "sourceKind": source_kind,
+                            "viewLineIndex": index,
+                            "status": "resolved",
+                            "reason": None,
+                            "spanId": value["spanId"],
+                            "groupId": value["groupId"],
+                            "artifactId": value["artifactId"],
+                            "sha256": value["sha256"],
+                            "lineNumber": line_number,
+                            "startByte": value["startByte"],
+                            "endByte": value["endByte"],
+                            "coordinateSpace": value["coordinateSpace"],
+                            "artifactCommitment": value["artifactCommitment"],
+                            "sourceStoreGroupId": source_store_group_id,
+                        }
+                    group_refs.append(ref)
+            refs_by_group[group_id] = group_refs
+    return refs_by_group
+
+
 def _clean_stale_generated_artifacts(
     out_dir: Path,
     *,
@@ -541,6 +790,11 @@ def _clean_stale_generated_artifacts(
             stale_ess = child / "evidence.jsonl"
             if stale_ess.exists():
                 stale_ess.unlink()
+        if child.name not in current_group_ids:
+            for stale_name in ("compact_evidence.jsonl", "compact_evidence.meta.json"):
+                stale_compact = child / stale_name
+                if stale_compact.exists():
+                    stale_compact.unlink()
 
 
 def _recover_interrupted_workspace_publish(published_out_dir: Path) -> None:
@@ -635,6 +889,10 @@ def _resolve_options(options: AiContextOptions, strategy: AnrTypeStrategy) -> Ai
         group_tolerance_seconds=options.group_tolerance_seconds if options.group_tolerance_seconds is not None else strategy.group_tolerance_seconds,
         package_name=options.package_name,
         anr_type=strategy.anr_type,
+        build_ess=options.build_ess,
+        delta_t_normalized=options.delta_t_normalized,
+        build_evidence_store=options.build_evidence_store,
+        compact_llm_view_max_bytes=options.compact_llm_view_max_bytes,
     )
 
 
@@ -671,9 +929,11 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "strategy": _strategy_summary(strategy),
             "rootCausePatternHints": root_cause_hints,
             "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
-            "trace": trace,
-            "eventLog": {"lines": [], "warnings": [warning]},
-            "logcat": {"lines": [], "warnings": [warning]},
+            "trace": {**trace, "sourceCoordinates": [None] * len(trace.get("lines", []))},
+            "eventLog": {"lines": [], "sourceCoordinates": [], "warnings": [warning]},
+            "logcat": {"lines": [], "sourceCoordinates": [], "warnings": [warning]},
+            "anrManager": {"lines": [], "sourceCoordinates": [], "warnings": [warning]},
+            "meminfo": {"lines": [], "sourceCoordinates": [], "warnings": [], "metadata": {}},
             "completeness": _completeness(sources, trace.get("lines", []), [], None),
         }
         input_window_digest = _build_input_window_digest_for_group(
@@ -837,17 +1097,28 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
                 "timestamp": timestamp_to_raw(anchor_dt),
                 "line": anchor["line"],
                 "packageName": effective_package_name,
+                "sourceCoordinate": anchor.get("sourceCoordinate"),
             },
             "fallbackUsed": fallback_used or anchor.get("fallback", False),
             "strategy": _strategy_summary(strategy),
             "rootCausePatternHints": root_cause_hints,
             "rootCausePatternHintDetails": root_cause_hint_details(root_cause_hints),
-            "trace": trace,
+            "trace": {**trace, "sourceCoordinates": [None] * len(trace.get("lines", []))},
             "dumpQuality": audit_dump_quality(dump_scope),
-            "eventLog": {"lines": event_lines, "warnings": event_warnings},
-            "logcat": {"lines": merged_logcat_lines, "warnings": logcat_result.warnings, "metadata": logcat_metadata},
+            "eventLog": {
+                "lines": event_lines,
+                "sourceCoordinates": _source_coordinates(event_lines),
+                "warnings": event_warnings,
+            },
+            "logcat": {
+                "lines": merged_logcat_lines,
+                "sourceCoordinates": _source_coordinates(merged_logcat_lines),
+                "warnings": logcat_result.warnings,
+                "metadata": logcat_metadata,
+            },
             "anrManager": {
                 "lines": anrmanager_lines,
+                "sourceCoordinates": _source_coordinates(anrmanager_lines),
                 "warnings": anrmanager_result.warnings,
                 "anchor": anrmanager_result.metadata.get("matchedAnchor"),
                 "metadata": anrmanager_result.metadata,
@@ -855,6 +1126,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             },
             "meminfo": {
                 "lines": meminfo_result.lines if meminfo_result else [],
+                "sourceCoordinates": _source_coordinates(meminfo_result.lines) if meminfo_result else [],
                 "warnings": meminfo_result.warnings if meminfo_result else [],
                 "metadata": meminfo_result.metadata if meminfo_result else {},
             },
@@ -972,7 +1244,10 @@ def _dedupe_lines(*line_groups: list[str]) -> list[str]:
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
-            merged.append(normalized)
+            # A direct store line remains attributable only when the normal
+            # display normalization changed nothing.  Whitespace-trimmed,
+            # merged, and synthesized output deliberately stays unresolved.
+            merged.append(line if normalized == line else normalized)
     return merged
 
 
@@ -1108,6 +1383,7 @@ def _event_anchors(content: str, package_name: str | None) -> list[dict[str, Any
             "timestamp": ts,
             "line": line.strip(),
             "lineIndex": index,
+            "sourceCoordinate": _source_coordinate_from_line(line),
             "dedupeKey": _anchor_dedupe_key(line),
             "packageName": package_name or inferred_package_name,
         })

@@ -1,6 +1,6 @@
 # C1 证据存储开发说明
 
-状态：C1 原始证据存储已接入；C2 现有目录 EventLog 流式发布，以及 ZIP/TAR 到已打开 store 的 opt-in 流式成员写入。C2 另有 store-backed multi-group context/export 入口与真实 100 MiB/1 GiB 运行证据，但 ESS/source-span coordinates、compact-view hard cap 与默认 loader routing 尚未完成；因此仍不代表 C2/G003 完成。
+状态：C1 原始证据存储已接入；C2 现有目录 EventLog 流式发布，以及 ZIP/TAR 到已打开 store 的 opt-in 流式成员写入。C2 的显式 store-backed multi-group context/export 已保留 EventLog/logcat 过滤输出的 source coordinates、生成同 store span sidecar/ESS，并输出独立 hard-capped compact LLM view；真实 100 MiB/1 GiB 运行证据仍在仓库。默认 directory/ZIP/TAR loader routing 与其完整端到端验收尚未完成，因此仍不代表 C2/G003 完成。
 
 ## 目录输入接入
 
@@ -59,19 +59,21 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
         consume(line["content"])
 ```
 
-`list_group_artifacts` 只返回 metadata、origin 与外部 `artifactCommitment`；`iter_group_source_lines` 复用 group/source/commitment/readback 校验，每页与整体输出均要求有限预算。达到整体行数或字节上限时迭代结束；单页无法在 `page_max_bytes` 内完整认证时拒绝，而不会扩大读取范围。该 seam 还未替换 `ai_context._build_groups(...)` 的 package-text 输入，只是为该迁移提供可验证、不会全文重组的底层读取能力。
+`list_group_artifacts` 只返回 metadata、origin 与外部 `artifactCommitment`；`iter_group_source_lines` 复用 group/source/commitment/readback 校验，每页与整体输出均要求有限预算。达到整体行数或字节上限时迭代结束；单页无法在 `page_max_bytes` 内完整认证时拒绝，而不会扩大读取范围。`build_ai_context_from_store(...)` 已将 EventLog/logcat/kernel 的 source view 接到该 seam：EventLog/logcat 行在过滤时以兼容的 string-like carrier 保留 `artifactId`、line number、byte range 与 commitment；trace/meminfo 仍因既有 whole-text parser 受 materialization budget 约束。
 
 ## 导出产物
 
-- `evidence.sqlite3`：本地原始字节快照、SHA-256、artifact/group/span；临时 SQLite 文件只在 staging 工作区内生成。
-- `<group-id>/evidence_refs.json`：每条展示行的 resolved/unresolved 状态，以及已解析行的 span ID、artifact ID、byte range。
-- `index.json`：相应 artifact path、保留的 Markdown 分析槽位和完整过滤 logcat。
+- `evidence.sqlite3`：本地原始字节快照、SHA-256、artifact/group/span；legacy package writer 在 staging 生成 snapshot，store-backed writer 复用调用方给出的同一 store，不复制原始 artifacts。
+- `<group-id>/evidence_refs.json`：每条展示行的 resolved/unresolved 状态，以及已解析行的 span ID、artifact ID、original line number、byte range、commitment 和 source capture group。
+- `<group-id>/evidence.jsonl`：仅在 `build_ess=True` 时写出；serialized refs 仍不被信任，读取必须提供 sidecar 与 store 重绑。
+- `<group-id>/compact_evidence.jsonl` / `compact_evidence.meta.json`：store-backed export 写出的 LLM compact view 与其 hard-budget metadata。默认 cap 为 512 KiB，按最终 UTF-8 bytes 计算；完整过滤 `logcat.txt` 不受该 cap 裁剪。
+- `index.json`：相应 artifact path、compact metadata、保留的 Markdown 分析槽位和完整过滤 logcat。
 
 生成器会先在输出目录同级的 staging 工作区构建完整一代产物，之后通过可恢复的目录交换发布。若交换进程中断，下次生成会恢复唯一的前代备份；若发现多个候选备份则拒绝猜测。每次生成还会删除不属于当前 `index.json` group 的 `evidence_refs.json`/`evidence.jsonl`，并在关闭对应选项时删除过期 store/ESS 生成物；`anr_analysis.md` 保留供人工分析续写。
 
 **数据库含未过滤、未脱敏的原始文件，可能包含不属于某个 ANR 时间窗口的敏感信息。禁止外发。** group-span API 的归属检查不是数据库文件级访问控制。该存储不解除 S1 的真实日志外发限制。
 
-只有唯一、逐字匹配的原始行建立 span；重复内容、跨 shard 多个相同出现位置、转换后的 trace 展示行和缺少原始快照等情况保留 unresolved。异常 UTF-8 的原始 bytes 仍存储，但不为替换字符后的展示内容伪造精确引用。byte range 包含原行换行字节，保留 CRLF/多字节内容/末尾无换行情况的原始表示；上述边界尚待测试验收。
+legacy package export 只有唯一、逐字匹配的原始行才建立 span；重复内容、跨 shard 多个相同出现位置、转换后的 trace 展示行和缺少原始快照等情况保留 unresolved。store-backed export 不作这类文本反查：它只接受过滤链条原样保留下来的 EventLog/logcat source coordinate，使用该 coordinate 在同一 store 新建 generated-group span 并通过 retained commitment 回读；trimmed、deduped、synthesized、AnrManager pre-context 和其他 transformed 行明确 unresolved。异常 UTF-8 的原始 bytes 仍存储，但不为替换字符后的展示内容伪造精确引用。byte range 包含原行换行字节，CRLF/多字节内容/末尾无换行均按原始字节表示并有回归覆盖。
 
 ## 回读 API 与外部承诺
 
@@ -142,9 +144,11 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 - 更广的 Agent/V1 语义覆盖与正式评测仍未执行。当前 manager V1 已有窄的 immutable direct-blocker qualification，但字段引用不等于 freshness、process lifetime 或最终根因证明。
 - 除新增 ZIP/TAR direct-to-store 接口外，非目录兼容捕获路径仍可能使用 base64/完整文本视图；目录与归档的两个 C2 流式接口尚未形成 multi-group context/export 单路径。
 
-## ESS 引用开发接入
+## ESS 与 compact view 开发接入
 
-在 `AiContextOptions` 同时设置 `build_evidence_store=True, build_ess=True`，writer 会为每组增加 `evidence.jsonl` 并在 index 记录路径。
+legacy package writer 在 `AiContextOptions` 同时设置 `build_evidence_store=True, build_ess=True` 时会为每组增加 `evidence.jsonl` 并在 index 记录路径。对已有 store，调用 `build_ai_context_artifacts_from_store(..., options=AiContextOptions(build_ess=True, ...))`：它复用该 store，在过滤输出的直接 coordinates 上建立 sidecar/span，再用同一 sidecar 绑定 ESS；不能设置 `build_evidence_store=True` 来复制一份 store。
+
+每个 store-backed artifact export 同时写出 compact JSONL 和 metadata。`compact_llm_view_max_bytes`（默认 `512 * 1024`）仅限制 compact JSONL 的最终 UTF-8 bytes；每条记录保持完整 JSONL 边界，超限 evidence（包括 critical/anchor）会被明确计入 `droppedCount`/`truncatedCount`，不会静默超过 cap 或生成带伪造完整 span 的半行。它不替代 agent outbound serialized-request cap，也不改变完整过滤 baseline。
 
 `EvidenceSlice.evidence_ref` 为新增可选字段；没有引用的旧 JSONL 字段保持原状。`attach_store_references` 不信任已有 JSONL 引用，而是使用侧车候选回读数据库，检查 group/source 和解码后的完整行内容，仅保留唯一且匹配的 span。失败时保留原 slice 并清空引用；AnrManager 展示来源映射回原 logcat artifact。
 

@@ -123,11 +123,12 @@
 
 ### C2 · P2 · 单路径流式迁移与资源预算（G003 余项；依赖 C1/S1）
 
-开发状态（2026-09-09）：目录 EventLog 已可经 staging → store → 单 group consumer；ZIP/TAR 可经 opt-in 成员流写入已打开 store，保留 container/member provenance、实际共享预算和原子回滚，且不走 legacy 全文/base64 loader。`build_ai_context_from_store(...)` 现把 `ai_context._build_groups(...)` 的 EventLog/logcat/kernel source view 改为 commitment-checked、可重迭代的 store reader；trace/meminfo 仍明确受 materialization budget 限制。`build_ai_context_artifacts_from_store(...)` 可从同一个 capture group 原子导出多组 Markdown/logcat/index，不重建 `originalArtifacts` 或 package-wide logcat。实际 100 MiB 与 1 GiB 磁盘输入的 cold/warm 运行证据在 `docs/benchmarks/c2-store-context-2026-09-09.json`；1 GiB 两次峰值 RSS 分别为 55,050,240 和 57,737,216 bytes，低于 512 MiB。但 ESS/store-span 输出尚未保留过滤时的精确 source coordinates，legacy default loader 也尚未自动选择该入口，compact LLM view 尚未设独立硬上限；因此 C2/G003 **仍未完成**。
+开发状态（2026-09-09）：目录 EventLog 已可经 staging → store → 单 group consumer；ZIP/TAR 可经 opt-in 成员流写入已打开 store，保留 container/member provenance、实际共享预算和原子回滚，且不走 legacy 全文/base64 loader。`build_ai_context_from_store(...)` 现把 `ai_context._build_groups(...)` 的 EventLog/logcat/kernel source view 改为 commitment-checked、可重迭代的 store reader；trace/meminfo 仍明确受 materialization budget 限制。store-backed EventLog/logcat 过滤输出现保留 view-aligned `sourceCoordinates`，由同一 store 中的 generated-group span 直接生成 `evidence_refs.json`，不走 legacy 文本反查；`build_ess=True` 会以该 sidecar commitment-authenticated 回读并写出 `evidence.jsonl`。每组另写独立硬上限（默认 512 KiB、按最终 UTF-8 JSONL bytes 计）的 `compact_evidence.jsonl` 和 metadata，完整过滤 `logcat.txt` baseline 不受此限制。实际 100 MiB 与 1 GiB 磁盘输入的 cold/warm 运行证据在 `docs/benchmarks/c2-store-context-2026-09-09.json`；1 GiB 两次峰值 RSS 分别为 55,050,240 和 57,737,216 bytes，低于 512 MiB。默认 directory/ZIP/TAR loader 仍未自动选择单路径入口，且完整端到端 default-routing 验收未完成；因此 C2/G003 **仍未完成**。
 
 - [x] 新增：store-backed multi-group context/export 入口读取已承诺 source lines；EventLog/logcat/kernel 不重建全文 package，explicit `anr_type` 防止为推断而扫描大 source，trace/meminfo materialization 受预算拒绝。
 - [x] 验收：真实磁盘 100 MiB / 1 GiB、2 group、各 1 次 cold + 1 次 warm 已运行；记录 revision、机器、Python、输入 hash、group 数、wall、峰值 RSS 与 input/store/output/working-tree 磁盘成本。1 GiB 两次 RSS 均 ≤512 MiB。详见 `docs/benchmarks/c2-store-context-2026-09-09.json`。
-- [ ] 验收：保留完整过滤后的外部 baseline，以流式写出满足预算；compact LLM view 独立有界；filter output 保留可验证 source coordinates 后才能启用 ESS/store-span sidecars。默认 directory/ZIP/TAR workflow 也须自动选择这个单路径入口；快 CI 跑小 fixture，大基准独立执行。
+- [x] 验收（store-backed export）：完整过滤 `logcat.txt` baseline 与 compact LLM view 分离；compact view 按最终 UTF-8 bytes 受独立硬上限，记录 retained/dropped/truncated/overflow metadata，不能用保护证据静默突破预算。EventLog/logcat 过滤输出保留可验证 source coordinates，直接创建同 store span sidecar 与可回读 ESS；跨组、trimmed/derived 行拒绝引用，CRLF byte span 保持原始边界。
+- [ ] 验收（剩余 G003/C2）：默认 directory/ZIP/TAR workflow 自动选择这个单路径入口，并以实际端到端输入证明完整 filtered baseline、快 CI 小 fixture 与独立大基准均满足资源/磁盘预算；不得把已验证的显式 store-backed export 误报为默认 routing 完成。
 
 ### D2 · P2 · WMS/AMS/Recents 扩展（G004 余项；依赖 D1）
 

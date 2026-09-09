@@ -295,7 +295,15 @@ def iter_text_lines(content: str | Iterable[str], *, skip_empty: bool = False) -
         for raw_line in content:
             if not isinstance(raw_line, str):
                 raise TypeError("Text line iterables must yield strings")
-            line = raw_line.rstrip("\n").rstrip("\r")
+            # Store-backed sources already normalize line terminators before
+            # entering this helper.  Preserve their str-subclass provenance
+            # object unchanged; only an actual terminator removal may lower
+            # the value to a plain string.
+            line = raw_line
+            if line.endswith("\n"):
+                line = line[:-1]
+            if line.endswith("\r"):
+                line = line[:-1]
             if not skip_empty or line.strip():
                 yield line
         return
