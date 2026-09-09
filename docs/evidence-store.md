@@ -1,6 +1,6 @@
 # C1 证据存储开发说明
 
-状态：C1 原始证据存储与 C2 流式目录写入已接入；目录流式写入使用同目录 staging、只读预验证与单次原子发布。
+状态：C1 原始证据存储已接入；C2 现有目录 EventLog 流式发布，以及 ZIP/TAR 到已打开 store 的 opt-in 流式成员写入。两者都只是 C2 的分阶段接口，尚不代表完整 loader、multi-group context 导出或 100 MiB/1 GiB 验收完成。
 
 ## 目录输入接入
 
@@ -17,6 +17,26 @@ index = build_ai_context_artifacts(
 两个选项默认关闭，避免向所有旧调用方引入原始数据副本和额外存储成本。启用捕获时目录输入跳过 smart-discovery，直接读取文件；原始 bytes 以 base64 携带，legacy text view 仍使用通用换行。输出目录应位于输入目录之外，避免下一轮扫描重新读取生成物。
 
 包中的 `source.originalArtifacts` 是 loader 提供的原始快照及来源信息，不是由过滤字符串反编码出来的“原文件”。`load_package_from_archive` 和 `load_package_from_path` 同样提供 `capture_originals=True`。归档在原有预算限定的那次成员读取中捕获 bytes，不重新解压；origin 区分 container/member，并记录 memberOffset 以区分同名成员。混合目录传递已选中来源的快照；capture 模式绕开 smart-discovery，普通默认路径不变。旧 fixture 没有原始快照时，不会伪造 immutable 引用。
+
+## C2 ZIP/TAR 直接流式写入（opt-in）
+
+```python
+from anr_evidence import stream_archive_to_store
+from anr_evidence.evidence_store import EvidenceStore
+
+with EvidenceStore("/local/context-output/evidence.sqlite3") as store:
+    descriptors = stream_archive_to_store(
+        "/local/bugreport.zip",
+        store,
+        group_id="capture-group-001",
+        shared_byte_budget=512 * 1024 * 1024,
+        chunk_size=64 * 1024,
+    )
+```
+
+该接口直接消费一个已打开的 `EvidenceStore`，因此调用方可在同一数据库中按 group 顺序写入多个归档；它不调用 `load_package_from_archive`、不构造 `originalBase64`，也不建立兼容的全文 text/package view。每个 regular member 仅打开一次，按 `chunk_size` 交给 `add_streamed_group`；目录名可识别的成员保留既有 source kind，其他 regular member 使用 `archive_member`，以免在该原始 baseline 路径中静默丢弃证据。origin 固定为 archive container/member/memberOffset。
+
+ZIP/TAR 在读取前沿用 member count、路径、link/special-member 和声明解压大小检查；成员 reader 再限制实际单成员字节数，store 的共享预算采用调用方预算和全局 archive hard limit 的较小者。任何成员读取、预算或完整性失败都会回滚该 group，不留下部分 artifact 或 group 关联。此接口尚未接入 `build_ai_context_artifacts` 的兼容导出路径；后者仍可能依赖既有 base64/全文 package 数据，不能把本接口或小型单测外推为 C2 端到端内存验收。
 
 ## 导出产物
 
@@ -97,7 +117,7 @@ with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as s
 - wheel/发布产物级验收仍未执行；本地单元回归不等同正式发布验收。
 - smart-discovery 原始快照优化（当前 capture 模式绕开），更多 loader 边界和混合来源兼容验收。
 - 更广的 Agent/V1 语义覆盖与正式评测仍未执行。当前 manager V1 已有窄的 immutable direct-blocker qualification，但字段引用不等于 freshness、process lifetime 或最终根因证明。
-- 非目录捕获路径仍可能使用 base64/完整文本视图；C2 目录流式接口不代表所有 loader 都已获得相同资源上限。
+- 除新增 ZIP/TAR direct-to-store 接口外，非目录兼容捕获路径仍可能使用 base64/完整文本视图；目录与归档的两个 C2 流式接口尚未形成 multi-group context/export 单路径。
 
 ## ESS 引用开发接入
 

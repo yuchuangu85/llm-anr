@@ -58,6 +58,7 @@ from .extractor import (
     load_package_from_directory,
     load_package_from_fixture,
     load_package_from_path,
+    stream_archive_to_store,
 )
 from .analyzer import analyze_normalized_package
 from .delivery import render_final_delivery
@@ -179,6 +180,7 @@ __all__ = [
     "load_package_from_directory",
     "load_package_from_fixture",
     "load_package_from_path",
+    "stream_archive_to_store",
     # analyzer
     "analyze_normalized_package",
     # delivery

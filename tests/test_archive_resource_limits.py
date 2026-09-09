@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 from anr_evidence import ArchiveLoadError, load_package_from_archive, load_package_from_path
+from anr_evidence.evidence_store import EvidenceStore, EvidenceStoreBudgetExceeded
 from anr_evidence.loaders import core
 
 
@@ -126,6 +127,28 @@ class ArchiveResourceLimitTests(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(ArchiveLoadError, r"actual data exceeds.*limit 2"):
                         load_package_from_archive(path)
+
+    def test_zip_and_tar_streaming_enforces_actual_hard_cumulative_budget_transactionally(self):
+        members = [("events/events.txt", b"123"), ("logs/logcat.txt", b"456")]
+        for kind in ("zip", "tar"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmpdir:
+                path = self._archive(Path(tmpdir), kind, members)
+                with (
+                    EvidenceStore(":memory:") as store,
+                    mock.patch.object(core, "MAX_ARCHIVE_TOTAL_BYTES", 5),
+                    mock.patch.object(core, "_validate_archive_metadata_sizes", return_value=None),
+                    mock.patch.object(core, "_validate_archive_total_size", return_value=None),
+                ):
+                    with self.assertRaisesRegex(EvidenceStoreBudgetExceeded, "Shared evidence byte budget"):
+                        core.stream_archive_to_store(
+                            path, store, group_id="g", shared_byte_budget=8, chunk_size=2,
+                        )
+                    self.assertEqual(
+                        store.connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 0,
+                    )
+                    self.assertEqual(
+                        store.connection.execute("SELECT COUNT(*) FROM anr_groups").fetchone()[0], 0,
+                    )
 
     def test_directory_does_not_swallow_policy_rejection(self):
         with tempfile.TemporaryDirectory() as tmpdir:

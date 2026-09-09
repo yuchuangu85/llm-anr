@@ -7,9 +7,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
+from anr_evidence import stream_archive_to_store
 from anr_evidence.evidence_store import (
     EvidenceStore,
     EvidenceStoreBudgetExceeded,
@@ -292,6 +295,101 @@ class StreamingBudgetTests(unittest.TestCase):
 
             legacy_after = load_package_from_path(root)
             self.assertEqual(legacy_after, legacy_before)
+
+    def test_zip_and_tar_archive_members_stream_to_store_with_bounded_reads_and_provenance(self):
+        event = b"one\r\nbad:\xff\n"
+        trace = b'"main" tid=1\n  at android.os.BinderProxy.transactNative(Native method)\n'
+        expected = {
+            "events/events.txt": ("event_log", event),
+            "data/anr/traces.txt": ("trace", trace),
+        }
+        for kind in ("zip", "tar"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                archive_path = root / f"input.{kind}"
+                if kind == "zip":
+                    with zipfile.ZipFile(archive_path, "w") as archive:
+                        for name, (_source_kind, raw) in expected.items():
+                            archive.writestr(name, raw)
+                else:
+                    with tarfile.open(archive_path, "w") as archive:
+                        for name, (_source_kind, raw) in expected.items():
+                            info = tarfile.TarInfo(name)
+                            info.size = len(raw)
+                            archive.addfile(info, io.BytesIO(raw))
+
+                requests: list[int] = []
+                store_path = root / "evidence.sqlite3"
+                if kind == "zip":
+                    original_open = zipfile.ZipFile.open
+
+                    def guarded_open(archive, *args, **kwargs):
+                        return _GuardedBinaryReader(
+                            original_open(archive, *args, **kwargs), requests, 4,
+                        )
+
+                    patcher = patch.object(zipfile.ZipFile, "open", new=guarded_open)
+                else:
+                    original_extractfile = tarfile.TarFile.extractfile
+
+                    def guarded_extractfile(archive, *args, **kwargs):
+                        raw = original_extractfile(archive, *args, **kwargs)
+                        self.assertIsNotNone(raw)
+                        return _GuardedBinaryReader(raw, requests, 4)
+
+                    patcher = patch.object(tarfile.TarFile, "extractfile", new=guarded_extractfile)
+
+                with (
+                    patcher,
+                    patch(
+                        "anr_evidence.loaders.core._read_archive_member",
+                        side_effect=AssertionError("legacy archive materialization is forbidden"),
+                    ),
+                    EvidenceStore(store_path) as store,
+                ):
+                    descriptors = stream_archive_to_store(
+                        archive_path, store, group_id="archive-group",
+                        shared_byte_budget=sum(len(raw) for _kind, raw in expected.values()),
+                        chunk_size=4,
+                    )
+                    stored = {
+                        row[1]: row for row in store.connection.execute(
+                            "SELECT id, logical_path, source_kind, origin_json, sha256, byte_count "
+                            "FROM artifacts ORDER BY logical_path"
+                        )
+                    }
+                    chunks = {
+                        descriptor["path"]: b"".join(
+                            row[0] for row in store.connection.execute(
+                                "SELECT content FROM artifact_chunks WHERE artifact_id=? "
+                                "ORDER BY chunk_index",
+                                (descriptor["artifactId"],),
+                            )
+                        )
+                        for descriptor in descriptors
+                    }
+
+                self.assertTrue(requests)
+                self.assertTrue(all(0 < size <= 4 for size in requests))
+                self.assertEqual({item["path"] for item in descriptors}, set(expected))
+                self.assertEqual(set(stored), set(expected))
+                self.assertEqual(chunks, {name: raw for name, (_kind, raw) in expected.items()})
+                for descriptor in descriptors:
+                    name = descriptor["path"]
+                    source_kind, raw = expected[name]
+                    artifact_id, _path, stored_kind, origin_json, sha256, byte_count = stored[name]
+                    origin = json.loads(origin_json)
+                    self.assertEqual(descriptor["artifactId"], artifact_id)
+                    self.assertEqual(descriptor["sourceKind"], source_kind)
+                    self.assertEqual(stored_kind, source_kind)
+                    self.assertEqual(descriptor["sha256"], hashlib.sha256(raw).hexdigest())
+                    self.assertEqual(sha256, hashlib.sha256(raw).hexdigest())
+                    self.assertEqual(byte_count, len(raw))
+                    self.assertEqual(origin["type"], "archive_member")
+                    self.assertEqual(origin["container"], str(archive_path.absolute()))
+                    self.assertEqual(origin["member"], name)
+                    self.assertIsInstance(origin["memberOffset"], str)
+                    self.assertTrue(origin["memberOffset"])
 
     def test_directory_stream_rejects_root_replacement_before_publish(self):
         with tempfile.TemporaryDirectory() as tmpdir:

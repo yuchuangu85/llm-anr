@@ -8,6 +8,7 @@ from .core import (
     load_package_from_directory,
     load_package_from_fixture,
     load_package_from_path,
+    stream_archive_to_store,
 )
 from .package import build_package_from_entries, trace_anr_timestamp_from_entry_list
 
@@ -20,5 +21,6 @@ __all__ = [
     "load_package_from_directory",
     "load_package_from_fixture",
     "load_package_from_path",
+    "stream_archive_to_store",
     "trace_anr_timestamp_from_entry_list",
 ]

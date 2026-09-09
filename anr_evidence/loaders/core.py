@@ -921,6 +921,199 @@ def try_load_smart_package(
     return build_package_from_entries(path.name, entries, package_name=package_name, event_anchor_dt=event_anchor_dt)
 
 
+class _BoundedArchiveMemberReader:
+    """Expose one archive member as a bounded binary stream for store ingestion."""
+
+    def __init__(self, handle, *, archive_path: Path, member_name: str,
+                 archive_kind: str, max_bytes: int):
+        self._handle = handle
+        self._archive_path = archive_path
+        self._member_name = member_name
+        self._archive_kind = archive_kind
+        self._max_bytes = max_bytes
+        self._remaining = max_bytes
+
+    def read(self, size: int = -1) -> bytes:
+        if type(size) is not int or size <= 0:
+            raise EvidenceStoreError("Archive member stream requires a positive bounded read size")
+        request_size = min(size, self._remaining + 1)
+        try:
+            data = self._handle.read(request_size)
+        except OSError as exc:
+            raise ArchiveLoadError(
+                f"Failed to read {self._archive_kind} member `{self._member_name}` "
+                f"from `{self._archive_path.name}`: {exc}"
+            ) from exc
+        if not isinstance(data, bytes):
+            raise EvidenceStoreError("Archive member stream must return bytes")
+        if len(data) > self._remaining:
+            raise ArchivePolicyError(
+                f"Archive member `{self._member_name}` actual data exceeds bounded-read "
+                f"limit {self._max_bytes}."
+            )
+        self._remaining -= len(data)
+        return data
+
+
+def stream_archive_to_store(
+    path: str | Path,
+    store: EvidenceStore,
+    *,
+    group_id: str,
+    shared_byte_budget: int,
+    chunk_size: int = 64 * 1024,
+    max_artifacts: int = MAX_STREAM_ARTIFACTS,
+    max_line_index_rows: int = MAX_STREAM_LINE_INDEX_ROWS,
+) -> list[dict[str, Any]]:
+    """Stream one ZIP/TAR's original member bytes into an open evidence store.
+
+    This opt-in path deliberately does not invoke the legacy text-package
+    loader: each regular member is opened once, never Base64 encoded or joined
+    into a full text view, and is committed as an ``archive_member`` artifact.
+    Path-recognized members retain their detected source kind; all other
+    regular files use ``archive_member`` so the external baseline is retained.
+
+    ``shared_byte_budget`` is additionally capped by the archive-wide hard
+    limit.  Metadata validation rejects declared policy violations before
+    reading, while ``EvidenceStore.add_streamed_group`` and the bounded member
+    reader enforce actual decompressed total and per-member limits in the same
+    atomic store transaction.
+    """
+    if type(shared_byte_budget) is not int or shared_byte_budget < 0:
+        raise EvidenceStoreError("Shared byte budget must be a nonnegative integer")
+    archive_path = Path(path)
+    effective_budget = min(shared_byte_budget, MAX_ARCHIVE_TOTAL_BYTES)
+
+    def spec(handle, *, member_name: str, member_offset: int, archive_kind: str):
+        return {
+            "reader": _BoundedArchiveMemberReader(
+                handle,
+                archive_path=archive_path,
+                member_name=member_name,
+                archive_kind=archive_kind,
+                max_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+            ),
+            "source_kind": detect_source_kind(Path(member_name), "") or "archive_member",
+            "logical_path": member_name,
+            "origin": {
+                "type": "archive_member",
+                "container": str(archive_path.absolute()),
+                "member": member_name,
+                "memberOffset": str(member_offset),
+            },
+        }
+
+    suffixes = [suffix.lower() for suffix in archive_path.suffixes]
+    if suffixes and suffixes[-1] == ".zip":
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                members = archive.infolist()
+                _validate_archive_member_count(archive_path, len(members))
+                for member in members:
+                    _validate_archive_member_name(archive_path, member.filename)
+                    if _zip_member_is_link(member):
+                        raise ArchivePolicyError(
+                            f"Archive `{archive_path.name}` contains unsupported link member "
+                            f"`{member.filename}`."
+                        )
+                files = sorted((member for member in members if not member.is_dir()),
+                               key=lambda member: member.filename)
+                _validate_archive_metadata_sizes(
+                    archive_path,
+                    ((member.filename, member.file_size) for member in files),
+                )
+                if not files:
+                    raise ArchiveLoadError(
+                        f"Archive `{archive_path.name}` does not contain regular file members."
+                    )
+
+                def artifact_streams():
+                    for member in files:
+                        try:
+                            with archive.open(member) as extracted:
+                                yield spec(
+                                    extracted,
+                                    member_name=member.filename,
+                                    member_offset=member.header_offset,
+                                    archive_kind="zip",
+                                )
+                        except OSError as exc:
+                            raise ArchiveLoadError(
+                                f"Failed to open zip member `{member.filename}` from "
+                                f"`{archive_path.name}`: {exc}"
+                            ) from exc
+
+                return store.add_streamed_group(
+                    group_id, artifact_streams(), shared_byte_budget=effective_budget,
+                    chunk_size=chunk_size, max_artifacts=max_artifacts,
+                    max_line_index_rows=max_line_index_rows,
+                )
+        except zipfile.BadZipFile as exc:
+            raise ArchiveLoadError(
+                f"Archive `{archive_path.name}` is not a readable zip file or is corrupted."
+            ) from exc
+
+    if any(suffix in {".tar", ".gz", ".tgz", ".bz2", ".xz"} for suffix in suffixes):
+        try:
+            with _open_bounded_tar(archive_path) as archive:
+                def artifact_streams():
+                    declared_total = 0
+                    found_file = False
+                    for count, member in enumerate(archive, 1):
+                        _validate_archive_member_count(archive_path, count)
+                        _validate_archive_member_name(archive_path, member.name)
+                        if member.issym() or member.islnk():
+                            raise ArchivePolicyError(
+                                f"Archive `{archive_path.name}` contains unsupported link member "
+                                f"`{member.name}`."
+                            )
+                        if not member.isfile() and not member.isdir():
+                            raise ArchivePolicyError(
+                                f"Archive `{archive_path.name}` contains unsupported special member "
+                                f"`{member.name}`."
+                            )
+                        if not member.isfile():
+                            continue
+                        _validate_archive_metadata_sizes(archive_path, [(member.name, member.size)])
+                        declared_total += member.size
+                        _validate_archive_total_size(archive_path, declared_total)
+                        try:
+                            extracted = archive.extractfile(member)
+                        except OSError as exc:
+                            raise ArchiveLoadError(
+                                f"Failed to open tar member `{member.name}` from "
+                                f"`{archive_path.name}`: {exc}"
+                            ) from exc
+                        if extracted is None:
+                            raise ArchiveLoadError("Unable to read declared TAR file member")
+                        found_file = True
+                        with extracted:
+                            yield spec(
+                                extracted,
+                                member_name=member.name,
+                                member_offset=member.offset,
+                                archive_kind="tar",
+                            )
+                    if not found_file:
+                        raise ArchiveLoadError(
+                            f"Archive `{archive_path.name}` does not contain regular file members."
+                        )
+
+                return store.add_streamed_group(
+                    group_id, artifact_streams(), shared_byte_budget=effective_budget,
+                    chunk_size=chunk_size, max_artifacts=max_artifacts,
+                    max_line_index_rows=max_line_index_rows,
+                )
+        except (tarfile.TarError, OSError, EOFError, lzma.LZMAError) as exc:
+            raise ArchiveLoadError(
+                f"Archive `{archive_path.name}` is not a readable tar archive or is corrupted."
+            ) from exc
+
+    raise ArchiveLoadError(
+        f"Unsupported archive type: `{archive_path.name}`. Supported formats: "
+        ".zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz."
+    )
+
 def find_archives_in_directory(directory: Path) -> list[Path]:
     """Find archive files in a directory (non-recursive)."""
     archives: list[Path] = []
