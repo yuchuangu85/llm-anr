@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .evidence_store import EvidenceStore, EvidenceStoreError
 from .log_filter import TimestampParser, parse_log_timestamp
 from .weighting import EVENT_LOG_TAG_WEIGHTS, ImportanceLevel, resolve_tag
 
@@ -275,8 +276,6 @@ def attach_store_references(slices: list[EvidenceSlice], store,
     JSONL-supplied references are not trusted: this function replaces them.
     Failed bindings retain their full slice content with evidence_ref=None.
     """
-    from .evidence_store import EvidenceStoreError
-
     sections = {"trace": "trace", "event_log": "eventLog", "logcat": "logcat",
                 "anr_manager": "anrManager", "meminfo": "meminfo"}
     candidates: dict[tuple, list[dict[str, Any]]] = {}
@@ -311,12 +310,23 @@ def attach_store_references(slices: list[EvidenceSlice], store,
             try:
                 if row.get("sourceKind") != source_kind:
                     raise EvidenceStoreError("Reference source mismatch")
-                value = store.read_span(row["spanId"], group_id=item.group_id, source_kind=source_kind)
+                read_kwargs = {}
+                if "artifactCommitment" in row:
+                    read_kwargs["expected_artifact_commitment"] = row["artifactCommitment"]
+                value = store.read_span(
+                    row["spanId"], group_id=item.group_id, source_kind=source_kind,
+                    max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES,
+                    **read_kwargs,
+                )
                 if value["content"].decode("utf-8").rstrip("\r\n") != item.content:
                     raise EvidenceStoreError("Reference content differs from slice")
-                ref = {key: value[key] for key in (
+                keys = [
                     "spanId", "groupId", "artifactId", "sourceKind", "sha256",
-                    "startByte", "endByte", "coordinateSpace")}
+                    "startByte", "endByte", "coordinateSpace",
+                ]
+                if "artifactCommitment" in value:
+                    keys.append("artifactCommitment")
+                ref = {key: value[key] for key in keys}
             except (EvidenceStoreError, KeyError, UnicodeError):
                 error = "reference_integrity_check_failed"
         output.append(replace(item, evidence_ref=ref, evidence_ref_error=error))

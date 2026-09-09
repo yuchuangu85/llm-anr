@@ -7,21 +7,36 @@ from contextlib import contextmanager, ExitStack
 import bz2
 import base64
 import gzip
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised via isolated import regression
+    fcntl = None
 import lzma
+import os
+from dataclasses import dataclass, field
 from datetime import datetime
 import json
 from pathlib import Path
 import stat
 import shutil
+import sqlite3
 import subprocess
+import sys
 import tarfile
+import tempfile
+import uuid
 from typing import Any
+from types import MappingProxyType
 import zipfile
 
 from ..am_anr import package_name_from_am_anr_line
 from ..constants import OPTIONAL_SOURCE_KINDS, SOURCE_KINDS
 from ..discovery import try_smart_monkey_discovery
+from ..evidence_store import (
+    EvidenceStore, EvidenceStoreBudgetExceeded, EvidenceStoreError,
+)
 from ..log_filter import parse_log_timestamp
+from ..sources.shared.detection import detect_source_kind
 from .package import build_package_from_entries
 
 
@@ -39,10 +54,649 @@ class ArchivePolicyError(ArchiveLoadError):
 MAX_ARCHIVE_MEMBERS = 10_000
 MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_STREAM_DISCOVERY_ENTRIES = 100_000
+MAX_STREAM_ARTIFACTS = 10_000
+MAX_STREAM_LINE_INDEX_ROWS = 1_000_000
 
 
 def load_package_from_fixture(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+@dataclass
+class DirectoryEventLogConsumer:
+    """Group-scoped bounded reader backed by one validated read-only store."""
+
+    store_path: Path
+    group_id: str
+    artifacts: tuple[dict[str, Any], ...]
+    max_read_bytes: int
+    _prepared_store: EvidenceStore | None = field(default=None, repr=False, compare=False)
+    _store: EvidenceStore = field(init=False, repr=False, compare=False)
+    _commitments: object = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        commitments: dict[str, tuple[str, str]] = {}
+        for descriptor in self.artifacts:
+            artifact_id = descriptor.get("artifactId") if isinstance(descriptor, dict) else None
+            if not isinstance(artifact_id, str) or not artifact_id or artifact_id in commitments:
+                raise EvidenceStoreError("Streamed descriptors require unique artifact IDs")
+            commitment = EvidenceStore.validate_artifact_commitment(
+                descriptor.get("artifactCommitment")
+            )
+            commitments[artifact_id] = (commitment["scheme"], commitment["root"])
+        self._commitments = MappingProxyType(commitments)
+        self._store = self._prepared_store or EvidenceStore.open_read_only(self.store_path)
+        self._prepared_store = None
+
+    def _commitment_for(self, artifact_id: str) -> dict[str, str]:
+        try:
+            scheme, root = self._commitments[artifact_id]
+        except (KeyError, TypeError) as exc:
+            raise EvidenceStoreError("Unknown streamed artifact ID") from exc
+        return {"scheme": scheme, "root": root}
+
+    def close(self) -> None:
+        self._store.close()
+
+    def __del__(self) -> None:
+        store = getattr(self, "_store", None)
+        if store is not None:
+            store.close()
+
+    def __enter__(self) -> "DirectoryEventLogConsumer":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def read_span(self, artifact_id: str, start_byte: int, end_byte: int) -> dict[str, Any]:
+        return self._store.read_artifact_span(
+            group_id=self.group_id, artifact_id=artifact_id, source_kind="event_log",
+            start_byte=start_byte, end_byte=end_byte, max_bytes=self.max_read_bytes,
+            expected_artifact_commitment=self._commitment_for(artifact_id),
+        )
+
+    def read_lines(self, artifact_id: str, start_line: int, line_count: int) -> list[dict[str, Any]]:
+        return self._store.read_artifact_lines(
+            group_id=self.group_id, artifact_id=artifact_id, source_kind="event_log",
+            start_line=start_line, line_count=line_count, max_bytes=self.max_read_bytes,
+            expected_artifact_commitment=self._commitment_for(artifact_id),
+        )
+
+
+def stream_directory_event_logs_to_store(
+    path: str | Path,
+    store_path: str | Path,
+    *,
+    group_id: str,
+    shared_byte_budget: int,
+    chunk_size: int = 64 * 1024,
+    max_read_bytes: int = 256 * 1024,
+    max_discovery_entries: int = MAX_STREAM_DISCOVERY_ENTRIES,
+    max_artifacts: int = MAX_STREAM_ARTIFACTS,
+    max_line_index_rows: int = MAX_STREAM_LINE_INDEX_ROWS,
+) -> DirectoryEventLogConsumer:
+    """Stage, validate, and atomically publish descriptor-rooted EventLog shards."""
+    root = Path(path)
+    sqlite_path = Path(store_path)
+    if str(sqlite_path) == ":memory:":
+        raise EvidenceStoreError("Directory EventLog consumer requires a persistent SQLite path")
+    for value, label, allow_zero in (
+        (max_read_bytes, "Maximum consumer read size", False),
+        (max_discovery_entries, "Maximum discovery entry count", True),
+        (max_artifacts, "Maximum artifact count", True),
+        (max_line_index_rows, "Maximum line-index row count", True),
+    ):
+        minimum = 0 if allow_zero else 1
+        if type(value) is not int or value < minimum:
+            qualifier = "nonnegative" if allow_zero else "positive"
+            raise EvidenceStoreError(f"{label} must be a {qualifier} integer")
+
+    required_flags = ("O_DIRECTORY", "O_NOFOLLOW")
+    if fcntl is None or any(not hasattr(os, name) for name in required_flags):
+        raise EvidenceStoreError("Secure directory EventLog publication primitives are unavailable")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    create_file_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    create_lock_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    existing_lock_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+        create_file_flags |= os.O_CLOEXEC
+        create_lock_flags |= os.O_CLOEXEC
+        existing_lock_flags |= os.O_CLOEXEC
+
+    root_absolute = Path(os.path.abspath(os.fspath(root)))
+    sqlite_path = Path(os.path.abspath(os.fspath(sqlite_path)))
+
+    def is_within(candidate: Path, directory: Path) -> bool:
+        try:
+            return os.path.commonpath((os.fspath(candidate), os.fspath(directory))) == os.fspath(directory)
+        except ValueError:
+            return False
+
+    if is_within(sqlite_path, root_absolute):
+        raise EvidenceStoreError("Directory EventLog store must be outside the input root")
+    try:
+        resolved_root = root_absolute.resolve(strict=True)
+        resolved_store = sqlite_path.resolve(strict=False)
+    except OSError as exc:
+        raise EvidenceStoreError("Directory EventLog paths could not be safely resolved") from exc
+    if is_within(resolved_store, resolved_root):
+        raise EvidenceStoreError("Directory EventLog store must be outside the input root")
+
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    sqlite_name = sqlite_path.name
+    lock_name = f".{sqlite_name}.lock"
+    final_sidecar_names = tuple(f"{sqlite_name}{suffix}" for suffix in ("-journal", "-wal", "-shm"))
+    root_descriptor = -1
+    parent_descriptor = -1
+    lock_descriptor = -1
+    stage_descriptor = -1
+    final_source_descriptor = -1
+    staged_name: str | None = None
+    staged_path: Path | None = None
+    consumer: DirectoryEventLogConsumer | None = None
+    published = False
+    consumer_delivered = False
+    publication_state_uncertain = False
+    publication_reconciliation_failure: BaseException | None = None
+
+    def descriptor_namespace_path(descriptor: int, name: str) -> Path:
+        metadata = os.fstat(descriptor)
+        identity = (metadata.st_dev, metadata.st_ino)
+        proc_descriptor = Path("/proc/self/fd") / str(descriptor)
+        try:
+            candidate = os.stat(proc_descriptor)
+        except OSError:
+            candidate = None
+        if (candidate is not None and stat.S_ISDIR(candidate.st_mode)
+                and (candidate.st_dev, candidate.st_ino) == identity):
+            return proc_descriptor / name
+        if sys.platform == "darwin":
+            try:
+                raw_path = fcntl.fcntl(descriptor, 50, b"\0" * 1024)  # F_GETPATH
+                parent_path = Path(raw_path.split(b"\0", 1)[0].decode())
+                candidate = os.stat(parent_path, follow_symlinks=False)
+            except (OSError, UnicodeError) as exc:
+                raise EvidenceStoreError(
+                    "Secure SQLite descriptor-derived path is unavailable"
+                ) from exc
+            if (not stat.S_ISDIR(candidate.st_mode)
+                    or (candidate.st_dev, candidate.st_ino) != identity):
+                raise EvidenceStoreError("SQLite output parent identity changed")
+            return parent_path / name
+        raise EvidenceStoreError("Secure SQLite descriptor namespace is unavailable")
+
+    def descriptor_is_within(
+        candidate_descriptor: int, ancestor_identity: tuple[int, int],
+    ) -> bool:
+        """Walk actual directory ancestry without trusting path resolution."""
+        current_descriptor = os.dup(candidate_descriptor)
+        try:
+            while True:
+                current_metadata = os.fstat(current_descriptor)
+                current_identity = (current_metadata.st_dev, current_metadata.st_ino)
+                if current_identity == ancestor_identity:
+                    return True
+                parent = os.open("..", directory_flags, dir_fd=current_descriptor)
+                parent_metadata = os.fstat(parent)
+                parent_identity = (parent_metadata.st_dev, parent_metadata.st_ino)
+                if parent_identity == current_identity:
+                    os.close(parent)
+                    return False
+                os.close(current_descriptor)
+                current_descriptor = parent
+        finally:
+            os.close(current_descriptor)
+
+    def relative_metadata(name: str) -> os.stat_result | None:
+        try:
+            return os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
+    def relative_exists(name: str) -> bool:
+        return relative_metadata(name) is not None
+
+    def reject_final_sidecars() -> None:
+        if any(relative_exists(name) for name in final_sidecar_names):
+            raise EvidenceStoreError("Published evidence store has live SQLite sidecars")
+
+    def require_trusted_regular(metadata: os.stat_result, label: str) -> None:
+        if not stat.S_ISREG(metadata.st_mode):
+            raise EvidenceStoreError(f"{label} must be a regular file")
+        if (metadata.st_uid != os.geteuid()
+                or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise EvidenceStoreError(
+                f"{label} must be owned by the effective UID and not group/other writable"
+            )
+
+    def staged_sidecar_names(candidate: str) -> tuple[str, ...]:
+        return tuple(f"{candidate}{suffix}" for suffix in ("-journal", "-wal", "-shm"))
+
+    def remove_staging(candidate: str | None) -> list[BaseException]:
+        failures: list[BaseException] = []
+        if candidate is None or parent_descriptor < 0:
+            return failures
+        for item in (*staged_sidecar_names(candidate), candidate):
+            try:
+                os.unlink(item, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                failures.append(exc)
+        return failures
+
+    try:
+        try:
+            root_descriptor = os.open(root_absolute, directory_flags)
+            root_metadata = os.fstat(root_descriptor)
+        except OSError as exc:
+            raise EvidenceStoreError("Directory EventLog streaming requires a safe directory") from exc
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise EvidenceStoreError("Directory EventLog streaming requires a directory")
+        root_identity = (root_metadata.st_dev, root_metadata.st_ino)
+
+        try:
+            parent_descriptor = os.open(sqlite_path.parent, directory_flags)
+            parent_metadata = os.fstat(parent_descriptor)
+        except OSError as exc:
+            raise EvidenceStoreError("Directory EventLog output parent could not be pinned") from exc
+        if not stat.S_ISDIR(parent_metadata.st_mode):
+            raise EvidenceStoreError("Directory EventLog output parent must be a directory")
+        if (parent_metadata.st_uid != os.geteuid()
+                or parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise EvidenceStoreError(
+                "Directory EventLog output parent must be owned by the effective UID "
+                "and not group/other writable"
+            )
+        parent_identity = (parent_metadata.st_dev, parent_metadata.st_ino)
+        try:
+            parent_is_within_root = descriptor_is_within(
+                parent_descriptor, root_identity,
+            )
+        except OSError as exc:
+            raise EvidenceStoreError(
+                "Directory EventLog output ancestry could not be safely verified"
+            ) from exc
+        if parent_is_within_root:
+            raise EvidenceStoreError("Directory EventLog store must be outside the input root")
+        parent_namespace = descriptor_namespace_path(parent_descriptor, "")
+
+        try:
+            try:
+                lock_descriptor = os.open(
+                    lock_name, create_lock_flags, 0o600, dir_fd=parent_descriptor,
+                )
+                lock_metadata = os.fstat(lock_descriptor)
+                require_trusted_regular(lock_metadata, "Directory EventLog publication lock")
+            except FileExistsError:
+                lock_namespace_metadata = relative_metadata(lock_name)
+                if lock_namespace_metadata is None:
+                    raise EvidenceStoreError(
+                        "Directory EventLog publication lock identity changed"
+                    )
+                require_trusted_regular(
+                    lock_namespace_metadata, "Directory EventLog publication lock",
+                )
+                lock_descriptor = os.open(
+                    lock_name, existing_lock_flags, dir_fd=parent_descriptor,
+                )
+                lock_metadata = os.fstat(lock_descriptor)
+                require_trusted_regular(lock_metadata, "Directory EventLog publication lock")
+                current_lock_metadata = relative_metadata(lock_name)
+                if (current_lock_metadata is None
+                        or (current_lock_metadata.st_dev, current_lock_metadata.st_ino)
+                        != (lock_metadata.st_dev, lock_metadata.st_ino)):
+                    raise EvidenceStoreError(
+                        "Directory EventLog publication lock identity changed"
+                    )
+                require_trusted_regular(
+                    current_lock_metadata, "Directory EventLog publication lock",
+                )
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+        except EvidenceStoreError:
+            raise
+        except OSError as exc:
+            raise EvidenceStoreError("Directory EventLog publication lock could not be acquired") from exc
+
+        reject_final_sidecars()
+        final_metadata = relative_metadata(sqlite_name)
+        if final_metadata is not None:
+            require_trusted_regular(final_metadata, "Published evidence store")
+            try:
+                final_source_descriptor = os.open(
+                    sqlite_name, file_flags, dir_fd=parent_descriptor,
+                )
+            except OSError as exc:
+                raise EvidenceStoreError(
+                    "Published evidence store could not be safely opened"
+                ) from exc
+            opened_final_metadata = os.fstat(final_source_descriptor)
+            require_trusted_regular(opened_final_metadata, "Published evidence store")
+            if ((opened_final_metadata.st_dev, opened_final_metadata.st_ino)
+                    != (final_metadata.st_dev, final_metadata.st_ino)):
+                raise EvidenceStoreError("Published evidence store identity changed")
+
+        for _ in range(128):
+            candidate = f".{sqlite_name}.stage-{uuid.uuid4().hex}.sqlite3"
+            try:
+                stage_descriptor = os.open(
+                    candidate, create_file_flags, 0o600, dir_fd=parent_descriptor,
+                )
+            except FileExistsError:
+                continue
+            staged_identity = os.fstat(stage_descriptor)
+            if not stat.S_ISREG(staged_identity.st_mode):
+                raise EvidenceStoreError("Staged evidence store must be a regular file")
+            staged_name = candidate
+            staged_path = parent_namespace / staged_name
+            break
+        else:
+            raise EvidenceStoreError("Unique staged evidence store name could not be allocated")
+
+        if final_metadata is not None:
+            def revalidate_final_source() -> None:
+                descriptor_metadata = os.fstat(final_source_descriptor)
+                namespace_metadata = relative_metadata(sqlite_name)
+                expected_identity = (final_metadata.st_dev, final_metadata.st_ino)
+                require_trusted_regular(descriptor_metadata, "Published evidence store")
+                if namespace_metadata is None:
+                    raise EvidenceStoreError("Published evidence store identity changed")
+                require_trusted_regular(namespace_metadata, "Published evidence store")
+                if ((descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+                        != expected_identity
+                        or (namespace_metadata.st_dev, namespace_metadata.st_ino)
+                        != expected_identity):
+                    raise EvidenceStoreError("Published evidence store identity changed")
+
+            revalidate_final_source()
+            source = sqlite3.connect(
+                (parent_namespace / sqlite_name).as_uri() + "?mode=ro&immutable=1", uri=True,
+            )
+            destination = sqlite3.connect(staged_path)
+            try:
+                destination.execute("PRAGMA journal_mode=DELETE")
+                revalidate_final_source()
+                source.backup(destination)
+                revalidate_final_source()
+                destination.commit()
+            finally:
+                destination.close()
+                source.close()
+
+        def revalidate_output_namespace() -> None:
+            current_parent = os.fstat(parent_descriptor)
+            if (not stat.S_ISDIR(current_parent.st_mode)
+                    or (current_parent.st_dev, current_parent.st_ino) != parent_identity):
+                raise EvidenceStoreError("Directory EventLog output parent descriptor changed")
+            held_stage = os.fstat(stage_descriptor)
+            current_stage = relative_metadata(staged_name)
+            expected_stage_identity = (staged_identity.st_dev, staged_identity.st_ino)
+            if (not stat.S_ISREG(held_stage.st_mode)
+                    or (held_stage.st_dev, held_stage.st_ino) != expected_stage_identity
+                    or current_stage is None
+                    or not stat.S_ISREG(current_stage.st_mode)
+                    or (current_stage.st_dev, current_stage.st_ino)
+                    != expected_stage_identity):
+                raise EvidenceStoreError("Staged evidence store identity changed")
+
+        def revalidate_root_identity() -> None:
+            try:
+                current = os.stat(root_absolute, follow_symlinks=False)
+            except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+                raise EvidenceStoreError("Directory EventLog root changed after open") from exc
+            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != root_identity:
+                raise EvidenceStoreError("Directory EventLog root changed after open")
+
+        internal_names = {
+            sqlite_name, lock_name, staged_name, *final_sidecar_names,
+            *staged_sidecar_names(staged_name),
+        }
+        internal_identities: set[tuple[int, int]] = set()
+        for internal in internal_names:
+            metadata = relative_metadata(internal)
+            if metadata is not None:
+                internal_identities.add((metadata.st_dev, metadata.st_ino))
+
+        def current_internal_identities() -> set[tuple[int, int]]:
+            identities = set(internal_identities)
+            for internal in internal_names:
+                metadata = relative_metadata(internal)
+                if metadata is not None:
+                    identities.add((metadata.st_dev, metadata.st_ino))
+            return identities
+
+        def open_relative_directory(relative: Path) -> int:
+            descriptor = os.dup(root_descriptor)
+            try:
+                for component in relative.parts:
+                    next_descriptor = os.open(component, directory_flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = next_descriptor
+                return descriptor
+            except OSError as exc:
+                os.close(descriptor)
+                raise EvidenceStoreError(f"Directory changed after discovery: {relative}") from exc
+
+        def open_relative_file(relative: Path) -> int:
+            parent_descriptor = open_relative_directory(relative.parent)
+            try:
+                return os.open(relative.name, file_flags, dir_fd=parent_descriptor)
+            except OSError as exc:
+                raise EvidenceStoreError(
+                    f"Directory EventLog shard could not be safely opened: {relative}"
+                ) from exc
+            finally:
+                os.close(parent_descriptor)
+
+        revalidate_root_identity()
+        shards: list[tuple[Path, tuple[int, int]]] = []
+        discovered = 0
+        pending_directories: list[tuple[Path, tuple[int, int]]] = [
+            (Path(), root_identity)
+        ]
+        while pending_directories:
+            current, discovered_identity = pending_directories.pop()
+            descriptor = open_relative_directory(current)
+            try:
+                opened_metadata = os.fstat(descriptor)
+                if (opened_metadata.st_dev, opened_metadata.st_ino) != discovered_identity:
+                    raise EvidenceStoreError(f"Directory changed after discovery: {current}")
+                with os.scandir(descriptor) as entries:
+                    for entry in entries:
+                        discovered += 1
+                        if discovered > max_discovery_entries:
+                            raise EvidenceStoreBudgetExceeded(
+                                f"Recursive discovery entry count exceeds limit {max_discovery_entries}"
+                            )
+                        relative = current / entry.name
+                        try:
+                            metadata = entry.stat(follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        identity = (metadata.st_dev, metadata.st_ino)
+                        if stat.S_ISDIR(metadata.st_mode):
+                            pending_directories.append((relative, identity))
+                            continue
+                        if (
+                            not stat.S_ISREG(metadata.st_mode)
+                            or is_archive_path(relative)
+                            or identity in current_internal_identities()
+                        ):
+                            continue
+                        if detect_source_kind(relative, "") != "event_log":
+                            continue
+                        if len(shards) >= max_artifacts:
+                            raise EvidenceStoreBudgetExceeded(
+                                f"Streamed artifact count exceeds limit {max_artifacts}"
+                            )
+                        shards.append((relative, identity))
+            finally:
+                os.close(descriptor)
+
+        shards.sort(key=lambda item: str(item[0]))
+        if not shards:
+            raise EvidenceStoreError("No directory EventLog shards selected")
+
+        def artifact_streams():
+            for relative, discovered_identity in shards:
+                descriptor = open_relative_file(relative)
+                try:
+                    opened_metadata = os.fstat(descriptor)
+                    opened_identity = (opened_metadata.st_dev, opened_metadata.st_ino)
+                    if (
+                        not stat.S_ISREG(opened_metadata.st_mode)
+                        or opened_identity != discovered_identity
+                        or opened_identity in current_internal_identities()
+                    ):
+                        raise EvidenceStoreError(
+                            f"Directory EventLog shard changed after discovery: {relative}"
+                        )
+                    reader = os.fdopen(descriptor, "rb")
+                    descriptor = -1
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+                with reader:
+                    yield {
+                        "reader": reader,
+                        "source_kind": "event_log",
+                        "logical_path": str(relative),
+                        "origin": {
+                            "type": "directory_fd_snapshot",
+                            "scheme": "anr-directory-fd-snapshot-v1",
+                            "lexicalRoot": str(root_absolute),
+                            "relativePath": str(relative),
+                            "rootDevice": str(root_identity[0]),
+                            "rootInode": str(root_identity[1]),
+                            "fileDevice": str(opened_identity[0]),
+                            "fileInode": str(opened_identity[1]),
+                        },
+                    }
+
+        revalidate_output_namespace()
+        with EvidenceStore(staged_path) as store:
+            store.connection.execute("PRAGMA journal_mode=DELETE")
+            try:
+                store.connection.execute("BEGIN IMMEDIATE")
+                artifacts = store.add_streamed_group(
+                    group_id, artifact_streams(), shared_byte_budget=shared_byte_budget,
+                    chunk_size=chunk_size, max_artifacts=max_artifacts,
+                    max_line_index_rows=max_line_index_rows,
+                )
+                revalidate_root_identity()
+                store.connection.commit()
+            except BaseException:
+                store.connection.rollback()
+                raise
+
+        if any(relative_exists(name) for name in staged_sidecar_names(staged_name)):
+            raise EvidenceStoreError("Staged evidence store has live SQLite sidecars")
+        revalidate_root_identity()
+        revalidate_output_namespace()
+        prepared_store = EvidenceStore.open_read_only(staged_path)
+        try:
+            consumer = DirectoryEventLogConsumer(
+                store_path=sqlite_path, group_id=group_id, artifacts=tuple(artifacts),
+                max_read_bytes=max_read_bytes, _prepared_store=prepared_store,
+            )
+        except BaseException as exc:
+            try:
+                prepared_store.close()
+            except BaseException as close_exc:
+                raise EvidenceStoreError(
+                    f"Prepared evidence-store close failed: {close_exc}"
+                ) from exc
+            raise
+        revalidate_root_identity()
+        reject_final_sidecars()
+        if any(relative_exists(name) for name in staged_sidecar_names(staged_name)):
+            raise EvidenceStoreError("Staged evidence store has live SQLite sidecars")
+        revalidate_output_namespace()
+
+        try:
+            os.replace(
+                staged_name, sqlite_name,
+                src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor,
+            )
+        except BaseException:
+            try:
+                held_stage = os.fstat(stage_descriptor)
+                held_identity = (held_stage.st_dev, held_stage.st_ino)
+                final_after_replace = relative_metadata(sqlite_name)
+                stage_after_replace = relative_metadata(staged_name)
+                if (stat.S_ISREG(held_stage.st_mode)
+                        and final_after_replace is not None
+                        and stat.S_ISREG(final_after_replace.st_mode)
+                        and (final_after_replace.st_dev, final_after_replace.st_ino)
+                        == held_identity
+                        and stage_after_replace is None):
+                    published = True
+                elif (final_after_replace is None
+                        or (final_after_replace.st_dev, final_after_replace.st_ino)
+                        != held_identity):
+                    published = False
+                else:
+                    publication_state_uncertain = True
+                    publication_reconciliation_failure = EvidenceStoreError(
+                        "Directory EventLog publication state could not be reconciled"
+                    )
+            except BaseException as exc:
+                publication_state_uncertain = True
+                publication_reconciliation_failure = exc
+            raise
+        published = True
+        consumer_delivered = True
+        return consumer
+    finally:
+        active_error = sys.exception()
+        cleanup_failures: list[tuple[str, BaseException]] = []
+        if publication_reconciliation_failure is not None:
+            cleanup_failures.append((
+                "publication reconciliation", publication_reconciliation_failure,
+            ))
+        if consumer is not None and not consumer_delivered:
+            try:
+                consumer.close()
+            except BaseException as exc:
+                cleanup_failures.append(("consumer close", exc))
+        if not published and not publication_state_uncertain:
+            if stage_descriptor >= 0:
+                try:
+                    os.ftruncate(stage_descriptor, 0)
+                except OSError as exc:
+                    cleanup_failures.append(("staging wipe truncate", exc))
+                else:
+                    try:
+                        os.fsync(stage_descriptor)
+                    except OSError as exc:
+                        cleanup_failures.append(("staging wipe fsync", exc))
+            for exc in remove_staging(staged_name):
+                cleanup_failures.append(("staging unlink", exc))
+        for label, descriptor in (
+            ("existing output close", final_source_descriptor),
+            ("staging close", stage_descriptor),
+            ("publication lock close", lock_descriptor),
+            ("output parent close", parent_descriptor),
+            ("input root close", root_descriptor),
+        ):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    cleanup_failures.append((label, exc))
+        if cleanup_failures:
+            details = "; ".join(f"{label}: {exc}" for label, exc in cleanup_failures)
+            cleanup_error = EvidenceStoreError(
+                f"Directory EventLog cleanup failed ({details})"
+            )
+            if active_error is not None:
+                raise cleanup_error from active_error
+            raise cleanup_error
 
 
 def load_package_from_directory(

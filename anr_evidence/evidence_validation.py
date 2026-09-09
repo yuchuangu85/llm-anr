@@ -39,7 +39,16 @@ def validate_report_references(
                     continue
                 source = "logcat" if item.source == "anr_manager" else item.source
                 try:
-                    value = store.read_span(span_id, group_id=candidate["groupId"], source_kind=source)
+                    read_kwargs = {}
+                    if "artifactCommitment" in item.evidence_ref:
+                        read_kwargs["expected_artifact_commitment"] = (
+                            item.evidence_ref["artifactCommitment"]
+                        )
+                    value = store.read_span(
+                        span_id, group_id=candidate["groupId"], source_kind=source,
+                        max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES,
+                        **read_kwargs,
+                    )
                     if (any(value.get(key) != expected for key, expected in item.evidence_ref.items())
                             or value["content"].decode("utf-8").rstrip("\r\n") != item.content):
                         raise EvidenceStoreError("Reference differs from offered evidence")

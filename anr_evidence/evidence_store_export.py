@@ -81,7 +81,10 @@ def export_evidence_store(
                             span_id = store.add_span(group_id, artifact_id, start, end)
                             ref = {**ref, "status": "resolved", "reason": None, "spanId": span_id,
                                    "artifactId": artifact_id, "startByte": start, "endByte": end,
-                                   "coordinateSpace": "original_artifact_bytes"}
+                                   "coordinateSpace": "original_artifact_bytes",
+                                   "artifactCommitment": store.artifact_commitment(
+                                       group_id, artifact_id
+                                   )}
                         group_refs.append(ref)
                 refs[group_id] = group_refs
         # A staged workspace may contain WAL/SHM files copied from its prior

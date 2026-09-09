@@ -12,15 +12,19 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from anr_evidence import AiContextOptions, build_ai_context, build_ai_context_artifacts
+from anr_evidence import (
+    AiContextOptions, FusionScope, audit_dump_quality, bind_dump_quality_references,
+    build_ai_context, build_ai_context_artifacts,
+)
 from anr_evidence.ai_agent import AgentConfig, run_ai_agent_analysis
 from anr_evidence.evidence_slice import (
-    attach_store_references, build_evidence_slices, read_ess_jsonl,
+    attach_store_references, build_evidence_slices, read_ess_jsonl, write_ess_jsonl,
 )
 from anr_evidence.evidence_store import EvidenceStore, EvidenceStoreError
 from anr_evidence.evidence_store_export import export_evidence_store
 from anr_evidence.loaders import load_package_from_path
 from anr_evidence.loaders.package import build_package_from_entries
+from anr_evidence.log_filter import parse_log_timestamp
 from tests.test_agent_safety import config, report, response
 
 
@@ -46,16 +50,47 @@ class StoreTests(unittest.TestCase):
                                           origin={'type': 'file', 'path': '/log.txt'})
             store.attach_artifact('g', artifact)
             span = store.add_span('g', artifact, 0, 8)
-            self.assertEqual(store.read_span(span, group_id='g', source_kind='logcat')['content'], '中文\r\n'.encode())
+            self.assertEqual(store.read_span_internal_integrity_only(span, group_id='g', source_kind='logcat', max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES)['content'], '中文\r\n'.encode())
             for start, end in ((-1, 2), (0, 100), (2, 1), (True, 2)):
                 with self.subTest(start=start, end=end), self.assertRaises(EvidenceStoreError):
                     store.add_span('g', artifact, start, end)
             for group, source in (('other', 'logcat'), ('g', 'trace')):
                 with self.assertRaises(EvidenceStoreError):
-                    store.read_span(span, group_id=group, source_kind=source)
+                    store.read_span_internal_integrity_only(span, group_id=group, source_kind=source)
             store.connection.execute('UPDATE artifacts SET content=? WHERE id=?', (b'changed', artifact))
             with self.assertRaisesRegex(EvidenceStoreError, 'changed'):
-                store.read_span(span, group_id='g', source_kind='logcat')
+                store.read_span_internal_integrity_only(span, group_id='g', source_kind='logcat', max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES)
+
+    def test_directory_snapshot_origin_is_strict_and_identity_bound(self):
+        origin = {
+            "type": "directory_fd_snapshot",
+            "scheme": "anr-directory-fd-snapshot-v1",
+            "lexicalRoot": "/capture/root",
+            "relativePath": "events.txt",
+            "rootDevice": "1",
+            "rootInode": "2",
+            "fileDevice": "1",
+            "fileInode": "3",
+        }
+        with EvidenceStore(":memory:") as store:
+            first = store.add_artifact(
+                b"event\n", source_kind="event_log", logical_path="events.txt", origin=origin,
+            )
+            changed = dict(origin, fileInode="4")
+            second = store.add_artifact(
+                b"event\n", source_kind="event_log", logical_path="events.txt", origin=changed,
+            )
+            self.assertNotEqual(first, second)
+            for invalid in (
+                dict(origin, scheme="unknown"),
+                {key: value for key, value in origin.items() if key != "fileInode"},
+                dict(origin, path="/capture/root/events.txt"),
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises(EvidenceStoreError):
+                    store.add_artifact(
+                        b"event\n", source_kind="event_log",
+                        logical_path="events.txt", origin=invalid,
+                    )
 
     def test_export_unique_ambiguous_missing_and_transformed_lines(self):
         package = captured_package('中文\r\nsame\nsame\nlast'.encode())
@@ -65,11 +100,15 @@ class StoreTests(unittest.TestCase):
             rows = exported['groups']['g']
             self.assertEqual([r['status'] for r in rows], ['resolved', 'unresolved', 'resolved', 'unresolved'])
             self.assertEqual(rows[1]['reason'], 'ambiguous_original_occurrence')
+            for row in (rows[0], rows[2]):
+                self.assertEqual(row['artifactCommitment']['scheme'],
+                                 EvidenceStore.ARTIFACT_COMMITMENT_SCHEME)
+                self.assertRegex(row['artifactCommitment']['root'], r'^[0-9a-f]{64}$')
             with EvidenceStore(exported['path']) as store:
                 slices = attach_store_references(build_evidence_slices(groups), store, exported['groups'])
                 self.assertEqual([bool(s.evidence_ref) for s in slices], [True, False, True, False])
-                self.assertEqual(store.read_span(rows[0]['spanId'], group_id='g', source_kind='event_log')['content'], '中文\r\n'.encode())
-                self.assertEqual(store.read_span(rows[2]['spanId'], group_id='g', source_kind='event_log')['content'], b'last')
+                self.assertEqual(store.read_span(rows[0]['spanId'], group_id='g', source_kind='event_log', max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES, expected_artifact_commitment=rows[0]['artifactCommitment'])['content'], '中文\r\n'.encode())
+                self.assertEqual(store.read_span(rows[2]['spanId'], group_id='g', source_kind='event_log', max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES, expected_artifact_commitment=rows[2]['artifactCommitment'])['content'], b'last')
                 # Sidecar coordinates are not authority: canonical store values win.
                 rows[0]['startByte'] = 999
                 bound = attach_store_references(build_evidence_slices(groups), store, exported['groups'])
@@ -79,6 +118,59 @@ class StoreTests(unittest.TestCase):
                 self.assertIsNone(failed.evidence_ref)
                 self.assertEqual(failed.evidence_ref_error, 'reference_integrity_check_failed')
                 self.assertEqual(failed.content, '中文')
+
+    def test_sidecar_commitment_rebind_legacy_compatibility_and_ess_restore(self):
+        package = captured_package(RAW)
+        groups = [{'id': 'g', 'eventLog': {'lines': [LINE]}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exported = export_evidence_store(package, groups, root)
+            row = exported['groups']['g'][0]
+            commitment = copy.deepcopy(row['artifactCommitment'])
+            with EvidenceStore(exported['path']) as store:
+                slices = build_evidence_slices(groups)
+                bound = attach_store_references(slices, store, exported['groups'])
+                self.assertEqual(bound[0].evidence_ref['artifactCommitment'], commitment)
+
+                ess_path = root / 'ess.jsonl'
+                write_ess_jsonl(bound, ess_path)
+                untrusted = read_ess_jsonl(ess_path)
+                self.assertIsNone(untrusted[0].evidence_ref)
+                self.assertEqual(untrusted[0].evidence_ref_error,
+                                 'serialized_reference_unverified')
+                rebound = read_ess_jsonl(
+                    ess_path, store=store, references=exported['groups']
+                )
+                self.assertEqual(rebound[0].evidence_ref['artifactCommitment'], commitment)
+
+                legacy = copy.deepcopy(exported['groups'])
+                legacy['g'][0].pop('artifactCommitment')
+                legacy_bound = attach_store_references(slices, store, legacy)
+                self.assertIsNone(legacy_bound[0].evidence_ref)
+                self.assertEqual(
+                    legacy_bound[0].evidence_ref_error,
+                    'reference_integrity_check_failed',
+                )
+                legacy_value = store.read_span_internal_integrity_only(
+                    row['spanId'], group_id='g', source_kind='event_log',
+                    max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES,
+                )
+                self.assertEqual(legacy_value['content'], RAW)
+                self.assertNotIn('artifactCommitment', legacy_value)
+
+                for invalid in (
+                    None,
+                    {'scheme': 'unknown', 'root': commitment['root']},
+                    {'scheme': commitment['scheme'], 'root': '0' * 64},
+                    {'scheme': commitment['scheme'], 'root': commitment['root'].upper()},
+                ):
+                    with self.subTest(invalid=invalid):
+                        references = copy.deepcopy(exported['groups'])
+                        references['g'][0]['artifactCommitment'] = invalid
+                        failed = attach_store_references(slices, store, references)[0]
+                        self.assertIsNone(failed.evidence_ref)
+                        self.assertEqual(failed.evidence_ref_error,
+                                         'reference_integrity_check_failed')
 
     def test_directory_zip_tar_capture_and_artifact_writer(self):
         for kind in ('directory', 'zip', 'tar'):
@@ -169,8 +261,11 @@ class StoreTests(unittest.TestCase):
             resolved = [row for row in sidecar["references"] if row["status"] == "resolved"]
             self.assertTrue(resolved)
             with EvidenceStore(index["artifactPaths"]["evidenceStore"]) as store:
-                readbacks = [store.read_span(row["spanId"], group_id=group["id"],
-                                             source_kind=row["sourceKind"]) for row in resolved]
+                readbacks = [store.read_span(
+                    row["spanId"], group_id=group["id"], source_kind=row["sourceKind"],
+                    max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES,
+                    expected_artifact_commitment=row["artifactCommitment"],
+                ) for row in resolved]
             event_readbacks = [row for row in readbacks if row["sourceKind"] == "event_log"]
             self.assertTrue(event_readbacks)
             self.assertEqual({row["origin"]["type"] for row in event_readbacks}, {"file"})
@@ -178,6 +273,61 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(archive_readbacks)
             self.assertEqual({row["origin"]["type"] for row in archive_readbacks}, {"archive_member"})
             self.assertNotIn("archive-superseded", "".join(row["content"].decode() for row in readbacks))
+
+    def test_committed_dump_quality_references_bind_end_to_end(self):
+        header = "----- pid 1234 at 2026-04-12 10:00:05.100000000+0000 -----"
+        process = "Cmd line: com.demo"
+        event_raw = (LINE + "\n").encode()
+        trace_raw = (header + "\n" + process + "\n").encode()
+        package = {
+            "package_id": "synthetic",
+            "sources": {
+                "event_log": {
+                    "path": "events.txt", "content": event_raw.decode(),
+                    "originalArtifacts": [{
+                        "path": "events.txt",
+                        "originalBase64": base64.b64encode(event_raw).decode(),
+                        "origin": {"type": "file", "path": "/synthetic/events.txt"},
+                    }],
+                },
+                "trace": {
+                    "path": "traces.txt", "content": trace_raw.decode(),
+                    "originalArtifacts": [{
+                        "path": "traces.txt",
+                        "originalBase64": base64.b64encode(trace_raw).decode(),
+                        "origin": {"type": "file", "path": "/synthetic/traces.txt"},
+                    }],
+                },
+            },
+        }
+        groups = [{
+            "id": "g", "eventLog": {"lines": [LINE]},
+            "trace": {"lines": [header, process]},
+        }]
+        scope = FusionScope(
+            group_id="g", target_pid=1234, target_process="com.demo",
+            trace_pid=1234, trace_process="com.demo",
+            anchor_timestamp=parse_log_timestamp("04-12 10:00:05.000"),
+            trace_timestamp=parse_log_timestamp(header),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            exported = export_evidence_store(package, groups, Path(tmp))
+            with EvidenceStore(exported["path"]) as store:
+                slices = attach_store_references(
+                    build_evidence_slices(groups), store, exported["groups"]
+                )
+                self.assertTrue(all(
+                    item.evidence_ref and item.evidence_ref.get("artifactCommitment")
+                    for item in slices
+                ))
+                quality = bind_dump_quality_references(
+                    audit_dump_quality(scope), slices, store, anchor_line=LINE,
+                )
+        self.assertEqual(quality["referenceStatus"], "verified")
+        self.assertEqual(set(quality["fieldReferences"]), {
+            "anchor", "dumpPid", "dumpTimestamp", "dumpProcess",
+        })
+        self.assertNotIn("dump_reference_integrity_failed", quality["gaps"])
 
     def test_repeated_generation_disables_store_and_ess_without_losing_analysis(self):
         with tempfile.TemporaryDirectory() as tmp:

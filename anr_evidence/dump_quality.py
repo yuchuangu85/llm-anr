@@ -87,7 +87,12 @@ def bind_dump_quality_references(
             continue
         source = "logcat" if item.source == "anr_manager" else item.source
         try:
-            value = store.read_span(item.evidence_ref["spanId"], group_id=quality["groupId"], source_kind=source)
+            value = store.read_span(
+                item.evidence_ref["spanId"], group_id=quality["groupId"],
+                source_kind=source,
+                max_bytes=EvidenceStore.DEFAULT_MAX_REFERENCE_READ_BYTES,
+                expected_artifact_commitment=item.evidence_ref["artifactCommitment"],
+            )
             if (any(value.get(key) != expected for key, expected in item.evidence_ref.items())
                     or value["content"].decode("utf-8").rstrip("\r\n") != item.content):
                 raise EvidenceStoreError("Dump field reference mismatch")
