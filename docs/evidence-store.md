@@ -38,6 +38,29 @@ with EvidenceStore("/local/context-output/evidence.sqlite3") as store:
 
 ZIP/TAR 在读取前沿用 member count、路径、link/special-member 和声明解压大小检查；成员 reader 再限制实际单成员字节数，store 的共享预算采用调用方预算和全局 archive hard limit 的较小者。任何成员读取、预算或完整性失败都会回滚该 group，不留下部分 artifact 或 group 关联。此接口尚未接入 `build_ai_context_artifacts` 的兼容导出路径；后者仍可能依赖既有 base64/全文 package 数据，不能把本接口或小型单测外推为 C2 端到端内存验收。
 
+## C2 store-native source reader（基础 seam）
+
+对已经存在于 store 的 artifact，可使用 group-scoped reader 为后续的 ANR anchor、窗口过滤和多组 context 构造逐页读取原始行，而不重新合并整个 source：
+
+```python
+with EvidenceStore.open_read_only("/local/context-output/evidence.sqlite3") as store:
+    artifacts = store.list_group_artifacts(
+        "capture-group-001", source_kind="event_log", max_artifacts=32,
+    )
+    for line in store.iter_group_source_lines(
+        "capture-group-001",
+        source_kind="event_log",
+        max_artifacts=32,
+        max_total_lines=2_000,
+        max_total_bytes=512 * 1024,
+        page_line_count=128,
+        page_max_bytes=64 * 1024,
+    ):
+        consume(line["content"])
+```
+
+`list_group_artifacts` 只返回 metadata、origin 与外部 `artifactCommitment`；`iter_group_source_lines` 复用 group/source/commitment/readback 校验，每页与整体输出均要求有限预算。达到整体行数或字节上限时迭代结束；单页无法在 `page_max_bytes` 内完整认证时拒绝，而不会扩大读取范围。该 seam 还未替换 `ai_context._build_groups(...)` 的 package-text 输入，只是为该迁移提供可验证、不会全文重组的底层读取能力。
+
 ## 导出产物
 
 - `evidence.sqlite3`：本地原始字节快照、SHA-256、artifact/group/span；临时 SQLite 文件只在 staging 工作区内生成。

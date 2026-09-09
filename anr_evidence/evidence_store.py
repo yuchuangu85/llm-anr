@@ -760,6 +760,106 @@ class EvidenceStore:
         metadata = self._artifact_metadata(group_id, artifact_id)
         return self._commitment(metadata[13])
 
+    def list_group_artifacts(
+        self, group_id: str, *, source_kind: str | None = None,
+        max_artifacts: int = DEFAULT_MAX_STREAM_ARTIFACTS,
+    ) -> list[dict[str, Any]]:
+        """List a group's committed artifact descriptors without reading content.
+
+        The result is group-scoped and includes the external commitment required
+        by bounded read APIs.  Callers must still set their own finite line and
+        byte limits before materializing any source content.
+        """
+        if not isinstance(group_id, str) or not group_id:
+            raise EvidenceStoreError("A nonempty group ID is required")
+        if source_kind is not None and (not isinstance(source_kind, str) or not source_kind):
+            raise EvidenceStoreError("Source kind must be a nonempty string when provided")
+        self._validate_limit(max_artifacts, "Maximum artifact count")
+        query = (
+            "SELECT a.id FROM group_artifacts g JOIN artifacts a ON a.id=g.artifact_id "
+            "WHERE g.group_id=?"
+        )
+        parameters: tuple[str, ...] = (group_id,)
+        if source_kind is not None:
+            query += " AND a.source_kind=?"
+            parameters += (source_kind,)
+        query += " ORDER BY a.source_kind, a.logical_path, a.id"
+
+        artifacts: list[dict[str, Any]] = []
+        for (artifact_id,) in self.connection.execute(query, parameters):
+            if len(artifacts) >= max_artifacts:
+                raise EvidenceStoreBudgetExceeded(
+                    f"Group artifact count exceeds limit {max_artifacts}"
+                )
+            metadata = self._artifact_metadata(group_id, artifact_id)
+            artifacts.append({
+                "artifactId": artifact_id,
+                "sourceKind": metadata[0],
+                "path": metadata[1],
+                "origin": json.loads(metadata[2]),
+                "sha256": metadata[3],
+                "byteCount": metadata[4],
+                "lineCount": metadata[7],
+                "artifactCommitment": self._commitment(metadata[13]),
+            })
+        return artifacts
+
+    def iter_group_source_lines(
+        self, group_id: str, *, source_kind: str,
+        max_artifacts: int = DEFAULT_MAX_STREAM_ARTIFACTS,
+        max_total_lines: int = DEFAULT_MAX_READ_LINE_ROWS,
+        max_total_bytes: int = DEFAULT_MAX_REFERENCE_READ_BYTES,
+        page_line_count: int = 256,
+        page_max_bytes: int = DEFAULT_MAX_REFERENCE_READ_BYTES,
+    ) -> Iterable[dict[str, Any]]:
+        """Yield one group's exact source lines under finite page and total bounds.
+
+        This is a store-native source-reader seam for C2 callers.  It retains
+        group/source/commitment checks from ``read_artifact_lines`` and never
+        reconstructs a package-level source string.  Reaching either total
+        output budget ends iteration; a requested page that cannot be verified
+        within ``page_max_bytes`` fails closed rather than widening the read.
+        """
+        if not isinstance(source_kind, str) or not source_kind:
+            raise EvidenceStoreError("A nonempty source kind is required")
+        self._validate_limit(max_total_lines, "Maximum total line count")
+        self._validate_limit(max_total_bytes, "Maximum total byte count")
+        self._validate_limit(page_line_count, "Page line count", allow_zero=False)
+        self._validate_limit(page_max_bytes, "Page byte budget", allow_zero=False)
+
+        artifacts = self.list_group_artifacts(
+            group_id, source_kind=source_kind, max_artifacts=max_artifacts,
+        )
+        remaining_lines = max_total_lines
+        remaining_bytes = max_total_bytes
+        for artifact in artifacts:
+            next_line = 0
+            line_count = artifact["lineCount"]
+            while next_line < line_count and remaining_lines and remaining_bytes:
+                page_bytes = min(page_max_bytes, remaining_bytes)
+                requested_lines = min(page_line_count, remaining_lines, page_bytes + 1)
+                rows = self.read_artifact_lines(
+                    group_id=group_id,
+                    artifact_id=artifact["artifactId"],
+                    source_kind=source_kind,
+                    start_line=next_line,
+                    line_count=requested_lines,
+                    max_bytes=page_bytes,
+                    expected_artifact_commitment=artifact["artifactCommitment"],
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    content = row["content"]
+                    if len(content) > remaining_bytes:
+                        return
+                    yield {**row, "path": artifact["path"], "origin": artifact["origin"]}
+                    remaining_lines -= 1
+                    remaining_bytes -= len(content)
+                    if not remaining_lines or not remaining_bytes:
+                        return
+                next_line = rows[-1]["lineNumber"] + 1
+
     def _validate_external_commitment(
         self, metadata: tuple[Any, ...], expected: object,
     ) -> dict[str, str]:

@@ -391,6 +391,68 @@ class StreamingBudgetTests(unittest.TestCase):
                     self.assertIsInstance(origin["memberOffset"], str)
                     self.assertTrue(origin["memberOffset"])
 
+    def test_group_source_reader_lists_committed_artifacts_and_reads_bounded_lines(self):
+        first = b"alpha\nbeta\n"
+        second = b"gamma\n"
+        with EvidenceStore(":memory:") as store:
+            descriptors = store.add_streamed_group(
+                "group-a",
+                [
+                    {
+                        "reader": io.BytesIO(second), "source_kind": "event_log",
+                        "logical_path": "b-events.txt",
+                        "origin": {"type": "file", "path": "/input/b-events.txt"},
+                    },
+                    {
+                        "reader": io.BytesIO(first), "source_kind": "event_log",
+                        "logical_path": "a-events.txt",
+                        "origin": {"type": "file", "path": "/input/a-events.txt"},
+                    },
+                ],
+                shared_byte_budget=len(first) + len(second), chunk_size=3,
+            )
+            other = store.add_streamed_group(
+                "group-b",
+                [{
+                    "reader": io.BytesIO(b"other\n"), "source_kind": "event_log",
+                    "logical_path": "other-events.txt",
+                    "origin": {"type": "file", "path": "/input/other-events.txt"},
+                }],
+                shared_byte_budget=6, chunk_size=3,
+            )
+
+            listed = store.list_group_artifacts(
+                "group-a", source_kind="event_log", max_artifacts=2,
+            )
+            lines = list(store.iter_group_source_lines(
+                "group-a", source_kind="event_log", max_artifacts=2,
+                max_total_lines=2, max_total_bytes=len(first) + len(second),
+                page_line_count=1, page_max_bytes=8,
+            ))
+            byte_limited = list(store.iter_group_source_lines(
+                "group-a", source_kind="event_log", max_artifacts=2,
+                max_total_lines=8, max_total_bytes=len(b"alpha\n"),
+                page_line_count=1, page_max_bytes=8,
+            ))
+            with self.assertRaisesRegex(EvidenceStoreBudgetExceeded, "artifact count exceeds limit 1"):
+                store.list_group_artifacts("group-a", source_kind="event_log", max_artifacts=1)
+
+        self.assertEqual([row["path"] for row in listed], ["a-events.txt", "b-events.txt"])
+        self.assertEqual({row["artifactId"] for row in listed}, {
+            descriptor["artifactId"] for descriptor in descriptors
+        })
+        self.assertTrue(all(row["artifactCommitment"]["root"] for row in listed))
+        self.assertNotIn(other[0]["artifactId"], {row["artifactId"] for row in listed})
+        self.assertEqual(
+            [(row["path"], row["lineNumber"], row["content"]) for row in lines],
+            [("a-events.txt", 0, b"alpha\n"), ("a-events.txt", 1, b"beta\n")],
+        )
+        self.assertTrue(all(row["groupId"] == "group-a" for row in lines))
+        self.assertTrue(all(row["artifactCommitment"]["root"] for row in lines))
+        self.assertEqual([(row["path"], row["content"]) for row in byte_limited], [
+            ("a-events.txt", b"alpha\n"),
+        ])
+
     def test_directory_stream_rejects_root_replacement_before_publish(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

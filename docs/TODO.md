@@ -122,7 +122,7 @@
 
 ### C2 · P2 · 单路径流式迁移与资源预算（G003 余项；依赖 C1/S1）
 
-开发状态（2026-09-09）：目录 EventLog 已可经 staging → store → 单 group consumer；本轮新增 ZIP/TAR → 已打开 store 的 opt-in 成员流，保留 container/member provenance、实际共享预算和原子回滚，且不走 legacy 全文/base64 loader。该接口仍未接入 multi-group context/export，未覆盖完整过滤 baseline/compact view 单路径，也没有 100 MiB/1 GiB 基准，以下 C2 条目继续保持未完成。
+开发状态（2026-09-09）：目录 EventLog 已可经 staging → store → 单 group consumer；ZIP/TAR 可经 opt-in 成员流写入已打开 store，保留 container/member provenance、实际共享预算和原子回滚，且不走 legacy 全文/base64 loader。store 现提供 group/source-scoped、分页且有总行/字节预算的已承诺行读取 seam，供后续 anchor/window/multi-group context 迁移使用。它仍未替换 `ai_context` 的全文 package 输入，未完成 multi-group context/export、完整过滤 baseline/compact view 单路径或 100 MiB/1 GiB 基准，以下 C2 条目继续保持未完成。
 
 - [ ] 优化：先目录/shard → store → 单 ANR consumer，再迁移 ZIP/TAR、多组和完整导出。迭代读取后不得由兼容 adapter 再构造全量大字符串。
 - [ ] 验收：13 MiB 回归后分级运行 100 MiB / 1 GiB；记录 revision、机器、Python、输入哈希、group 数、冷暖运行次数、端到端 wall/峰值 RSS/磁盘成本；1 GiB 端到端峰值 RSS 目标 ≤512 MiB。
