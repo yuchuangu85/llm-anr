@@ -71,6 +71,7 @@
 ### B2 · P2 · 多版本与 OEM 扩展（G002 余项）
 
 - [ ] 新增：Android 14、15、16 各为独立 profile/验收；OEM overlay 为单独 story，只有明确厂商来源时启用，不默认覆盖 AOSP。
+- [x] 工具：新增官方 Gitiles source-byte 捕获器；tag ref 必须解析为同仓库 immutable commit，`?format=TEXT` 必须严格 Base64 解码并由本地 SHA-256 记录。网络、JSON、revision 或编码异常 fail closed，且不写入 Android 14–16 profile。
 - [ ] 验收：版本差异逐项测试；没有已核验 profile 的输入明确 unsupported；overlay 冲突 fail closed。合成 fixture 只能证明规则行为，不证明真实设备兼容。
 
 ### C1 · P1 · 最小证据引用契约（G003 第一部分；V1/D1 前置）

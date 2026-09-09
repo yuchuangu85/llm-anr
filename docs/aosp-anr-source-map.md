@@ -11,6 +11,20 @@
 
 完整文件 SHA-256、commit、path、symbol、官方 URL 存于 `anr_evidence/aosp_contract/android-17.json`。本批不随包分发完整 AOSP 源码。B1 provenance validation 会检查 manifest 的完整 schema、自洽性、固定 revision/path/symbol/hash 值、映射关系，以及 URL 是否为由 repository/revision/path 组成的 canonical `android.googlesource.com` 地址；它不会重新下载这些 URL 对应的上游源码 blob，也不会重新计算 blob SHA-256。因此该验证不能独立证明 manifest 中的 hash 与当前上游字节一致，不能防止所有协同篡改，也不能证明真实设备兼容。
 
+## B2 源码字节获取门禁
+
+Android 14–16 的 profile 不能从 Android 17 manifest、其他 Git project 的 revision、网页片段或人工猜测派生。每个候选 source 必须在同一个 `platform/...` Git project 中按 release tag 解析到 immutable 40 位 commit，随后从该 commit 的 Gitiles `?format=TEXT` 响应取得 Base64，严格解码为原始 bytes 并在本地计算 SHA-256。只有这个记录与实际路径、symbol 一起被人工复核后，才可以写入 profile。
+
+仓库提供 `scripts/fetch_aosp_source_provenance.py` 用于该捕获步骤。它只访问固定的官方根 `https://android.googlesource.com`，拒绝不安全 repository/tag/path/revision，且 tag ref、raw response、JSON 或 Base64 任一环节失败时退出而不输出半成品记录。例如（参数中的 path/symbol 必须先由对应 release 的源码树核验，示例不创建 manifest）：
+
+```bash
+python3 scripts/fetch_aosp_source_provenance.py \
+  --release-tag <verified-release-tag> \
+  --source <name> <platform/repository> <verified/source/path> '<verified symbol>'
+```
+
+截至 **2026-09-09**，此开发环境无法连接 `android.googlesource.com:443`，因此尚未取得 Android 14、15、16 的 raw bytes 或 SHA-256；没有新增这些 release 的 manifest，B2 和 G002 继续保持未完成。工具的 mocked 单测只证明抓取协议、严格解码和 fail-closed 行为，不能替代实际的上游字节获取。
+
 ## 最小支持范围
 
 `TimeoutKind` 1–10 均在 manifest 列举，前两类映射，其余八类为 unsupported，不把枚举存在当作已实现组件状态机。
