@@ -75,7 +75,8 @@ The agent should:
 4. Fill the four analysis slots in `anr_ai_context/<anr-id>/anr_analysis.md` under the input log directory in order: Trace → EventLog → Logcat/AnrManager → Final ANR.
 5. Read `anr_ai_context/<anr-id>/logcat.txt` in the same workspace whenever the Logcat/AnrManager slot references it.
 6. Write the comprehensive synthesis back into the `Final ANR` slot before replying.
-7. Return a final structured report with timeline, direct blocking point, ranked candidate chains, evidence quality, and remediation suggestions.
+7. After all four slots are filled, run `python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>` to refresh each group's independent reconstruction without re-extracting evidence or rewriting the AI slots.
+8. Return a final structured report with timeline, direct blocking point, ranked candidate chains, evidence quality, and remediation suggestions, plus paths to each group's refreshed `anr_reconstruction.md` and `anr_reconstruction.json` alongside `anr_analysis.md`.
 
 ## Quick start: generate AI analysis workspaces
 
@@ -85,6 +86,9 @@ Recommended entrypoint:
 python3 scripts/anr_to_ai.py <bugreport_dir_or_archive_or_fixture> \
   [--package <package.name>] \
   [--anr-type input_dispatching_timeout|no_focus_window|broadcast_timeout|service_timeout|content_provider_timeout|job_scheduler_timeout|system_watchdog_swt]
+
+# Equivalent entrypoint (same default artifacts):
+python3 -m anr_evidence --build-ai-context <bugreport_dir_or_archive_or_fixture> [--package <package.name>]
 ```
 
 Default output directory (when the input is a log directory):
@@ -95,6 +99,8 @@ Default output directory (when the input is a log directory):
   anr-<timestamp-or-anchor>/
     anr_analysis.md
     logcat.txt
+    anr_reconstruction.md
+    anr_reconstruction.json
 ```
 
 Notes:
@@ -102,7 +108,20 @@ Notes:
 - `index.json` is the authoritative directory index for all generated ANR groups.
 - `anr_analysis.md` is the human/AI workspace: instructions, filtered evidence summaries, source-specific analysis slots, and the final synthesis slot live together.
 - `logcat.txt` contains the filtered logcat lines for that one ANR group.
+- `anr_reconstruction.md` and `anr_reconstruction.json` are independent evidence-driven process reconstruction artifacts, generated from logs by default even when AI slots are empty. `index.json` exposes each group's paths as `artifactPaths.reconstruction` and `artifactPaths.reconstructionJson`; the four existing analysis slots and `logcat.txt` remain unchanged.
 - Legacy top-level `cache.md`, `ai_prompt.md`, and `summary.json` artifacts are no longer the primary workflow; stale files are cleaned during artifact generation.
+
+Reconstruction separates `observed` log observations, `inferred` mechanism/AI hypotheses, and `unknown` gaps, with per-event time, ΔT, identity, and original-evidence location. Time order does not establish causality: do not invent an unobserved 5s wait or treat a dump snapshot as continuous blocking. This is evidence reconstruction, not real execution replay; existing `replay` semantics remain regression reruns.
+
+After filling all four AI slots, refresh the independent artifacts before delivery:
+
+```bash
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+# Optional external AI report, treated only as an unverified candidate explanation:
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md> --ai-report <JSON>
+```
+
+A context root processes all its groups; a group directory or analysis file selects one group. The command does not re-extract evidence or rewrite AI slots. Verify external report citations against raw evidence; the report itself must never become an `observed` fact. See [the analysis guide](docs/anr-ai-analysis-guide.md) for the evidence boundaries and final delivery requirements.
 
 ## Four-phase AI analysis contract
 
@@ -296,6 +315,8 @@ Then open these files under the input log directory:
 <input-log-directory>/anr_ai_context/index.json
 <input-log-directory>/anr_ai_context/<anr-id>/anr_analysis.md
 <input-log-directory>/anr_ai_context/<anr-id>/logcat.txt
+<input-log-directory>/anr_ai_context/<anr-id>/anr_reconstruction.md
+<input-log-directory>/anr_ai_context/<anr-id>/anr_reconstruction.json
 ```
 
 ### No package name available

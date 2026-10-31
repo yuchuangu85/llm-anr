@@ -70,7 +70,8 @@ Agent 应完成以下步骤：
 4. 按顺序填写输入日志目录下 `anr_ai_context/<anr-id>/anr_analysis.md` 中的四个分析槽位：Trace → EventLog → Logcat/AnrManager → Final ANR。
 5. Logcat/AnrManager 槽位引用 `logcat.txt` 时，必须读取该工作区同目录下的 `logcat.txt`。
 6. 回复前必须把综合结论写回 `Final ANR` 槽位。
-7. 最终输出结构化报告：时间线、直接阻塞点、候选根因链排序、证据质量、修复建议。
+7. 填完四个槽位后，必须运行 `python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>` 刷新各组独立重建产物，不重新提取证据、不改写 AI 槽位。
+8. 最终输出结构化报告：时间线、直接阻塞点、候选根因链排序、证据质量、修复建议，并交付各组的 `anr_analysis.md` 与已刷新的 `anr_reconstruction.md`、`anr_reconstruction.json` 路径。
 
 ## 快速开始：生成 AI 分析工作区
 
@@ -80,6 +81,9 @@ Agent 应完成以下步骤：
 python3 scripts/anr_to_ai.py <bugreport_dir_or_archive_or_fixture> \
   [--package <package.name>] \
   [--anr-type input_dispatching_timeout|no_focus_window|broadcast_timeout|service_timeout|content_provider_timeout|job_scheduler_timeout|system_watchdog_swt]
+
+# 等价入口（默认产物相同）：
+python3 -m anr_evidence --build-ai-context <bugreport_dir_or_archive_or_fixture> [--package <package.name>]
 ```
 
 默认输出目录（输入为日志目录时）：
@@ -90,6 +94,8 @@ python3 scripts/anr_to_ai.py <bugreport_dir_or_archive_or_fixture> \
   anr-<timestamp-or-anchor>/
     anr_analysis.md
     logcat.txt
+    anr_reconstruction.md
+    anr_reconstruction.json
 ```
 
 说明：
@@ -97,7 +103,20 @@ python3 scripts/anr_to_ai.py <bugreport_dir_or_archive_or_fixture> \
 - `index.json` 是所有 ANR group 的权威索引。
 - `anr_analysis.md` 是人工/AI 工作区：分析指令、过滤证据摘要、分来源分析槽位和最终综合槽位都在同一个文件中。
 - `logcat.txt` 保存当前单个 ANR group 的过滤后 logcat 行。
+- `anr_reconstruction.md` 和 `anr_reconstruction.json` 是独立的证据驱动 ANR 过程重建产物，默认先基于日志生成，AI 槽位未填不阻止输出。`index.json` 通过各组的 `artifactPaths.reconstruction` / `artifactPaths.reconstructionJson` 暴露路径；原四个分析槽位和 `logcat.txt` 保持不变。
 - 顶层旧式 `cache.md`、`ai_prompt.md`、`summary.json` 不再是主流程产物；生成 artifact 时会清理陈旧旧文件。
+
+重建区分 `observed`（日志观察）、`inferred`（机制或 AI 假设）、`unknown`（缺口），逐事件标明时间、ΔT、身份和原始证据定位。时间先后不等于因果；不能推定未观测的 5s 等待，也不能将 dump 快照当作持续阻塞。这是证据重建，不是真实执行重放；现有 `replay` 仍表示回归重跑。
+
+四个 AI 槽位填完后，交付前必须刷新独立产物：
+
+```bash
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+# 可选外部 AI 报告，仅作为未验证候选解释：
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md> --ai-report <JSON>
+```
+
+传入 context 根目录处理其中所有组，组目录或分析文件只处理该组。命令不重新提取证据、不改写 AI 槽位；外部报告引用必须回到原始证据核验，报告本身不能升级为 `observed` 事实。详细边界与最终交付要求见[分析指南](docs/anr-ai-analysis-guide.md)。
 
 ## 四阶段 AI 分析契约
 
@@ -291,6 +310,8 @@ python3 scripts/anr_to_ai.py bugreport.zip --package com.example.app
 <输入日志目录>/anr_ai_context/index.json
 <输入日志目录>/anr_ai_context/<anr-id>/anr_analysis.md
 <输入日志目录>/anr_ai_context/<anr-id>/logcat.txt
+<输入日志目录>/anr_ai_context/<anr-id>/anr_reconstruction.md
+<输入日志目录>/anr_ai_context/<anr-id>/anr_reconstruction.json
 ```
 
 ### 没有 package name

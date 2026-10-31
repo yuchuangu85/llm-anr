@@ -13,17 +13,31 @@ description: ANR 全流程与最终固定步骤分析 skill。Use when analyzing
 
 ```bash
 python3 scripts/anr_to_ai.py <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
+# 等价入口（默认产物相同）：
+python3 -m anr_evidence --build-ai-context <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
 ```
 
 然后读取 `anr_ai_context/<group-id>/anr_analysis.md`（包含完整 AI 指令、过滤后证据和四个固定分析位）。按固定顺序填写：
 
-1. `anr-trace-analysis` → `#### AI Analysis — Trace`
-2. `anr-eventlog-analysis` → `#### AI Analysis — EventLog`
-3. `anr-logcat-analysis` → `#### AI Analysis — Logcat/AnrManager`
-4. `anr-analysis` → `#### AI Analysis — Final ANR`
+1. `anr-trace-analysis` → `#### AI Analysis — Trace 堆栈`
+2. `anr-eventlog-analysis` → `#### AI Analysis — EventLog 事件日志`
+3. `anr-logcat-analysis` → `#### AI Analysis — Logcat / AnrManager`
+4. `anr-analysis` → `#### AI Analysis — 最终 ANR 综合分析`
 
 Final ANR 只能在前三段专项分析完成后整合时间线、直接阻塞点、候选根因链（按置信度）、证据质量、修复建议和 JSON tail。
-综合分析必须写回同一个 `anr_analysis.md` 的 `#### AI Analysis — Final ANR` 分析位；可以先用 `## 综合分析结论` 摘要，再输出 Timeline / Direct blocking point / Candidate root-cause chains / Evidence quality / Remediation suggestions / JSON tail。不得只在对话中给出综合结论而不落盘。
+综合分析必须写回同一个 `anr_analysis.md` 的 `#### AI Analysis — 最终 ANR 综合分析` 分析位；可以先用 `## 综合分析结论` 摘要，再输出 Timeline / Direct blocking point / Candidate root-cause chains / Evidence quality / Remediation suggestions / JSON tail。不得只在对话中给出综合结论而不落盘。
+
+两个生成入口默认还会在每个 `anr_ai_context/<group-id>/` 下输出独立的 `anr_reconstruction.md` 和 `anr_reconstruction.json`，`index.json` 通过各组的 `artifactPaths.reconstruction` / `artifactPaths.reconstructionJson` 暴露路径。默认先基于日志生成，AI 槽位未填不阻止输出；原四个槽位和 `logcat.txt` 不变。
+
+填写完四个 AI 槽位后，交付前必须刷新独立重建产物：
+
+```bash
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+# 可选外部 AI 报告，仅纳入未验证候选解释：
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md> --ai-report <JSON>
+```
+
+context 根目录处理其中各组，组目录或分析文件只处理该组；刷新不重新提取证据、不改写 AI 槽位。外部报告引用须回到原始证据核验，候选解释不能升级为观测事实。最终交付包含 `anr_analysis.md` 和各组已刷新的两个重建文件路径。详细约定见 [AI 分析指南](../docs/anr-ai-analysis-guide.md)。
 
 ## 1. 锚定 ANR 类型和真实时间
 
@@ -40,7 +54,7 @@ Final ANR 只能在前三段专项分析完成后整合时间线、直接阻塞�
 
 | 类型 | 关键问题 | 首看证据 |
 |---|---|---|
-| Input dispatch timeout | 主线程是否 5s 内未处理输入？ | main trace、`Slow dispatch`、Binder/锁/IO、CPU/IO 压力 |
+| Input dispatch timeout | 实际等待/处理时限与超时证据是否可核验？ | main trace、`Slow dispatch`、Binder/锁/IO、CPU/IO 压力 |
 | No Focus Window | 焦点窗口为何未建立？ | `wm_on_resume_called`、relayout、finishDrawing、`input_focus`、启动超时/被杀 |
 | Broadcast timeout | `onReceive()` 或 `goAsync()` 是否超时？ | `BroadcastRecord`、前台/后台 flag、主线程/工作线程、是否 `finish()` |
 | Service timeout | 生命周期方法或冷启动是否超时？ | `handleCreateService`、`handleBindService`、`handleServiceArgs`、冷启动日志 |
@@ -91,9 +105,9 @@ Final ANR 只能在前三段专项分析完成后整合时间线、直接阻塞�
 
 Final ANR 段的输入包括：
 
-- `#### AI Analysis — Trace`
-- `#### AI Analysis — EventLog`
-- `#### AI Analysis — Logcat/AnrManager`
+- `#### AI Analysis — Trace 堆栈`
+- `#### AI Analysis — EventLog 事件日志`
+- `#### AI Analysis — Logcat / AnrManager`
 - 原始证据块与 hints，用于复核引用。
 
 按以下顺序整合：
@@ -114,15 +128,15 @@ Final ANR 段的输入包括：
 示例：
 
 ```text
-链 A（高置信）：Input dispatch timeout → main BLOCKED 等待 <lock> → worker 持锁执行 SharedPreferences/IO >5s → 应用侧主线程锁竞争。
+链 A（候选）：Input dispatch timeout → dump 中 main BLOCKED 等待 <lock> → worker 持锁执行 SharedPreferences/IO → 应用侧主线程锁竞争候选。
 证据：am_anr 时间、main trace、held by tid、worker trace、Slow dispatch。
-缺口：无业务代码上下文/无复现。
+缺口：缺少等待起点与持锁时长证据，不能据 dump 推定连续阻塞 5s；无业务代码上下文/无复现。
 ```
 
 ## 7. 输出报告模板
 
 ```markdown
-#### AI Analysis — Final ANR
+#### AI Analysis — 最终 ANR 综合分析
 
 ## 综合分析结论
 - <一句话 ANR 类型与直接阻塞点>
@@ -179,6 +193,8 @@ Final ANR 段的输入包括：
 - 专项分析之间冲突时，明确冲突并说明哪个来源是 primary evidence。
 - 直接阻塞点不等于最终根因；没有上游证据时只给候选链。
 - 不允许把单条日志、单份 trace 快照或 dump 后现象当最终定责。
+- 独立重建区分 `observed`（日志观察）、`inferred`（机制或 AI 假设）、`unknown`（缺口），逐事件给出时间、ΔT、身份与原始证据定位；缺失字段明确记为缺口。
+- 时间先后不等于因果；不推定未观测的 5s 等待，不将 dump 当作整个超时窗口的连续阻塞。证据重建不是真实执行重放，现有 `replay` 语义仍是回归重跑。
 
 ## 回源阅读
 

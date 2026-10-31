@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from hashlib import sha256
 import copy
 import json
 from pathlib import Path
@@ -33,6 +34,9 @@ from .log_filter import (
 )
 from .sources import MeminfoFilterOptions, SourceFilterContext, SourceFilterOptions, filter_logcat_anrmanager_block, filter_meminfo_source
 from .trace_preprocessor import preprocess_trace_content
+from .evidence_slice import build_ess_from_ai_context_result, write_ess_jsonl
+from .time_norm import compute_delta_t_for_group
+from .reconstruction import build_reconstruction, index_source_locations, write_reconstruction_artifacts
 
 ANRMANAGER_PRE_CONTEXT_SECONDS = 12
 
@@ -75,6 +79,7 @@ class AiContextResult:
                 {
                     "id": group["id"],
                     "anchor": group.get("anchor"),
+                    **_group_identity_metadata(group),
                     "fallbackUsed": group.get("fallbackUsed", False),
                     "strategy": group.get("strategy"),
                     "rootCausePatternHints": group.get("rootCausePatternHints", []),
@@ -94,6 +99,12 @@ def build_ai_context(package: dict[str, Any], options: AiContextOptions) -> AiCo
     events.append(_event("anr_type_selected", "completed", anrType=strategy.anr_type, label=strategy.label))
     groups, group_events = _build_groups(package, resolved, strategy)
     events.extend(group_events)
+    locations = index_source_locations(package, groups)
+    paths = {kind: data.get("path", kind) for kind, data in package.get("sources", {}).items()}
+    for group in groups:
+        group["reconstruction"] = build_reconstruction(group, source_paths=paths, source_locations=locations)
+        group["reconstruction"].update(_group_identity_metadata(group))
+        _enrich_optional_evidence(group, resolved)
     cache_md = _render_cache_markdown(package, groups, resolved, strategy)
     events.append(_event("cache_rendered", "completed", groupCount=len(groups)))
     prompt_md = _render_ai_prompt(cache_md, groups, strategy)
@@ -132,34 +143,38 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
         group_tolerance_seconds=options.group_tolerance_seconds,
         package_name=options.package_name,
         anr_type=options.anr_type,
+        build_ess=options.build_ess,
+        delta_t_normalized=options.delta_t_normalized,
     ), strategy)
     events = [_event("source_loaded", "loaded", packageId=package.get("package_id"), sourceKinds=sorted(package.get("sources", {}).keys()))]
     events.append(_event("anr_type_selected", "completed", anrType=strategy.anr_type, label=strategy.label))
     groups, group_events = _build_groups(package, resolved, strategy)
+    previous_index = _read_json_object(out_dir / "index.json")
+    previous_groups = _resolve_artifact_group_ids(groups, group_events, out_dir, previous_index)
     events.extend(group_events)
+    locations = index_source_locations(package, groups)
+    paths = {kind: data.get("path", kind) for kind, data in package.get("sources", {}).items()}
 
     # Clean stale legacy files from the top-level output directory.
     for stale in ("cache.md", "ai_prompt.md", "summary.json", "analysis.md"):
         stale_path = out_dir / stale
         if stale_path.exists():
             stale_path.unlink()
-    # Clean stale legacy files from group subdirectories (upgrade migration).
-    for child in out_dir.iterdir():
-        if child.is_dir():
-            for stale_name in ("cache.md", "ai_prompt.md", "analysis.md", "summary.json"):
-                stale_child = child / stale_name
-                if stale_child.exists():
-                    stale_child.unlink()
-
     index_groups: list[dict[str, Any]] = []
-    for group in groups:
+    for group, previous in zip(groups, previous_groups):
         group_dir = out_dir / group["id"]
         group_dir.mkdir(parents=True, exist_ok=True)
+        # Only migrate directories whose input identity was verified above.
+        for stale_name in ("cache.md", "ai_prompt.md", "analysis.md", "summary.json"):
+            stale_child = group_dir / stale_name
+            if stale_child.exists():
+                stale_child.unlink()
         analysis_path = group_dir / "anr_analysis.md"
         logcat_path = group_dir / "logcat.txt"
         logcat_lines = group.get("logcat", {}).get("lines", [])
         logcat_path.write_text(("\n".join(logcat_lines) + "\n") if logcat_lines else "", encoding="utf-8")
         group_for_render = _with_logcat_artifact_reference(group, logcat_path.name)
+        group_for_render["reconstructionArtifactFilename"] = "anr_reconstruction.md"
         artifact_paths = {
             "analysis": str(analysis_path),
             "logcat": str(logcat_path),
@@ -169,6 +184,7 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
         # and are printed by the script entrypoint instead of being duplicated
         # before every ``ANR AI Context Cache`` document.
         existing = _read_existing_analyses(analysis_path) if analysis_path.exists() else {}
+        _preserved_analysis_revision(group, previous, existing)
         anr_analysis_md = _render_cache_markdown(
             package,
             [group_for_render],
@@ -180,9 +196,27 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             anr_analysis_md = _merge_analyses(anr_analysis_md, existing)
         analysis_slots = _analysis_slot_statuses_from_text(anr_analysis_md)
         analysis_path.write_text(anr_analysis_md + "\n", encoding="utf-8")
+        reconstruction = build_reconstruction(
+            group, source_paths=paths, source_locations=locations, ai_analyses=existing,
+            artifact_texts={"anr_analysis.md": anr_analysis_md, "logcat.txt": "\n".join(logcat_lines)},
+        )
+        reconstruction.update(_group_identity_metadata(group))
+        for warning in group.get("analysisWarnings", []):
+            if warning not in reconstruction["warnings"]:
+                reconstruction["warnings"].append(warning)
+        artifact_paths.update(write_reconstruction_artifacts(reconstruction, group_dir))
+        if resolved.build_ess:
+            ess_path = group_dir / "evidence.jsonl"
+            write_ess_jsonl(build_ess_from_ai_context_result([group]), ess_path)
+            artifact_paths["evidenceSlices"] = str(ess_path)
+        if resolved.delta_t_normalized:
+            time_path = group_dir / "time_normalized.json"
+            time_path.write_text(json.dumps({kind: [asdict(line) for line in values] for kind, values in compute_delta_t_for_group(group).items()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            artifact_paths["timeNormalized"] = str(time_path)
         index_groups.append({
             "id": group["id"],
             "anchor": group.get("anchor"),
+            **_group_identity_metadata(group),
             "fallbackUsed": group.get("fallbackUsed", False),
             "completeness": group["completeness"],
             "rootCausePatternHints": group.get("rootCausePatternHints", []),
@@ -226,6 +260,7 @@ def _single_group_summary(result: AiContextResult, group: dict[str, Any], artifa
             {
                 "id": group["id"],
                 "anchor": group.get("anchor"),
+                **_group_identity_metadata(group),
                 "fallbackUsed": group.get("fallbackUsed", False),
                 "strategy": group.get("strategy"),
                 "rootCausePatternHints": group.get("rootCausePatternHints", []),
@@ -235,11 +270,190 @@ def _single_group_summary(result: AiContextResult, group: dict[str, Any], artifa
     }
 
 
+def _group_identity_metadata(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(group[key])
+        for key in ("inputIdentity", "evidenceRevision", "analysisRevision", "analysisWarnings")
+        if key in group
+    }
+
+
+def _json_digest(value: Any) -> str:
+    return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _identity_digest(identity: dict[str, Any]) -> str:
+    normalized = copy.deepcopy(identity)
+    anchor = normalized.get("anchor")
+    if isinstance(anchor, dict) and isinstance(anchor.get("line"), str):
+        anchor["line"] = _anchor_dedupe_key(anchor["line"])
+    return _json_digest(normalized)
+
+
+def _input_identity(package_id: str | None, package_name: str | None, anchor: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "packageId": package_id,
+        "packageName": package_name,
+        "anchor": {key: anchor.get(key) for key in ("sourceKind", "timestamp", "line")} if anchor else None,
+    }
+
+
+def _prepare_group_identities(package: dict[str, Any], groups: list[dict[str, Any]], options: AiContextOptions) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    for group in groups:
+        anchor = group.get("anchor")
+        identity = _input_identity(package.get("package_id"), (anchor or {}).get("packageName") or options.package_name, anchor)
+        if not anchor:
+            identity.update({key: group.get(key) for key in ("inferredAnrTime", "inferredAnrTimeSource")})
+        digest = _identity_digest(identity)
+        # Nearby duplicate collapse runs first; identical interleaved rows at
+        # the same timestamp must not become additional incidents either.
+        if digest in unique:
+            continue
+        unique[digest] = group
+        counts[group["id"]] = counts.get(group["id"], 0) + 1
+        group["inputIdentity"] = identity
+        evidence = {key: group.get(key) for key in (
+            "anchor", "inferredAnrTime", "inferredAnrTimeSource", "strategy", "trace", "eventLog", "logcat",
+            "kernelLog", "anrManager", "meminfo", "completeness", "rootCausePatternHints", "rootCausePatternHintDetails",
+        )}
+        evidence["sourcePaths"] = {kind: source.get("path", kind) for kind, source in package.get("sources", {}).items()}
+        group["evidenceRevision"] = _json_digest(evidence)
+        group["analysisRevision"] = {"evidenceRevision": group["evidenceRevision"], "status": "pending"}
+    for digest, group in unique.items():
+        if counts[group["id"]] > 1:
+            group["id"] = f"{group['id']}-{digest[:16]}"
+    return list(unique.values())
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _legacy_input_identity(package_id: Any, anchor: Any) -> dict[str, Any] | None:
+    if not isinstance(package_id, str) or package_id.lower() in {"", "unknown", "none"} or not isinstance(anchor, dict):
+        return None
+    if not all(isinstance(anchor.get(key), str) and anchor[key] for key in ("sourceKind", "timestamp", "line")):
+        return None
+    package_name = anchor.get("packageName") or package_name_from_am_anr_line(anchor["line"])
+    return _input_identity(package_id, package_name, anchor)
+
+
+def _legacy_markdown_identity(directory: Path) -> dict[str, Any] | None:
+    try:
+        text = (directory / "anr_analysis.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    # Read only generated metadata before the first evidence/AI section.
+    metadata, separator, header = text.partition(f"\n## {directory.name}\n")
+    if not separator:
+        return None
+    header = header.split("\n### Trace", 1)[0].split("\n```", 1)[0].split("<!-- AI_ANALYSIS_SLOT:", 1)[0]
+    package = re.search(r"^- Package: `([^`]+)`$", metadata, re.MULTILINE)
+    anchor = {}
+    for label, key in (("Source", "sourceKind"), ("Timestamp", "timestamp"), ("Line", "line")):
+        match = re.search(rf"^- {label}: `(.+)`$", header, re.MULTILINE)
+        if match:
+            anchor[key] = match.group(1)
+    return _legacy_input_identity(package.group(1) if package else None, anchor)
+
+
+def _existing_group_state(directory: Path, index: dict[str, Any], identity: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    if directory.is_symlink() or not directory.is_dir():
+        return False, {}
+    entries = [entry for entry in index.get("groups", []) if isinstance(entry, dict) and entry.get("id") == directory.name]
+    report = _read_json_object(directory / "anr_reconstruction.json")
+    identities = []
+    metadata = [(entry, index.get("packageId")) for entry in entries]
+    metadata.append((report, report.get("packageId")))
+    for value, package_id in metadata:
+        stored = value.get("inputIdentity")
+        if isinstance(stored, dict):
+            identities.append(stored)
+        else:
+            legacy = _legacy_input_identity(package_id, value.get("anchor"))
+            if legacy:
+                identities.append(legacy)
+    legacy = _legacy_markdown_identity(directory)
+    if legacy:
+        identities.append(legacy)
+    matches = bool(identities) and all(_identity_digest(stored) == _identity_digest(identity) for stored in identities)
+    previous = {**(entries[0] if entries else {}), **report} if matches else {}
+    return matches, previous
+
+
+def _resolve_artifact_group_ids(
+    groups: list[dict[str, Any]], events: list[dict[str, Any]], out_dir: Path, index: dict[str, Any],
+) -> list[dict[str, Any]]:
+    previous_groups = []
+    replacements = {}
+    reserved: set[str] = set()
+    for group in groups:
+        original_id = group["id"]
+        digest = _identity_digest(group["inputIdentity"])
+        candidates = [original_id, f"{original_id}-{digest[:16]}"]
+        collision = 0
+        available = None
+        previous = {}
+        # Prefer an existing same-identity directory even if the plain ID is
+        # now free. The index may describe another input's most recent run.
+        while True:
+            matched = None
+            for candidate in candidates:
+                if candidate in reserved:
+                    continue
+                directory = out_dir / candidate
+                matches, state = _existing_group_state(directory, index, group["inputIdentity"])
+                if matches:
+                    matched, previous = candidate, state
+                    break
+                if available is None and not directory.exists() and not directory.is_symlink():
+                    available = candidate
+            if matched is not None or available is not None:
+                group["id"] = matched or available
+                break
+            # A fully occupied hash path is still not permission to overwrite.
+            collision += 1
+            candidates = [f"{original_id}-{digest}-{collision}"]
+        reserved.add(group["id"])
+        replacements[original_id] = group["id"]
+        previous_groups.append(previous)
+    for event in events:
+        details = event.get("details", {})
+        if details.get("groupId") in replacements:
+            details["groupId"] = replacements[details["groupId"]]
+    return previous_groups
+
+
+def _preserved_analysis_revision(group: dict[str, Any], previous: dict[str, Any], analyses: dict[str, str]) -> None:
+    if not analyses:
+        return
+    revision = previous.get("analysisRevision")
+    baseline = revision.get("evidenceRevision") if isinstance(revision, dict) else previous.get("evidenceRevision")
+    current = group["evidenceRevision"]
+    group["analysisRevision"] = {"evidenceRevision": baseline, "status": "unverified"}
+    if baseline != current:
+        group["analysisRevision"]["status"] = "stale" if baseline else "unknown"
+        group["analysisWarnings"] = [{
+            "code": "ai-evidence-revision-changed" if baseline else "ai-evidence-revision-unknown",
+            "message": (
+                f"Preserved AI text was not revalidated against current evidence revision {current}; "
+                f"its previous evidence revision is {baseline or 'unknown'}. "
+                "It remains an unverified candidate, not a newly observed fact."
+            ),
+        }]
+
+
 def _group_warning_count(group: dict[str, Any]) -> int:
     return sum(
         len(group.get(section, {}).get("warnings", []))
         for section in ("trace", "eventLog", "logcat", "anrManager", "meminfo")
-    )
+    ) + len(group.get("analysisWarnings", []))
 
 
 def _with_logcat_artifact_reference(group: dict[str, Any], filename: str) -> dict[str, Any]:
@@ -263,7 +477,16 @@ def _resolve_options(options: AiContextOptions, strategy: AnrTypeStrategy) -> Ai
         group_tolerance_seconds=options.group_tolerance_seconds if options.group_tolerance_seconds is not None else strategy.group_tolerance_seconds,
         package_name=options.package_name,
         anr_type=strategy.anr_type,
+        build_ess=options.build_ess,
+        delta_t_normalized=options.delta_t_normalized,
     )
+
+
+def _enrich_optional_evidence(group: dict[str, Any], options: AiContextOptions) -> None:
+    if options.build_ess:
+        group["evidenceSlices"] = [asdict(item) for item in build_ess_from_ai_context_result([group])]
+    if options.delta_t_normalized:
+        group["timeNormalized"] = {kind: [asdict(item) for item in values] for kind, values in compute_delta_t_for_group(group).items()}
 
 
 def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: AnrTypeStrategy) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -304,11 +527,11 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "logcat": {"lines": [], "warnings": [warning]},
             "completeness": _completeness(sources, trace.get("lines", []), [], None),
         }
+        _prepare_group_identities(package, [group], options)
         events.extend(_group_step_events(group))
         return [group], events
 
     anchors = _collapse_nearby_anchors(anchors, options.group_tolerance_seconds)
-    events.append(_event("grouped", "completed", groupCount=len(anchors), fallbackUsed=fallback_used))
     groups = []
     # Anchor-independent work hoisted out of the per-anchor loop.  Trace
     # preprocessing is shared via cache, and logcat timestamp-window filtering
@@ -336,6 +559,14 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             )
             for index, anchor in enumerate(anchors)
         ],
+    )
+    kernel_results = filter_timestamp_windows(
+        kernel_log_content,
+        [(anchor["timestamp"], LogFilterSpec(
+            source_kind="kernel_log", before_seconds=options.logcat_before_seconds,
+            after_seconds=options.logcat_after_seconds,
+            include_patterns=default_patterns_for_source("kernel_log"),
+        ), "kernel-reconstruction-context") for anchor in anchors],
     )
     anrmanager_results = [
         filter_logcat_anrmanager_block(
@@ -435,6 +666,7 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "trace": trace,
             "eventLog": {"lines": event_lines, "warnings": event_warnings},
             "logcat": {"lines": merged_logcat_lines, "warnings": logcat_result.warnings, "metadata": logcat_metadata},
+            "kernelLog": {"lines": kernel_results[index].lines, "warnings": kernel_results[index].warnings},
             "anrManager": {
                 "lines": anrmanager_lines,
                 "warnings": anrmanager_result.warnings,
@@ -450,6 +682,9 @@ def _build_groups(package: dict[str, Any], options: AiContextOptions, strategy: 
             "completeness": _completeness(sources, trace.get("lines", []), merged_logcat_lines, event_lines, meminfo_result.lines if meminfo_result else []),
         }
         groups.append(group)
+    groups = _prepare_group_identities(package, groups, options)
+    events.append(_event("grouped", "completed", groupCount=len(groups), fallbackUsed=fallback_used))
+    for group in groups:
         events.extend(_group_step_events(group))
     return groups, events
 
@@ -888,6 +1123,7 @@ def _read_existing_analyses_from_text(text: str) -> dict[str, str]:
             or "_请用" in body  # New template format markers
             or "_列出" in body
             or "_评估" in body
+            or _get_analysis_slot_template(slot_id).strip() in body
         )
         if body and not is_template:
             results[slot_id] = body
@@ -967,6 +1203,8 @@ def _render_cache_markdown(
         anchor = group.get("anchor")
         title = group["id"]
         lines.extend([f"## {title}", ""])
+        if group.get("reconstructionArtifactFilename"):
+            lines.extend(["- 独立过程重建：[anr_reconstruction.md](anr_reconstruction.md)。填写四个分析槽位后运行 `python3 scripts/reconstruct_anr.py <当前 ANR 目录>` 更新；原分析槽位不变。", ""])
         if anchor:
             lines.extend([
                 "### 锚点",

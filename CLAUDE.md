@@ -10,15 +10,29 @@ When a user asks you to analyze an ANR bugreport (providing a directory, ZIP, TA
 
 ```bash
 python3 scripts/anr_to_ai.py <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
+# Equivalent entrypoint:
+python3 -m anr_evidence --build-ai-context <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
 ```
 
 This produces `anr_ai_context/` containing:
 - `index.json` — directory index linking to all ANR groups
 - `<group-id>/anr_analysis.md` — AI instructions + filtered evidence + inline analysis slots (one per ANR)
+- `<group-id>/logcat.txt` - full filtered logcat referenced from `anr_analysis.md`
+- `<group-id>/anr_reconstruction.md` and `anr_reconstruction.json` - independent evidence-driven process reconstruction, generated from logs by default even before AI slots are filled
+
+`index.json` exposes each group's reconstruction paths as `artifactPaths.reconstruction` and `artifactPaths.reconstructionJson`. The four `anr_analysis.md` slots and `logcat.txt` remain unchanged. Reconstruction separates `observed` (log observations), `inferred` (mechanism/AI hypotheses), and `unknown` (gaps), with per-event time, delta T, identity, and original-evidence location. Time order is not causality; never invent an unobserved 5s interval or treat a dump snapshot as continuous blocking. This is evidence reconstruction, not real execution replay; existing replay commands remain regression reruns. See `docs/anr-ai-analysis-guide.md` for details.
 
 ### Step 2: Read and analyze the evidence
 
 Read `anr_ai_context/<group-id>/anr_analysis.md` and perform the analysis following the instructions within — the prompt tells you exactly how to structure the output (timeline, blocking point, candidate root-cause chains, evidence quality assessment, remediation suggestions). Write results directly into the `#### AI Analysis — <source>` slots. The comprehensive synthesis must be written back under `#### AI Analysis — 最终 ANR 综合分析` in the same file (for example starting with `## 综合分析结论`), not only returned in chat.
+
+After filling all four AI slots, refresh the independent reconstruction for each group before delivery:
+
+```bash
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+```
+
+A context root processes all its groups; a group directory or analysis file targets one group. This refresh does not re-extract evidence or rewrite AI slots. Optional `--ai-report <JSON>` adds an external AI report only as an unverified candidate explanation: verify its citations and never promote the report itself to an observed fact.
 
 ### Step 3: Output the analysis report
 
@@ -28,6 +42,8 @@ Output a structured Markdown report covering:
 3. Candidate root-cause chains ranked by confidence
 4. Evidence quality assessment (gaps, contradictions)
 5. Remediation suggestions
+
+Include the refreshed per-group `anr_reconstruction.md` and `anr_reconstruction.json` paths in the final delivery alongside `anr_analysis.md`.
 
 ## No Focused Window ANR specialization
 

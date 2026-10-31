@@ -69,6 +69,8 @@ def main() -> int:
         help="Output directory (default: anr_ai_context under the input log directory)",
     )
     parser.add_argument("--print-summary", action="store_true", help="Print summary JSON to stdout after building")
+    parser.add_argument("--build-ess", action="store_true", help="Also write per-group evidence.jsonl")
+    parser.add_argument("--delta-t-normalized", action="store_true", help="Also write per-group time_normalized.json")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -98,6 +100,8 @@ def main() -> int:
         meminfo_after_seconds=args.meminfo_after,
         package_name=args.package_name,
         anr_type=args.anr_type,
+        build_ess=args.build_ess,
+        delta_t_normalized=args.delta_t_normalized,
     )
 
     summary = build_ai_context_artifacts(package, options)
@@ -108,6 +112,7 @@ def main() -> int:
     for group in summary.get("groups", []):
         analysis_path = group.get("artifactPaths", {}).get("analysis")
         print(f"    {group.get('id')}/anr_analysis.md — AI instructions + evidence + analysis slots: {analysis_path}")
+        print(f"    {group.get('id')}/anr_reconstruction.md — evidence-driven incident reconstruction: {group.get('artifactPaths', {}).get('reconstruction')}")
     print()
     pending_groups = [
         (
@@ -130,6 +135,8 @@ def main() -> int:
     else:
         print("Status: all AI analysis slots are already filled and were preserved during regeneration.")
         print(f"Next: review each {out_dir}/<anr-id>/anr_analysis.md final ANR section and deliver the report.")
+
+    print(f"Reconstruction: after filling AI slots, run python3 scripts/reconstruct_anr.py {out_dir}")
 
     if args.print_summary:
         import json

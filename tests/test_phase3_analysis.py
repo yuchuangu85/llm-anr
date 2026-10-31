@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from anr_evidence import analyze_normalized_package, extract_evidence_package, normalize_evidence_package
@@ -36,6 +37,140 @@ class Phase3AnalysisTests(unittest.TestCase):
                 self.assertIn('timeline', phase3)
                 self.assertIn('findings', phase3)
                 self.assertTrue(phase3['findings'])
+
+    def test_timeline_uses_each_log_lines_own_timestamp(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        original = deepcopy(phase2)
+        phase3 = analyze_normalized_package(phase2)
+        expected = {
+            'event_log': ['04-12 10:00:01.000', '04-12 10:00:03.000', '04-12 10:00:05.000'],
+            'logcat': ['04-12 10:00:05.050', '04-12 10:00:10.000'],
+            'kernel_log': ['04-12 10:00:04.000', '04-12 10:00:06.000'],
+        }
+        for source_kind, timestamps in expected.items():
+            with self.subTest(source=source_kind):
+                entries = [entry for entry in phase3['timeline'] if entry['sourceKind'] == source_kind]
+                self.assertEqual([entry['timestamp'] for entry in entries], timestamps)
+                self.assertTrue(all(entry['timestampBasis'] == 'log_line' for entry in entries))
+                self.assertTrue(all(entry['anchorTimestamp'] == '04-12 10:00:05.000' for entry in entries))
+                self.assertTrue(all(entry['rawLine'] in entry['summary'] for entry in entries))
+        self.assertEqual(phase2, original)
+
+    def test_untimed_log_lines_do_not_inherit_record_or_anchor_time(self) -> None:
+        for source_kind in ('event_log', 'logcat', 'kernel_log'):
+            with self.subTest(source=source_kind):
+                phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+                record = next(record for record in phase2['normalizedRecords'] if record['sourceKind'] == source_kind)
+                record['rawSnippet'] = '\n04-12 10:00:01.000 first event\n  continuation\nno timestamp\n04-99 10:00:04.000 invalid'
+                record['normalizedFields'].update({'eventTimestamp': '04-12 10:00:05.000', 'timestamp': '04-12 10:00:05.000'})
+                phase2['normalizedRecords'] = [record]
+                phase3 = analyze_normalized_package(phase2)
+                entries = phase3['timeline']
+                self.assertEqual([entry['timestamp'] for entry in entries], ['04-12 10:00:01.000', None, None, None])
+                self.assertEqual([entry['lineIndex'] for entry in entries], [1, 2, 3, 4])
+                self.assertEqual([entry['timestampBasis'] for entry in entries], ['log_line', 'missing', 'missing', 'missing'])
+                self.assertTrue(all(entry['anchorTimestamp'] == '04-12 10:00:05.000' for entry in entries))
+                window = next(finding['message'] for finding in phase3['findings'] if finding['type'] == 'timeline')
+                self.assertNotIn('`None`', window)
+                self.assertIn('3 untimed', window)
+
+    def test_trace_timeline_is_a_snapshot_at_its_header_time(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        record = next(record for record in phase2['normalizedRecords'] if record['sourceKind'] == 'trace' and record['extractionMode'] == 'baseline')
+        phase2['normalizedRecords'] = [record]
+        entries = analyze_normalized_package(phase2)['timeline']
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry['timestamp'], '04-12 10:00:05.100')
+        self.assertEqual(entry['anchorTimestamp'], '04-12 10:00:05.000')
+        self.assertEqual(entry['timestampBasis'], 'trace_snapshot')
+        self.assertEqual(entry['rawLine'], record['rawSnippet'].splitlines()[0])
+        self.assertEqual(entry['lineIndex'], 0)
+        self.assertEqual(entry['threadName'], 'main')
+        self.assertEqual(entry['tid'], record['normalizedFields']['tid'])
+        self.assertEqual(entry['threadRole'], 'main')
+        self.assertEqual(entry['dominantBlockHint'], 'focus_window_wait')
+        self.assertEqual(entry['suspiciousThreadCount'], 1)
+
+    def test_trace_uses_selected_dump_header_not_an_embedded_event_time(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        record = next(record for record in phase2['normalizedRecords'] if record['sourceKind'] == 'trace')
+        record['rawSnippet'] = '\n'.join([
+            '04-12 10:00:01.000 unrelated log event',
+            '----- pid 100 at 2026-04-12 10:00:07.250 -----',
+            'main tid=1 Native',
+            '----- pid 100 at 2026-04-12 10:00:08.500 -----',
+            'main tid=1 Native',
+        ])
+        record['normalizedFields']['selectedSectionIndex'] = 2
+        phase2['normalizedRecords'] = [record]
+        entry = analyze_normalized_package(phase2)['timeline'][0]
+        self.assertEqual(entry['timestamp'], '04-12 10:00:08.500')
+        self.assertEqual(entry['timestampBasis'], 'trace_snapshot')
+        self.assertEqual(entry['lineIndex'], 3)
+
+    def test_untimed_trace_does_not_inherit_anr_or_stack_literal_time(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        record = next(record for record in phase2['normalizedRecords'] if record['sourceKind'] == 'trace')
+        record['rawSnippet'] = 'main tid=1 Native\n  at com.demo.log("04-12 10:00:11.000")'
+        record['normalizedFields']['timestamp'] = '04-12 10:00:05.000'
+        phase2['normalizedRecords'] = [record]
+        phase3 = analyze_normalized_package(phase2)
+        self.assertEqual(len(phase3['timeline']), 1)
+        entry = phase3['timeline'][0]
+        self.assertIsNone(entry['timestamp'])
+        self.assertEqual(entry['timestampBasis'], 'missing')
+        self.assertEqual(entry['anchorTimestamp'], '04-12 10:00:05.000')
+        self.assertEqual(entry['threadName'], 'main')
+
+    def test_overlapping_log_evidence_is_counted_once_with_all_record_refs(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        timeline = analyze_normalized_package(phase2)['timeline']
+        entries = [entry for entry in timeline if entry['sourceKind'] != 'trace']
+        self.assertEqual(len(entries), 7)
+        self.assertEqual(len({entry['entryId'] for entry in timeline}), len(timeline))
+        for entry in entries:
+            records = [record for record in phase2['normalizedRecords'] if record['sourceKind'] == entry['sourceKind'] and entry['rawLine'] in record['rawSnippet'].splitlines()]
+            self.assertEqual(entry['recordRefs'], [record['recordId'] for record in records])
+            self.assertEqual(entry['recordRef'], records[0]['recordId'])
+            self.assertEqual(entry['sourcePath'], records[0]['sourcePath'])
+            self.assertEqual(records[0]['rawSnippet'].splitlines()[entry['lineIndex']], entry['rawLine'])
+            for field in ('entryId', 'timestamp', 'sourceKind', 'recordType', 'tier', 'signalCategory', 'dominantBlockHint', 'suspiciousThreadCount', 'summary', 'recordRef'):
+                self.assertIn(field, entry)
+
+    def test_dedup_preserves_repeated_lines_and_distinct_sources(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        first = deepcopy(phase2['normalizedRecords'][0])
+        first['rawSnippet'] = '04-12 10:00:01.000 repeated\n04-12 10:00:01.000 repeated'
+        duplicate = deepcopy(first)
+        duplicate['recordId'] = 'template-copy'
+        duplicate['extractionMode'] = 'template-additive'
+        other_path = deepcopy(first)
+        other_path.update({'recordId': 'other-path', 'sourcePath': 'other-events.log'})
+        other_kind = deepcopy(first)
+        other_kind.update({'recordId': 'other-kind', 'sourceKind': 'logcat'})
+        phase2['normalizedRecords'] = [first, duplicate, other_path, other_kind]
+        phase3 = analyze_normalized_package(phase2)
+        entries = phase3['timeline']
+        self.assertEqual(len(entries), 6)
+        self.assertEqual(len({entry['entryId'] for entry in entries}), 6)
+        original_entries = [entry for entry in entries if entry['recordRef'] == first['recordId']]
+        self.assertEqual([entry['lineIndex'] for entry in original_entries], [0, 1])
+        self.assertTrue(all(entry['recordRefs'] == [first['recordId'], duplicate['recordId']] for entry in original_entries))
+        window = next(finding['message'] for finding in phase3['findings'] if finding['type'] == 'timeline')
+        self.assertIn('does not establish causation', window)
+
+    def test_identical_trace_snapshots_keep_refs_without_duplicate_entries(self) -> None:
+        phase2 = normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json')))
+        record = next(record for record in phase2['normalizedRecords'] if record['sourceKind'] == 'trace' and record['extractionMode'] == 'baseline')
+        duplicate = deepcopy(record)
+        duplicate['recordId'] = 'duplicate-trace'
+        duplicate['extractionMode'] = 'template-additive'
+        phase2['normalizedRecords'] = [record, duplicate]
+        entries = analyze_normalized_package(phase2)['timeline']
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['recordRef'], record['recordId'])
+        self.assertEqual(entries[0]['recordRefs'], [record['recordId'], duplicate['recordId']])
 
     def test_findings_are_non_root_cause(self) -> None:
         phase3 = analyze_normalized_package(normalize_evidence_package(extract_evidence_package(load_fixture('nfw_01.json'))))

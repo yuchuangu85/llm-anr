@@ -6,6 +6,9 @@ from copy import deepcopy
 from hashlib import sha1
 from typing import Any
 
+from .log_filter import parse_log_timestamp, timestamp_to_raw
+from .trace_preprocessor import TRACE_SECTION_HEADER_RE, split_trace_sections
+
 REQUIRED_FIELDS = ("metadata", "classification", "anchors", "sourceSummaries", "normalizedRecords", "warnings")
 
 
@@ -48,13 +51,36 @@ def _validate_phase2_package(package: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_timeline(package: dict[str, Any]) -> list[dict[str, Any]]:
-    entries = []
+    entries: dict[tuple[str, str | None, str, int], dict[str, Any]] = {}
     for record in package["normalizedRecords"]:
         fields = record.get("normalizedFields", {})
-        timestamp = _record_timestamp(record)
-        entries.append(
-            {
-                "entryId": _stable_id("timeline", record["recordId"]),
+        source_path = record.get("sourcePath") or record.get("provenance", {}).get("sourcePath")
+        anchor_timestamp = (record.get("anchorRef") or {}).get("timestamp")
+        raw_snippet = record.get("rawSnippet") or ""
+        is_trace = record["sourceKind"] == "trace"
+        if is_trace:
+            line_index, raw_line = _trace_snapshot_line(record)
+            evidence_lines = [(line_index, raw_line, raw_snippet, 0)]
+        else:
+            evidence_lines = []
+            occurrences: dict[str, int] = {}
+            for line_index, raw_line in enumerate(raw_snippet.splitlines()):
+                if not raw_line.strip():
+                    continue
+                # Match overlap across records without collapsing repeats within a record.
+                occurrence = occurrences.get(raw_line, 0)
+                occurrences[raw_line] = occurrence + 1
+                evidence_lines.append((line_index, raw_line, raw_line, occurrence))
+        for line_index, raw_line, evidence_text, occurrence in evidence_lines:
+            key = (record["sourceKind"], source_path, evidence_text, occurrence)
+            if key in entries:
+                refs = entries[key]["recordRefs"]
+                if record["recordId"] not in refs:
+                    refs.append(record["recordId"])
+                continue
+            timestamp = _line_timestamp(raw_line)
+            entry = {
+                "entryId": _stable_id("timeline", record["recordId"]) if is_trace else _stable_id("timeline", record["recordId"], str(line_index)),
                 "timestamp": timestamp,
                 "sourceKind": record["sourceKind"],
                 "recordType": record["recordType"],
@@ -62,11 +88,43 @@ def _build_timeline(package: dict[str, Any]) -> list[dict[str, Any]]:
                 "signalCategory": _record_signal_category(record),
                 "dominantBlockHint": fields.get("dominantBlockHint"),
                 "suspiciousThreadCount": fields.get("suspiciousThreadCount"),
-                "summary": _record_summary(record),
+                "summary": _record_summary(record) if is_trace else f"{_record_summary(record)} | {raw_line}",
                 "recordRef": record["recordId"],
+                "recordRefs": [record["recordId"]],
+                "rawLine": raw_line,
+                "sourcePath": source_path,
+                "lineIndex": line_index,
+                "anchorTimestamp": anchor_timestamp,
+                "timestampBasis": ("trace_snapshot" if is_trace else "log_line") if timestamp else "missing",
             }
-        )
-    return sorted(entries, key=lambda item: ((item["timestamp"] or "99-99 99:99:99.999"), item["sourceKind"], item["recordType"], item["recordRef"]))
+            if is_trace:
+                entry.update({key: fields.get(key) for key in ("threadName", "tid", "threadRole", "threadState", "mainThreadSysTid", "blockHint")})
+            entries[key] = entry
+    return sorted(entries.values(), key=lambda item: ((item["timestamp"] or "99-99 99:99:99.999"), item["sourceKind"], item["recordType"], item["recordRef"], item["lineIndex"] if item["lineIndex"] is not None else -1))
+
+
+def _trace_snapshot_line(record: dict[str, Any]) -> tuple[int | None, str | None]:
+    lines = [(index, line) for index, line in enumerate((record.get("rawSnippet") or "").splitlines()) if line.strip()]
+    sections = split_trace_sections([line for _, line in lines])
+    section_index = record.get("normalizedFields", {}).get("selectedSectionIndex")
+    if section_index is None:
+        section_index = 0
+    if not 0 <= section_index < len(sections):
+        return None, None
+    offset = sum(len(section) for section in sections[:section_index])
+    selected_lines = lines[offset:offset + len(sections[section_index])]
+    for index, line in selected_lines:
+        if TRACE_SECTION_HEADER_RE.search(line.lower()):
+            return index, line
+    for index, line in selected_lines:
+        if line.lstrip().lower().startswith(("dump time:", "dump timestamp:", "timestamp:", "time:")):
+            return index, line
+    return None, None
+
+
+def _line_timestamp(raw_line: str | None) -> str | None:
+    timestamp = parse_log_timestamp(raw_line) if raw_line else None
+    return timestamp_to_raw(timestamp) if timestamp else None
 
 
 def _build_signal_summary(package: dict[str, Any]) -> dict[str, Any]:
@@ -353,28 +411,22 @@ def _build_findings(package: dict[str, Any], signal_summary: dict[str, Any], tim
             )
         )
     if timeline:
-        earliest = timeline[0]
-        latest = timeline[-1]
+        timed_entries = [entry for entry in timeline if entry["timestamp"] is not None]
+        if timed_entries:
+            observed_window = f"Timed evidence spans from `{timed_entries[0]['timestamp']}` to `{timed_entries[-1]['timestamp']}`. "
+        else:
+            observed_window = "No retained timeline entries have a parseable event or snapshot timestamp. "
         findings.append(
             _finding(
                 "timeline",
                 "observed_window",
-                f"Timeline spans from `{earliest['timestamp']}` to `{latest['timestamp']}` across {len(timeline)} normalized event(s).",
+                observed_window
+                + f"Retained {len(timeline)} timeline entries ({len(timeline) - len(timed_entries)} untimed); "
+                "ordering is for display only and does not establish causation.",
                 severity="info",
             )
         )
     return findings
-
-
-def _record_timestamp(record: dict[str, Any]) -> str | None:
-    anchor = record.get("anchorRef")
-    if anchor and anchor.get("timestamp"):
-        return anchor["timestamp"]
-    fields = record.get("normalizedFields", {})
-    for key in ("eventTimestamp", "timestamp"):
-        if fields.get(key):
-            return fields[key]
-    return None
 
 
 def _record_signal_category(record: dict[str, Any]) -> str | None:

@@ -68,6 +68,7 @@ from .replay import archive_replay_session, build_replay_index, compare_replay_s
 from .reporter import render_analysis_report
 from .root_cause import generate_root_cause_report
 from .time_norm import TimeNormalizedLine, compute_delta_t, compute_delta_t_for_group
+from .reconstruction import build_reconstruction, render_reconstruction_markdown, refresh_reconstruction
 from .trace_preprocessor import consolidate_deadlock_across_traces, preprocess_trace_content
 from .weighting import (
     EVENT_LOG_TAG_WEIGHTS,
@@ -115,6 +116,9 @@ __all__ = [
     "AiContextResult",
     "build_ai_context",
     "build_ai_context_artifacts",
+    "build_reconstruction",
+    "render_reconstruction_markdown",
+    "refresh_reconstruction",
     # anr_strategy
     "ANR_TYPE_STRATEGIES",
     "AnrTypeStrategy",

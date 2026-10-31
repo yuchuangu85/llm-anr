@@ -1,7 +1,7 @@
 # Android ANR AI 分析指南
 
-本指南是 `scripts/anr_to_ai.py` 生成的 `anr_analysis.md` 工作区的统一分析说明。
-生成的 Markdown 文件从 `# ANR AI Context Cache` 开始，只保留当前 ANR 的证据、过滤日志和四个分析槽位；请先阅读本指南，再填写对应工作区中的分析内容。
+本指南是 `scripts/anr_to_ai.py` 或 `python3 -m anr_evidence --build-ai-context <输入>` 生成的 AI 工作区的统一分析说明。
+其中 `anr_analysis.md` 从 `# ANR AI Context Cache` 开始，只保留当前 ANR 的证据、过滤日志和四个分析槽位；请先阅读本指南，再填写对应工作区中的分析内容。每个 `anr_ai_context/<group-id>/` 还默认输出独立的 `anr_reconstruction.md` 和 `anr_reconstruction.json`，不改变原四个槽位与 `logcat.txt`。`index.json` 通过各组的 `artifactPaths.reconstruction` / `artifactPaths.reconstructionJson` 暴露重建路径。
 
 ## 分析原则
 
@@ -41,6 +41,36 @@
    - 读取同目录的 `logcat.txt`，说明触发日志、窗口/焦点/Surface 序列、dump 生命周期、负载、PSI 和 Meminfo。
 4. `#### AI Analysis — 最终 ANR 综合分析`
    - 跨源汇总并按下方固定标题输出最终报告和 JSON 尾部。
+
+## 独立证据重建与刷新
+
+独立重建默认先基于日志生成；AI 槽位未填不阻止 `anr_reconstruction.md` / `anr_reconstruction.json` 输出。它们是证据驱动的 ANR 过程重建，不是真实执行重放；现有 `replay` 命令仍用于回归重跑。
+
+- `observed`：日志或原始证据实际记录的观察，不扩展为未观测的执行历史。
+- `inferred`：机制解释、跨事件因果假设或 AI 候选解释，必须与观察分开，引用需核验。
+- `unknown`：缺失、矛盾、身份或时间无法对齐等缺口，不能用常见时限或经验补全。
+- 逐事件保留时间、相对 ANR anchor 的 ΔT、进程/线程/窗口等身份和原始证据定位；无法确认的字段明确标为缺口，不编造时间或身份。
+- 时间先后不等于因果。没有等待起点或实际时限证据时，不能用 `am_anr - 5s` 补造过程；单份 dump/trace 只说明采样时状态，不能证明整个超时窗口持续阻塞。
+
+四个 AI 槽位全部填完后，必须运行以下命令刷新独立重建产物，而不是重新提取输入：
+
+```bash
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+# 可选：将外部 AI 报告纳入未验证候选解释
+python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md> --ai-report <JSON>
+```
+
+context 根目录会处理其中每个组；组目录或 `anr_analysis.md` 路径只处理对应组。刷新不重新提取证据，也不改写四个 AI 槽位。`--ai-report <JSON>` 不是观测来源：外部报告及其引用必须回到当前组原始证据核验，不能因导入或引用核验就把候选解释升级为 `observed` 事实。
+
+多组导入外部 AI 报告时，使用 `{"groups": [{"groupId": "<目标组 id>", "candidateChains": [...]}]}` 显式归属；不把一个未指定组的报告复制给所有 ANR。引用使用当前 `anr_reconstruction.json` 中的真实 `eventId`，或唯一精确匹配的完整 `rawLine`。不存在/不唯一的引用记为 `invalid_references`，引用存在也不证明因果成立。
+
+刷新以最近一次提取的事件为基础，并校验工作区证据摘要；若手动修改了过滤日志或锚点，刷新会要求重新运行原提取命令，以免沿用过期事件。修改 AI 槽位不会触发重新提取，产物内的引用行号会随正文位置更新。来源行号基于加载后的逻辑文本，多个归档分片合并时不冒充某个物理文件的行号。
+
+同毫秒但身份不同的事故使用稳定 hash 后缀区分。复用输出目录而更换输入时，会校验 `inputIdentity` 并另建组目录，旧目录和人工分析保留、不迁入新事故；当前 `index.json` 只索引本次输入。相同输入的证据变化时保留原 AI 槽位，但 `analysisRevision` 标记为 `stale` 或 `unknown`，重建文档明确提示旧解释未在新证据版本上重新核验。
+
+可选导出逐行证据与相对时间：`python3 scripts/anr_to_ai.py <输入> --build-ess --delta-t-normalized`，分别生成组内的 `evidence.jsonl` 和 `time_normalized.json`。它们不执行 wall-clock 与 uptime/boottime 的跨时钟校准；重建文档会将不可比较时钟域分开。
+
+最终交付保留写入四槽位的 `anr_analysis.md`，并提供每个组已刷新的 `anr_reconstruction.md` 和 `anr_reconstruction.json` 路径；独立重建不能取代最终综合分析槽位，也不能只在聊天中给出重建结论。
 
 ## Final ANR 固定输出
 

@@ -12,6 +12,7 @@ from .extractor import ArchiveLoadError, load_package_from_archive, load_package
 from .pipeline import payload_phase, run_until
 from .replay import run_replay_manifest
 from .reporter import render_analysis_report
+from .reconstruction import refresh_reconstruction
 
 
 def main() -> int:
@@ -35,10 +36,24 @@ def main() -> int:
     parser.add_argument("--group-tolerance-seconds", type=int, default=None, help="Seconds used to collapse nearby anchors into the same ANR group. Defaults to the ANR type strategy.")
     parser.add_argument("--package", dest="package_name", help="Optional package name filter for AI context EventLog/logcat extraction.")
     parser.add_argument("--anr-type", help="Optional ANR type strategy override for --build-ai-context.")
+    parser.add_argument("--reconstruct", action="store_true", help="Refresh independent process reconstruction from an existing AI context workspace.")
+    parser.add_argument("--ai-report", type=Path, help="Optional AI JSON for --reconstruct; treated as unverified candidates.")
+    parser.add_argument("--build-ess", action="store_true", help="Write evidence.jsonl with --build-ai-context.")
+    parser.add_argument("--delta-t-normalized", action="store_true", help="Write time_normalized.json with --build-ai-context.")
     args = parser.parse_args()
 
     input_path = Path(args.input)
-    if args.replay:
+    if args.ai_report and not args.reconstruct:
+        parser.error("--ai-report requires --reconstruct")
+    if args.reconstruct:
+        try:
+            ai_report = json.loads(args.ai_report.read_text(encoding="utf-8")) if args.ai_report else None
+            if ai_report is not None and not isinstance(ai_report, dict):
+                raise ValueError("AI report must be a JSON object.")
+            result = refresh_reconstruction(input_path, ai_report=ai_report)
+        except (OSError, ValueError, TypeError) as exc:
+            raise SystemExit(f"Reconstruction failed: {exc}") from exc
+    elif args.replay:
         result = run_replay_manifest(input_path, args.replay_out)
     else:
         try:
@@ -62,6 +77,8 @@ def main() -> int:
                     group_tolerance_seconds=args.group_tolerance_seconds,
                     package_name=args.package_name,
                     anr_type=args.anr_type,
+                    build_ess=args.build_ess,
+                    delta_t_normalized=args.delta_t_normalized,
                 ),
             )
         else:

@@ -14,6 +14,7 @@ from typing import Any
 
 from .log_filter import TimestampParser, parse_log_timestamp
 from .weighting import EVENT_LOG_TAG_WEIGHTS, ImportanceLevel, resolve_tag
+from .time_norm import parse_record_timestamp, record_clock_domain
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,7 @@ class EvidenceSlice:
     content: str                     # the raw log line
     importance: str                  # "critical", "warning", "contextual"
     group_id: str | None             # the ANR group this belongs to
-    line_index: int | None           # position in original source (0-based)
+    line_index: int | None           # position in retained group/source lines, not a raw-file offset
 
 
 def build_evidence_slices(
@@ -41,8 +42,14 @@ def build_evidence_slices(
         group_id = group.get("id", "unknown")
         anchor = group.get("anchor")
         anchor_dt = None
+        anchor_line = ""
         if anchor and anchor.get("timestamp"):
-            anchor_dt = timestamp_parser(anchor["timestamp"])
+            if timestamp_parser is parse_log_timestamp:
+                anchor_dt, anchor_line = parse_record_timestamp(anchor.get("line") or anchor["timestamp"])
+                if anchor_dt is None:
+                    anchor_dt, anchor_line = parse_record_timestamp(anchor["timestamp"])
+            else:
+                anchor_dt = timestamp_parser(anchor["timestamp"])
 
         for source_key, source_kind in [
             ("trace", "trace"),
@@ -50,15 +57,17 @@ def build_evidence_slices(
             ("logcat", "logcat"),
             ("anrManager", "anr_manager"),
             ("meminfo", "meminfo"),
+            ("kernelLog", "kernel_log"),
         ]:
             source_data = group.get(source_key, {})
             lines = source_data.get("lines", [])
             for idx, line in enumerate(lines):
-                ts = timestamp_parser(line)
+                ts = parse_record_timestamp(line, year=anchor_dt.year if anchor_dt else None, trace=source_kind == "trace")[0] if timestamp_parser is parse_log_timestamp else timestamp_parser(line)
                 ts_iso = None
                 delta_t = None
-                if ts is not None and anchor_dt is not None:
+                if ts is not None:
                     ts_iso = ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
+                if ts is not None and anchor_dt is not None and (timestamp_parser is not parse_log_timestamp or record_clock_domain(line, ts) == record_clock_domain(anchor_line, anchor_dt)):
                     delta_t = round((ts - anchor_dt).total_seconds(), 3)
 
                 slices.append(EvidenceSlice(

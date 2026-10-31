@@ -9,9 +9,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any
 
-from .log_filter import TimestampParser, parse_log_timestamp
+from .log_filter import TIMESTAMP_RE, TimestampParser, parse_log_timestamp
+
+
+def parse_record_timestamp(text: str, *, year: int | None = None, trace: bool = False) -> tuple[datetime | None, str]:
+    """Parse a record prefix or trace header, never a historical date in its payload."""
+    for raw in text.splitlines() if trace else [text]:
+        line = raw.lstrip()
+        is_header = trace and re.match(r"(?:-----\s*pid\b|Dump time:|Dump timestamp:|Timestamp:|Time:)", line, re.IGNORECASE)
+        if not TIMESTAMP_RE.match(line) and not is_header:
+            continue
+        timestamp = parse_log_timestamp(raw, **({"year": year} if year is not None else {}))
+        if timestamp is not None:
+            return timestamp, raw
+    return None, text.splitlines()[0] if text.splitlines() else ""
+
+
+def record_clock_domain(line: str, parsed: datetime | None) -> str:
+    if parsed is not None:
+        timestamp = TIMESTAMP_RE.search(line)
+        offset = re.match(r"\s*(Z|[+-]\d{2}:?\d{2})\b", line[timestamp.end():]) if timestamp else None
+        return f"wall_clock:{offset.group(1)}" if offset else "wall_clock:unspecified"
+    if re.search(r"\b(?:uptime|boottime|elapsedRealtime)\b|^\s*\[\s*\d+\.\d+\]", line):
+        return "monotonic:unmapped"
+    return "unknown"
 
 
 @dataclass(frozen=True)
@@ -30,11 +54,12 @@ def compute_delta_t(
     *,
     source_kind: str,
     timestamp_parser: TimestampParser = parse_log_timestamp,
+    anchor_clock_domain: str = "wall_clock:unspecified",
 ) -> list[TimeNormalizedLine]:
     """Parse timestamps from each line and compute seconds delta from anchor."""
     result: list[TimeNormalizedLine] = []
     for line in lines:
-        ts = timestamp_parser(line)
+        ts = parse_record_timestamp(line, year=anchor_dt.year, trace=source_kind == "trace")[0] if timestamp_parser is parse_log_timestamp else timestamp_parser(line)
         if ts is None:
             result.append(TimeNormalizedLine(
                 raw_line=line,
@@ -43,11 +68,12 @@ def compute_delta_t(
                 source_kind=source_kind,
             ))
             continue
-        delta = (ts - anchor_dt).total_seconds()
+        comparable = timestamp_parser is not parse_log_timestamp or record_clock_domain(line, ts) == anchor_clock_domain
+        delta = (ts - anchor_dt).total_seconds() if comparable else None
         result.append(TimeNormalizedLine(
             raw_line=line,
             timestamp_iso=ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts.microsecond // 1000:03d}",
-            delta_t_seconds=round(delta, 3),
+            delta_t_seconds=round(delta, 3) if delta is not None else None,
             source_kind=source_kind,
         ))
     return result
@@ -70,7 +96,9 @@ def compute_delta_t_for_group(
     if anchor is None or not anchor.get("timestamp"):
         return _normalize_without_anchor(group)
 
-    anchor_dt = parse_log_timestamp(anchor["timestamp"])
+    anchor_dt, anchor_line = parse_record_timestamp(anchor.get("line") or anchor["timestamp"])
+    if anchor_dt is None:
+        anchor_dt, anchor_line = parse_record_timestamp(anchor["timestamp"])
     if anchor_dt is None:
         return _normalize_without_anchor(group)
 
@@ -80,6 +108,7 @@ def compute_delta_t_for_group(
         ("eventLog", "event_log"),
         ("logcat", "logcat"),
         ("anrManager", "anr_manager"),
+        ("kernelLog", "kernel_log"),
     ]:
         source_data = group.get(source_key, {})
         lines = source_data.get("lines", [])
@@ -88,6 +117,7 @@ def compute_delta_t_for_group(
         else:
             result[source_key] = compute_delta_t(
                 lines, anchor_dt, source_kind=source_kind,
+                anchor_clock_domain=record_clock_domain(anchor_line, anchor_dt),
             )
     return result
 
@@ -102,6 +132,7 @@ def _normalize_without_anchor(
         ("eventLog", "event_log"),
         ("logcat", "logcat"),
         ("anrManager", "anr_manager"),
+        ("kernelLog", "kernel_log"),
     ]:
         source_data = group.get(source_key, {})
         lines = source_data.get("lines", [])
