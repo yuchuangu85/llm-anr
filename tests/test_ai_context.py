@@ -166,6 +166,26 @@ class AiContextTests(unittest.TestCase):
             with self.subTest(destination=destination.relative_to(ROOT)):
                 self.assertTrue(destination.is_file())
 
+    def test_input_dispatch_skill_is_reachable_from_agent_and_analysis_routes(self) -> None:
+        skill_path = ROOT / 'skills/input-dispatch-timeout-anr-analysis/SKILL.md'
+        reference_path = skill_path.parent / 'references/aosp-mechanism.md'
+        for name in (
+            'AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'CODEBUDDY.md', 'HERMES.md',
+            '.cursor/rules/project.mdc', 'skills/anr-analysis.md', 'skills/anr-reference.md',
+            'skills/no-focused-window-anr-analysis/SKILL.md',
+        ):
+            route = ROOT / name
+            with self.subTest(route=name):
+                links = re.findall(r'\]\(([^)]+)\)', route.read_text(encoding='utf-8'))
+                destinations = {(route.parent / link).resolve() for link in links}
+                self.assertIn(skill_path, destinations)
+        links = re.findall(r'\]\(([^)]+)\)', skill_path.read_text(encoding='utf-8'))
+        destinations = {(skill_path.parent / link).resolve() for link in links}
+        self.assertIn(reference_path, destinations)
+        for destination in destinations:
+            with self.subTest(destination=destination.relative_to(ROOT)):
+                self.assertTrue(destination.is_file())
+
     def test_core_builds_side_effect_free_result_with_progress_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = build_ai_context(_multi_anr_package(), AiContextOptions(out_dir=tmpdir, anr_type='input_dispatching_timeout'))

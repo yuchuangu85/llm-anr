@@ -15,7 +15,7 @@ description: 分析 Android no focused window / no_focus_window ANR，关联焦�
 - 同一 ANR 的 reason 包含 `does not have a focused window`、`no focused window`、`no focus window` 或 `no window has focus`。
 - InputDispatcher 日志或 dump 显示有焦点应用、无焦点窗口，且需要焦点的事件正在等待窗口，例如 `Waiting because no window has focus` 或活动的 `mNoFocusedWindowAnrState`。
 
-仅有 `Input dispatching timed out`、焦点切换、窗口不可见或 `nativePollOnce`，不足以判为此类型。已分发事件未 ACK 的 connection timeout 是另一条分支；没有 no-focus 等待信号时回到通用 input/trace 分析。用户明确指定类型时仍需验证，证据不支持则说明冲突。
+仅有 `Input dispatching timed out`、焦点切换、窗口不可见或 `nativePollOnce`，不足以判为此类型。已分发事件未 ACK 的 connection timeout 是另一条分支，有对应证据时读取 [input-dispatch-timeout 专项](../input-dispatch-timeout-anr-analysis/SKILL.md)；没有 no-focus 等待信号时不要套用本 skill 的计时和恢复机制。用户明确指定类型时仍需验证，证据不支持则说明冲突。
 
 1. 对目录、ZIP、TAR 或 fixture，先运行基线命令；类型已确认时才加类型参数：
 

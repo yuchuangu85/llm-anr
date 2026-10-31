@@ -49,6 +49,12 @@ Output a structured Markdown report covering:
 
 Include the refreshed per-group `anr_reconstruction.md` and `anr_reconstruction.json` paths in the final delivery alongside `anr_analysis.md`.
 
+## Input Dispatch Timeout ANR specialization
+
+Load and follow [the input-dispatch-timeout skill](skills/input-dispatch-timeout-anr-analysis/SKILL.md) when the user requests input-dispatch-timeout analysis / `input_dispatching_timeout`, or the same ANR shows a published event awaiting FINISHED, an outstanding connection waitQueue, or a channel `is not responding. Waited ...ms for ...` reason. Classify generic `Input dispatching timed out` first; a pure no-focused-window wait belongs to the separate skill below, not this ACK-timeout mechanism.
+
+Use it additively after baseline extraction: correlate connection token/native seq, per-entry delivery/deadline, finish/FINISHED/cleanup, the actual expiry versus reason entry, and remaining-queue recovery. A Java finish return, handled=false, or one ACK does not prove the connection has recovered. Fill the four existing analysis slots, preserve conservative flags, and refresh the independent reconstruction before delivery. Load the gesture skill only when its own Launcher/Recents trigger is met.
+
 ## No Focused Window ANR specialization
 
 Load and follow [the no-focused-window skill](skills/no-focused-window-anr-analysis/SKILL.md) before interpreting evidence when the user explicitly requests no-focused-window analysis / `no_focus_window`, or the same ANR's reason/logs show `does not have a focused window`, `no focused window`, `no focus window`, `no window has focus`, or a focus-dependent event waiting for a window while a focused application exists.

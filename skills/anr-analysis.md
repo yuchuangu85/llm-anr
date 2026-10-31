@@ -61,6 +61,12 @@ context 根目录处理其中各组，组目录或分析文件只处理该组；
 | ContentProvider timeout | publish 慢、远程查询慢或启动慢？ | `publishContentProviders`、`ContentProvider$Transport.*`、Binder 线程、客户端设置 timeout |
 | SWT/System ANR | system_server/watchdog 是否卡死？ | SWT DB/log、system_server trace、Watchdog、Binder/AMS/WMS 锁链 |
 
+### Input Dispatch Timeout 专项检查
+
+用户明确要求输入分发超时分析，或同一 ANR 的证据指向已发布事件等待完成时，读取 [input-dispatch-timeout-anr-analysis](input-dispatch-timeout-anr-analysis/SKILL.md)。先区分分发前 no-focus 等待和已发布连接的 ACK 等待；通用 `Input dispatching timed out` 不足以确定分支。
+
+按 connection/native seq 关联发布、逐事件 deadline、客户端接收/处理/finish、FINISHED 传输与清理；区分最早到期记录和 reason 描述的最早发送记录。Java finish、handled=false 或一条 ACK 都不能单独证明整条连接恢复。完成四阶段分析后按第 0 节刷新独立重建文档，不把机制节点补造成已观察事件。
+
 ## 3. No Focus Window 专项检查
 
 用户明确指定 no-focused-window 分析，或同一 ANR reason/等待证据指向无焦点窗口时，先完整读取 [no-focused-window-anr-analysis](no-focused-window-anr-analysis/SKILL.md)。通用 input timeout 或单次 focus change 不足以确认该分支；存在 Launcher/Quickstep/Recents 信号时，再叠加 [gesture-anr-analysis](gesture-anr-analysis/SKILL.md)。
