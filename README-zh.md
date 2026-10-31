@@ -6,6 +6,11 @@
 
 项目目标是 **高召回、可审计、不过早定责**：触发类型、根因模式提示和修复建议都只是有证据支撑的候选结论，最终仍需要人工确认。
 
+## 运行要求
+
+- Python 3.12 或更新版本。CI 验证 Python 3.12 和 3.13。
+- 运行时依赖：仅 Python 标准库。
+
 ## 当前能力
 
 ### 证据抽取与路由
@@ -66,10 +71,10 @@ Agent 应完成以下步骤：
 
 1. 运行 `python3 scripts/anr_to_ai.py <路径> --package com.example.app`；默认在输入日志目录下生成 `anr_ai_context/`（可用 `--out-dir` 覆盖）。
 2. 先查看命令输出提示的 `docs/anr-ai-analysis-guide.md`；说明不再重复写入每个 `anr_analysis.md`。
-3. 打开输入日志目录下的 `anr_ai_context/index.json`，按索引逐个分析每个 ANR 工作区。
+3. 打开输入日志目录下的 `anr_ai_context/index.json`，按索引逐个分析每个 ANR 工作区。解释证据前，按用户请求及当前组的 reason/信号加载适用的[专项分析技能](#anr-专项分析技能)。
 4. 按顺序填写输入日志目录下 `anr_ai_context/<anr-id>/anr_analysis.md` 中的四个分析槽位：Trace → EventLog → Logcat/AnrManager → Final ANR。
 5. Logcat/AnrManager 槽位引用 `logcat.txt` 时，必须读取该工作区同目录下的 `logcat.txt`。
-6. 回复前必须把综合结论写回 `Final ANR` 槽位。
+6. 回复前必须把综合结论写回 `Final ANR` 槽位（`#### AI Analysis — 最终 ANR 综合分析`）。
 7. 填完四个槽位后，必须运行 `python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>` 刷新各组独立重建产物，不重新提取证据、不改写 AI 槽位。
 8. 最终输出结构化报告：时间线、直接阻塞点、候选根因链排序、证据质量、修复建议，并交付各组的 `anr_analysis.md` 与已刷新的 `anr_reconstruction.md`、`anr_reconstruction.json` 路径。
 
@@ -100,6 +105,7 @@ python3 -m anr_evidence --build-ai-context <bugreport_dir_or_archive_or_fixture>
 
 说明：
 
+- 独立脚本默认在目录输入内部、或归档/fixture 文件的同级目录生成工作区；模块入口默认输出到 `./anr_ai_context`。两种入口都可通过 `--out-dir <目录>` 显式指定位置。
 - `index.json` 是所有 ANR group 的权威索引。
 - `anr_analysis.md` 是人工/AI 工作区：分析指令、过滤证据摘要、分来源分析槽位和最终综合槽位都在同一个文件中。
 - `logcat.txt` 保存当前单个 ANR group 的过滤后 logcat 行。
@@ -112,20 +118,38 @@ python3 -m anr_evidence --build-ai-context <bugreport_dir_or_archive_or_fixture>
 
 ```bash
 python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+# 等价模块入口：
+python3 -m anr_evidence --reconstruct <context-root|group-directory|anr_analysis.md>
 # 可选外部 AI 报告，仅作为未验证候选解释：
 python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md> --ai-report <JSON>
 ```
 
-传入 context 根目录处理其中所有组，组目录或分析文件只处理该组。命令不重新提取证据、不改写 AI 槽位；外部报告引用必须回到原始证据核验，报告本身不能升级为 `observed` 事实。详细边界与最终交付要求见[分析指南](docs/anr-ai-analysis-guide.md)。
+传入 context 根目录处理其中所有组，组目录或分析文件只处理该组。命令不重新提取证据、不改写 AI 槽位；外部报告引用必须回到原始证据核验，报告本身不能升级为 `observed` 事实。
+
+重建与重新生成的保护机制：
+
+- 多组外部 AI 报告必须通过 `{"groups": [{"groupId": "<目标组 id>", "candidateChains": [...]}]}` 显式归属。引用应使用当前组 `anr_reconstruction.json` 中真实事件的 `eventId`，或唯一精确匹配的完整 `rawLine`；`references_resolved` 仅表示引用存在，不代表解释或因果链已核实。
+- 刷新会检查工作区证据摘要。若手动修改了过滤证据或 anchor 元数据，必须先重新提取再刷新；只编辑 AI 槽位不需要重新提取。
+- 重新生成会保留已填写的 AI 槽位。同一输入的证据变化时，`analysisRevision` 将旧分析标为 `stale` 或 `unknown`，不视为已重新核验。复用输出目录处理不同输入时，会校验 `inputIdentity` 并另建组目录，保留旧目录和人工分析；当前索引只列出本次输入的组。
+- wall-clock 与 uptime/boottime 证据不会自动跨时钟校准；无法映射的时钟域分开呈现。时间接近或单份 trace 快照不能证明整个超时区间持续阻塞。
+
+可选导出组内逐行证据和相对时间：
+
+```bash
+python3 scripts/anr_to_ai.py <input> --build-ess --delta-t-normalized
+# 额外生成 evidence.jsonl 和 time_normalized.json；不执行跨时钟校准。
+```
+
+详细边界与最终交付要求见[分析指南](docs/anr-ai-analysis-guide.md)。
 
 ## 四阶段 AI 分析契约
 
 每个 `anr_analysis.md` 固定包含四个分析槽位，必须按顺序填写：
 
-1. `anr-trace-analysis` → Trace-only analysis。
-2. `anr-eventlog-analysis` → EventLog / anchor-only analysis。
-3. `anr-logcat-analysis` → Logcat + AnrManager + meminfo follow-up analysis。
-4. `anr-analysis` → Final cross-source ANR synthesis。
+1. [`anr-trace-analysis`](skills/anr-trace-analysis.md) → Trace-only analysis，写入 `#### AI Analysis — Trace 堆栈`。
+2. [`anr-eventlog-analysis`](skills/anr-eventlog-analysis.md) → EventLog / anchor-only analysis，写入 `#### AI Analysis — EventLog 事件日志`。
+3. [`anr-logcat-analysis`](skills/anr-logcat-analysis.md) → Logcat + AnrManager + meminfo follow-up analysis，写入 `#### AI Analysis — Logcat / AnrManager`。
+4. [`anr-analysis`](skills/anr-analysis.md) → Final cross-source ANR synthesis，写入 `#### AI Analysis — 最终 ANR 综合分析`。
 
 约束：
 
@@ -137,6 +161,36 @@ python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md
   - `finalJudgment = false`
   - `notRootCauseYet = true`
   - `requiresHumanConfirmation = true`
+
+## ANR 专项分析技能
+
+这些仓库内置技能用于指导 AI Agent 在基线提取后做增量分析，不是新增 CLI 触发类型，也不自动判定根因。解释证据前应完整阅读适用的 skill。仅出现通用 `Input dispatching timed out` 时，应先区分分发前焦点等待、已发布事件的完成等待，或保留分支未知。
+
+### 输入分发超时：已发布事件的完成 / ACK 等待
+
+用户明确请求（包括指定 `input_dispatching_timeout`），或同一 ANR 显示已发布事件等待 FINISHED、连接存在未完成的 `waitQueue` / `AnrTracker` 记录，或 channel 的 `is not responding. Waited ...ms for ...` reason 指向未完成派发时，使用 [`input-dispatch-timeout-anr-analysis`](skills/input-dispatch-timeout-anr-analysis/SKILL.md)。
+
+- 用 connection/input-channel token 与 native dispatch seq 关联发布、逐事件 delivery/deadline、receiver 处理、finish、FINISHED 传输、Dispatcher 清理及剩余队列恢复。
+- 最早到期的记录可能不同于 reason 描述的最早发送记录；不能仅凭 `Waited N ms` 反推配置阈值。
+- Java finish 返回、`handled=false` 或单个 ACK 均不能单独证明连接已恢复。纯无焦点窗口等待属于下方独立专项，不能套用 ACK 超时机制。
+
+### 无焦点窗口：目标分发前等待
+
+用户明确请求（包括指定 `no_focus_window`），或同一 ANR 出现 `does not have a focused window`、`no focused window`、`no focus window`、`no window has focus`，或已有 focused application 而需要焦点的事件正在等待窗口时，使用 [`no-focused-window-anr-analysis`](skills/no-focused-window-anr-analysis/SKILL.md)。
+
+- 区分 focused application 与真正生效的 native 输入窗口焦点；Activity resume、绘制完成或 WMS focus request 本身都不等于已获得焦点。
+- 按同一 display/app/window 身份关联首次目标查找、实际配置阈值、到期复查、reset/恢复及 WMS 归因。
+- 这是目标分发前的等待，不是已分发未 ACK，也不单独证明主线程阻塞。没有等待起点与阈值证据时，不得用 `am_anr - 5s` 补造起点。
+
+### Launcher / Quickstep / Recents 动画
+
+用户明确要求 Launcher/Quickstep 手势导航或 Recents 动画 ANR 分析，或同一 ANR **同时具有**输入/焦点锚点（输入超时、无焦点窗口、或目标已绘制但仍 `NOT_VISIBLE`）**以及** Launcher/Recents 信号，如 `recents_animation_input_consumer`、`OtherActivityInputConsumer`、`AbsSwipeUpHandler`、`startRecentsAnimation`、`onTasksAppeared`、`finishRecentsAnimation`、`mRecentsAnimationStartPending` 时，使用 [`gesture-anr-analysis`](skills/gesture-anr-analysis/SKILL.md)。
+
+- 将 `am_anr` 与同一 gesture 的 `logId` / handler hash、Recents start/callback/finish 状态、transition 可见性和窗口焦点串联，关键结论附原始日志片段及来源定位。
+- framework callback 日志不证明指定 handler 收到回调；缺少 `trackEvent(NO_OP)` 文本不证明事件未执行。时间接近只能建立候选，不能直接定根因。
+- 没有手势/Recents 信号的通用 input/no-focus ANR 不加载此专项。本专项只分析已抓取日志；缺失设备 dump 应列为证据缺口，不能假定其结果。
+
+仅当各自触发条件满足时，才将手势技能与 ACK 超时或无焦点窗口技能叠加。若两条输入分支都有证据，必须分开记录各自事件和计时起点。所有专项均保留 baseline 来源，写回原有四槽位（不新增第五槽位），保留保守标志，并在交付前刷新独立重建。
 
 ## Deterministic Phase 1-8 流水线
 
@@ -272,7 +326,7 @@ anr_evidence/   核心 Python 包与 CLI
 scripts/        独立入口脚本
 tests/          单元测试、集成测试、回归测试、fixture 与 eval 测试
 docs/           设计笔记、操作日志与规划文档
-skills/         ANR 领域知识与分来源 AI 分析技能
+skills/         ANR 领域知识、分来源分析与 ANR 专项分析技能
 ```
 
 ## 设计原则
@@ -294,7 +348,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q anr_evidence tests scripts
 ```
 
-当前测试规模：281 tests（最近一次本地运行 skipped=1）。
+测试包含按 ANR 隔离、专项技能路由、独立重建及不可信 AI 引用等回归覆盖。当前数量和跳过项以测试运行摘要为准；本地测试不能证明真机事故根因。
 
 ## 常见用法
 

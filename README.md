@@ -71,10 +71,10 @@ The agent should:
 
 1. Run `python3 scripts/anr_to_ai.py <path> --package com.example.app`; by default it generates `anr_ai_context/` under the input log directory (`--out-dir` overrides this).
 2. Read the `docs/anr-ai-analysis-guide.md` path printed by the command; the guide is no longer duplicated in every `anr_analysis.md`.
-3. Open `anr_ai_context/index.json` under the input log directory and analyze each listed ANR workspace independently.
+3. Open `anr_ai_context/index.json` under the input log directory and analyze each listed ANR workspace independently. Before interpreting evidence, load any applicable [specialized analysis skills](#specialized-anr-analysis-skills) based on the request and that group's reason/signals.
 4. Fill the four analysis slots in `anr_ai_context/<anr-id>/anr_analysis.md` under the input log directory in order: Trace → EventLog → Logcat/AnrManager → Final ANR.
 5. Read `anr_ai_context/<anr-id>/logcat.txt` in the same workspace whenever the Logcat/AnrManager slot references it.
-6. Write the comprehensive synthesis back into the `Final ANR` slot before replying.
+6. Write the comprehensive synthesis back into the `Final ANR` slot (`#### AI Analysis — 最终 ANR 综合分析`) before replying.
 7. After all four slots are filled, run `python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>` to refresh each group's independent reconstruction without re-extracting evidence or rewriting the AI slots.
 8. Return a final structured report with timeline, direct blocking point, ranked candidate chains, evidence quality, and remediation suggestions, plus paths to each group's refreshed `anr_reconstruction.md` and `anr_reconstruction.json` alongside `anr_analysis.md`.
 
@@ -105,6 +105,7 @@ Default output directory (when the input is a log directory):
 
 Notes:
 
+- The standalone script writes inside directory inputs or beside archive/fixture inputs by default. The module entrypoint defaults to `./anr_ai_context`; use `--out-dir <directory>` with either entrypoint to select an explicit destination.
 - `index.json` is the authoritative directory index for all generated ANR groups.
 - `anr_analysis.md` is the human/AI workspace: instructions, filtered evidence summaries, source-specific analysis slots, and the final synthesis slot live together.
 - `logcat.txt` contains the filtered logcat lines for that one ANR group.
@@ -117,20 +118,38 @@ After filling all four AI slots, refresh the independent artifacts before delive
 
 ```bash
 python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
+# Equivalent module entrypoint:
+python3 -m anr_evidence --reconstruct <context-root|group-directory|anr_analysis.md>
 # Optional external AI report, treated only as an unverified candidate explanation:
 python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md> --ai-report <JSON>
 ```
 
-A context root processes all its groups; a group directory or analysis file selects one group. The command does not re-extract evidence or rewrite AI slots. Verify external report citations against raw evidence; the report itself must never become an `observed` fact. See [the analysis guide](docs/anr-ai-analysis-guide.md) for the evidence boundaries and final delivery requirements.
+A context root processes all its groups; a group directory or analysis file selects one group. The command does not re-extract evidence or rewrite AI slots. Verify external report citations against raw evidence; the report itself must never become an `observed` fact.
+
+Reconstruction and regeneration safeguards:
+
+- Multi-group external AI reports must explicitly map candidates to groups with `{"groups": [{"groupId": "<target-group-id>", "candidateChains": [...]}]}`. References must use an existing event's `eventId` or a unique exact full `rawLine` from that group's `anr_reconstruction.json`; `references_resolved` only confirms that references exist, not that the explanation or causal chain is verified.
+- Refresh checks the workspace evidence digest. If filtered evidence or anchor metadata was edited, rerun extraction before refreshing; editing only AI slots does not require re-extraction.
+- Regeneration preserves filled AI slots. When the same input's evidence changes, `analysisRevision` marks preserved analysis as `stale` or `unknown`, not revalidated. Reusing an output directory for different inputs checks `inputIdentity` and creates separate groups, preserving old directories and manual analysis; the current index lists only the current input's groups.
+- Wall-clock and uptime/boottime evidence are not automatically calibrated into one clock. Unmapped clock domains remain separate; neither timestamp proximity nor a single trace snapshot proves a continuous timeout interval.
+
+Optional per-group evidence and relative-time exports:
+
+```bash
+python3 scripts/anr_to_ai.py <input> --build-ess --delta-t-normalized
+# Also writes evidence.jsonl and time_normalized.json; no cross-clock calibration.
+```
+
+See [the analysis guide](docs/anr-ai-analysis-guide.md) for the evidence boundaries and final delivery requirements.
 
 ## Four-phase AI analysis contract
 
 Each `anr_analysis.md` contains four fixed analysis slots that must be filled in order:
 
-1. `anr-trace-analysis` → Trace-only analysis.
-2. `anr-eventlog-analysis` → EventLog / anchor-only analysis.
-3. `anr-logcat-analysis` → Logcat + AnrManager + meminfo follow-up analysis.
-4. `anr-analysis` → Final cross-source ANR synthesis.
+1. [`anr-trace-analysis`](skills/anr-trace-analysis.md) → Trace-only analysis in `#### AI Analysis — Trace 堆栈`.
+2. [`anr-eventlog-analysis`](skills/anr-eventlog-analysis.md) → EventLog / anchor-only analysis in `#### AI Analysis — EventLog 事件日志`.
+3. [`anr-logcat-analysis`](skills/anr-logcat-analysis.md) → Logcat + AnrManager + meminfo follow-up analysis in `#### AI Analysis — Logcat / AnrManager`.
+4. [`anr-analysis`](skills/anr-analysis.md) → Final cross-source ANR synthesis in `#### AI Analysis — 最终 ANR 综合分析`.
 
 Constraints:
 
@@ -142,6 +161,36 @@ Constraints:
   - `finalJudgment = false`
   - `notRootCauseYet = true`
   - `requiresHumanConfirmation = true`
+
+## Specialized ANR analysis skills
+
+These repository-local skills guide the AI agent after baseline extraction; they are not additional CLI trigger types or automatic root-cause verdicts. Read the applicable skill completely before interpreting evidence. A generic `Input dispatching timed out` reason must first be classified as a pre-dispatch focus wait, a published-event completion wait, or an unresolved branch.
+
+### Input dispatch timeout: published-event completion / ACK wait
+
+Use [`input-dispatch-timeout-anr-analysis`](skills/input-dispatch-timeout-anr-analysis/SKILL.md) when explicitly requested (including `input_dispatching_timeout`), or when the same ANR shows a published event awaiting FINISHED, an outstanding connection `waitQueue` / `AnrTracker` record, or a channel `is not responding. Waited ...ms for ...` reason pointing to an unfinished dispatch.
+
+- Correlate the connection/input-channel token and native dispatch seq through publication, per-entry delivery/deadline, receiver handling, finish, FINISHED transport, Dispatcher cleanup, and remaining-queue recovery.
+- The earliest-expiring entry can differ from the oldest sent entry described by the reason. Do not infer the configured timeout from `Waited N ms` alone.
+- Java finish returning, `handled=false`, or one ACK does not by itself prove the connection recovered. A pure no-focused-window wait belongs to the separate skill below, not this ACK-timeout mechanism.
+
+### No focused window: pre-dispatch target wait
+
+Use [`no-focused-window-anr-analysis`](skills/no-focused-window-anr-analysis/SKILL.md) when explicitly requested (including `no_focus_window`), when the same ANR reports `does not have a focused window`, `no focused window`, `no focus window`, or `no window has focus`, or when a focus-dependent event is waiting for a window while a focused application exists.
+
+- Distinguish the focused application from actual native input-window focus; Activity resume, drawing completion, or a WMS focus request alone does not establish it.
+- Reconstruct first target lookup, the effective configured timeout, expiry recheck, reset/recovery, and WMS attribution for the same display/app/window identities.
+- This is a wait before target dispatch, not an already-delivered event missing an ACK, and does not alone prove a blocked main thread. Without the wait start and timeout evidence, do not invent a start at `am_anr - 5s`.
+
+### Launcher / Quickstep / Recents animation
+
+Use [`gesture-anr-analysis`](skills/gesture-anr-analysis/SKILL.md) for an explicit Launcher/Quickstep gesture-navigation or Recents-animation ANR request, or when the same ANR contains **both** an input/focus anchor (input timeout, no focused window, or an already-drawn target still `NOT_VISIBLE`) **and** a Launcher/Recents signal such as `recents_animation_input_consumer`, `OtherActivityInputConsumer`, `AbsSwipeUpHandler`, `startRecentsAnimation`, `onTasksAppeared`, `finishRecentsAnimation`, or `mRecentsAnimationStartPending`.
+
+- Correlate `am_anr` with the same gesture `logId` / handler hash, Recents start/callback/finish state, transition visibility, and window focus; support key conclusions with original log excerpts and source locations.
+- Framework callback logs do not prove a specific handler received the callback; missing `trackEvent(NO_OP)` text does not prove an event never ran. Temporal proximity only establishes a candidate, not a root cause.
+- Do not load this skill for a generic input/no-focus ANR without gesture/Recents signals. It analyzes already-captured logs; missing device dumps remain evidence gaps, not assumed results.
+
+Combine the gesture skill with the ACK-timeout or no-focused-window skill only when each one's trigger is met. If both input branches are evidenced, keep their events and timeout origins separate. All specializations preserve baseline sources, write into the original four slots (no fifth slot), retain conservative flags, and require reconstruction refresh before delivery.
 
 ## Deterministic Phase 1-8 pipeline
 
@@ -277,7 +326,7 @@ anr_evidence/   Core Python package and CLI
 scripts/        Standalone entrypoint scripts
 tests/          Unit, integration, regression, fixture, and eval tests
 docs/           Design notes, operation log, and planning docs
-skills/         ANR domain knowledge and source-specific AI analysis skills
+skills/         ANR domain knowledge, source-specific analysis, and specialized ANR skills
 ```
 
 ## Design principles
@@ -299,7 +348,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q anr_evidence tests scripts
 ```
 
-Current test suite: 281 tests (1 skipped in the latest local run).
+The suite includes regression coverage for per-ANR isolation, specialized skill routing, reconstruction, and untrusted AI references. Use the test runner's summary for current totals and skips; local tests do not establish a real-device root cause.
 
 ## Common usage
 
