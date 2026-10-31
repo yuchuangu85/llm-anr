@@ -34,6 +34,14 @@ Output a structured Markdown report covering:
 4. Evidence quality assessment (gaps, contradictions)
 5. Remediation suggestions
 
+## No Focused Window ANR specialization
+
+Load and follow [the no-focused-window skill](skills/no-focused-window-anr-analysis/SKILL.md) before interpreting evidence when the user explicitly requests no-focused-window analysis / `no_focus_window`, or the same ANR's reason/logs show `does not have a focused window`, `no focused window`, `no focus window`, `no window has focus`, or a focus-dependent event waiting for a window while a focused application exists.
+
+Use it additively after baseline extraction: distinguish focused application from actual native window focus, reconstruct target lookup / configured timeout / expiry recheck / reset, and verify WMS attribution and recovery. A generic input timeout, a focus change, or a delivered-event ACK timeout alone does not establish this branch. Preserve all baseline evidence and fill the four existing source/final slots, with synthesis under `#### AI Analysis — 最终 ANR 综合分析`.
+
+If the same ANR also meets the Launcher/Quickstep/Recents trigger below, load both skills: use no-focused-window analysis for the focus-wait mechanism and gesture analysis for the upstream Recents/transition chain. Neither trigger alone proves the root cause.
+
 ## Launcher / Quickstep Recents Animation ANR specialization
 
 Load and follow [`skills/gesture-anr-analysis/SKILL.md`](skills/gesture-anr-analysis/SKILL.md) completely before interpreting evidence when either condition is true:

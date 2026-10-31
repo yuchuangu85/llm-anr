@@ -47,13 +47,15 @@ Final ANR 只能在前三段专项分析完成后整合时间线、直接阻塞�
 | ContentProvider timeout | publish 慢、远程查询慢或启动慢？ | `publishContentProviders`、`ContentProvider$Transport.*`、Binder 线程、客户端设置 timeout |
 | SWT/System ANR | system_server/watchdog 是否卡死？ | SWT DB/log、system_server trace、Watchdog、Binder/AMS/WMS 锁链 |
 
-## 3. No Focus Window 三步检查
+## 3. No Focus Window 专项检查
 
-参考 [../ANR-分析流程.md](../ANR-分析流程.md) 与 [../机制/ANR-HasNoFocusWindow.md](../机制/ANR-HasNoFocusWindow.md)。
+用户明确指定 no-focused-window 分析，或同一 ANR reason/等待证据指向无焦点窗口时，先完整读取 [no-focused-window-anr-analysis](no-focused-window-anr-analysis/SKILL.md)。通用 input timeout 或单次 focus change 不足以确认该分支；存在 Launcher/Quickstep/Recents 信号时，再叠加 [gesture-anr-analysis](gesture-anr-analysis/SKILL.md)。
 
-1. `wm_on_resume_called` 是否晚于 ANR？晚于则 Activity 未完成 resume，偏应用启动/生命周期问题。
-2. resume 后是否在 ANR 前调用 relayout window？未调用偏应用侧；已调用但焦点未更新，继续看 WMS/Input/SF。
-3. `reportDrawFinished` / `finishDrawingWindow` 是否在 ANR 前完成？若已完成，应怀疑焦点转移、目标应用、系统或其他窗口问题，而非当前应用主线程阻塞。
+1. 确认同一 display 的 focused application 与实际 native focused window；WMS focus request、Activity resume 和绘制完成均不等于输入焦点已生效。
+2. 关联需要焦点的事件、首次目标查找、有效 timeout、到期复查、reset/恢复和 WMS 最终归因。计时不从启动或原始 eventTime 开始；找不到等待起点时不能用 `am_anr - 5s` 补造。
+3. 用 resume → relayout → finishDrawing/reportDrawFinished → window-info/focus 更新定位缺失阶段，再结合 trace/负载/transition 证据排序上游原因。日志缺失不等于调用未发生，已画完不能单独排除应用问题，无窗口不能单独证明主线程阻塞。
+
+继续按四个原有槽位分析与落盘，不以专项取代 Trace/EventLog/Logcat 的基线结论。
 
 ## 4. Trace 与阻塞点定位
 

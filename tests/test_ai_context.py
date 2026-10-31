@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,28 @@ class AiContextTests(unittest.TestCase):
         self.assertIn('recents_animation_input_consumer', gesture_skill)
         self.assertIn('skills/gesture-anr-analysis/SKILL.md', agents)
         self.assertNotIn('skills/SKILL.md', agents)
+
+    def test_no_focus_skill_is_reachable_from_agent_and_analysis_routes(self) -> None:
+        skill_path = ROOT / 'skills/no-focused-window-anr-analysis/SKILL.md'
+        reference_path = skill_path.parent / 'references/aosp-mechanism.md'
+        routes = [
+            ROOT / name for name in (
+                'AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'CODEBUDDY.md', 'HERMES.md',
+                '.cursor/rules/project.mdc', 'skills/anr-analysis.md', 'skills/anr-reference.md',
+            )
+        ]
+        for route in routes:
+            with self.subTest(route=route.relative_to(ROOT)):
+                links = re.findall(r'\]\(([^)]+)\)', route.read_text(encoding='utf-8'))
+                destinations = {(route.parent / link).resolve() for link in links}
+                self.assertIn(skill_path, destinations)
+        self.assertTrue(skill_path.is_file())
+        links = re.findall(r'\]\(([^)]+)\)', skill_path.read_text(encoding='utf-8'))
+        destinations = {(skill_path.parent / link).resolve() for link in links}
+        self.assertIn(reference_path, destinations)
+        for destination in destinations:
+            with self.subTest(destination=destination.relative_to(ROOT)):
+                self.assertTrue(destination.is_file())
 
     def test_core_builds_side_effect_free_result_with_progress_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

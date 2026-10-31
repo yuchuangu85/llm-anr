@@ -23,6 +23,8 @@ description: ANR 知识库总索引与技能路由。Use when needing to choose 
 | EventLog 专项分析 | [anr-eventlog-analysis.md](anr-eventlog-analysis.md) | `am_anr` anchor、pre-ANR 事件窗口、生命周期/窗口/焦点/输入序列 |
 | Logcat + AnrManager 专项分析 | [anr-logcat-analysis.md](anr-logcat-analysis.md) | 真实触发点、dump 生命周期、AnrManager CPU/PSI/Load、Meminfo follow-up |
 | 最终 ANR 固定步骤分析 | [anr-analysis.md](anr-analysis.md) | 汇总三源分析，输出时间线、阻塞点、候选根因链、证据质量、修复建议、JSON tail |
+| No Focused Window 专项 | [no-focused-window-anr-analysis](no-focused-window-anr-analysis/SKILL.md) | 明确 no-focus 请求或同一 ANR 的无焦点等待证据；核对应用/窗口、有效计时、焦点资格、复查/reset 与 WMS 归因，不用于仅有 ACK timeout 的场景 |
+| Launcher / Quickstep 手势专项 | [gesture-anr-analysis](gesture-anr-analysis/SKILL.md) | 明确手势请求，或输入/无焦点锚点叠加 Recents 信号；与 no-focus 专项增量使用，不把无焦点直接归因手势 |
 | 判断 ANR 类型/超时/责任线程 | [anr-classification.md](anr-classification.md) | Input、No Focus、Broadcast、Service、ContentProvider、Silent/System ANR 分类 |
 | 理解触发机制/源码路径 | [anr-principle.md](anr-principle.md) | 埋雷/拆雷/爆雷、InputDispatcher、Android 10/13/14/15 差异、trace 生成 |
 | 解释 trace、CPU、内存、IO、监控信号 | [anr-load.md](anr-load.md) | trace 线程头/状态映射、schedstat、utm/stm、lock owner、Binder/render waits、Load、iowait、kswapd、PSI、WatchDog/监控归因 |
