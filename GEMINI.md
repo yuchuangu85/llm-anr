@@ -1,112 +1,136 @@
-# agent-anr — ANR evidence extraction and analysis
+<a id="agent-anr--anr-evidence-extraction-and-analysis"></a>
 
-Agent-driven Android ANR (App Not Responding) analysis pipeline: evidence extraction → normalization → assisted analysis → hypothesis → root-cause report → remediation drafts → final delivery.
+# agent-anr：ANR 证据提取与分析
 
-## ANR Analysis Workflow
+由智能体驱动的 Android ANR（应用无响应）分析流水线：证据提取 → 规范化 → 辅助分析 → 假设 → 根因报告 → 修复草案 → 最终交付。
 
-When a user asks you to analyze an ANR bugreport (providing a directory, ZIP, TAR, or fixture JSON), follow this workflow:
+<a id="anr-analysis-workflow"></a>
 
-### Step 1: Generate AI context
+## ANR 分析工作流
+
+当用户请求分析 ANR 错误报告（提供目录、ZIP、TAR 或 JSON 测试样例）时，遵循以下工作流：
+
+<a id="step-1-generate-ai-context"></a>
+
+### 第 1 步：生成 AI 上下文
 
 ```bash
 python3 scripts/anr_to_ai.py <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
-# Equivalent entrypoint:
+# 等价入口：
 python3 -m anr_evidence --build-ai-context <path_to_bugreport> [--package <pkg>] [--anr-type <type>]
 ```
 
-This produces `anr_ai_context/` containing:
-- `index.json` — directory index linking to all ANR groups
-- `<group-id>/anr_analysis.md` — AI instructions + filtered evidence + inline analysis slots (one per ANR)
-- `<group-id>/logcat.txt` - full filtered logcat referenced from `anr_analysis.md`
-- `<group-id>/anr_reconstruction.md` and `anr_reconstruction.json` - independent evidence-driven process reconstruction, generated from logs by default even before AI slots are filled
+这会生成 `anr_ai_context/`，其中包含：
+- `index.json`：链接到所有 ANR 分组的目录索引
+- `<group-id>/anr_analysis.md`：AI 指令 + 筛选后的证据 + 文内分析槽位（每个 ANR 一份文件）
+- `<group-id>/logcat.txt`：由 `anr_analysis.md` 引用的完整筛选后 logcat 日志
+- `<group-id>/anr_reconstruction.md` 和 `anr_reconstruction.json`：由证据驱动的独立过程重建，默认从日志生成，即使尚未填写 AI 槽位也会生成
 
-`index.json` exposes each group's reconstruction paths as `artifactPaths.reconstruction` and `artifactPaths.reconstructionJson`. The four `anr_analysis.md` slots and `logcat.txt` remain unchanged. Reconstruction separates `observed` (log observations), `inferred` (mechanism/AI hypotheses), and `unknown` (gaps), with per-event time, delta T, identity, and original-evidence location. Time order is not causality; never invent an unobserved 5s interval or treat a dump snapshot as continuous blocking. This is evidence reconstruction, not real execution replay; existing replay commands remain regression reruns. See `docs/anr-ai-analysis-guide.md` for details.
+`index.json` 通过 `artifactPaths.reconstruction` 和 `artifactPaths.reconstructionJson` 提供各分组的重建文件路径。每个 ANR 保留一份独立的 `anr_reconstruction.md`，内容仅限关键时间线里程碑、简短证据摘录、未经验证的候选解释摘要，以及重要缺口或警告；不得合并分组，也不得在此文档中重复完整日志和 AI 槽位内容。JSON 保留所有已观测事件、每个事件的时间及时间差（ΔT）、身份标识、证据引用、关联关系和 AI 原文。`anr_analysis.md` 的四个槽位及 `logcat.txt` 保持不变。重建内容区分 `observed`（日志观测）、`inferred`（机制推断或 AI 假设）和 `unknown`（证据缺口）。时间顺序不等于因果关系；不得虚构未观测到的 5 秒区间，也不得将转储快照视为持续阻塞的证明。这是证据重建，不是真实执行回放；现有回放命令仍用于回归重跑。详情参见 `docs/anr-ai-analysis-guide.md`。
 
-### Step 2: Read and analyze the evidence
+<a id="step-2-read-and-analyze-the-evidence"></a>
 
-Read `anr_ai_context/<group-id>/anr_analysis.md` and perform the analysis following the instructions within — the prompt tells you exactly how to structure the output (timeline, blocking point, candidate root-cause chains, evidence quality assessment, remediation suggestions). Write results directly into the `#### AI Analysis — <source>` slots. The comprehensive synthesis must be written back under `#### AI Analysis — 最终 ANR 综合分析` in the same file (for example starting with `## 综合分析结论`), not only returned in chat.
+### 第 2 步：阅读并分析证据
 
-After filling all four AI slots, refresh the independent reconstruction for each group before delivery:
+阅读 `anr_ai_context/<group-id>/anr_analysis.md`，并按其中的指令进行分析；提示词会明确说明输出结构（时间线、阻塞点、候选根因链、证据质量评估、修复建议）。将结果直接写入 `#### AI Analysis — <source>` 槽位。综合结论必须写回同一文件的 `#### AI Analysis — 最终 ANR 综合分析` 下（例如以 `## 综合分析结论` 开始），不能仅在聊天中返回。
+
+填写全部四个 AI 槽位后，交付前须刷新各分组的独立重建：
 
 ```bash
 python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>
 ```
 
-A context root processes all its groups; a group directory or analysis file targets one group. This refresh does not re-extract evidence or rewrite AI slots. Optional `--ai-report <JSON>` adds an external AI report only as an unverified candidate explanation: verify its citations and never promote the report itself to an observed fact.
+传入上下文根目录会处理其中的所有分组；传入分组目录或分析文件则只处理一个分组。此刷新不会重新提取证据或改写 AI 槽位。可选参数 `--ai-report <JSON>` 仅将外部 AI 报告作为未经验证的候选解释加入：须核验其引用，不得将报告本身提升为已观测事实。
 
-### Step 3: Output the analysis report
+<a id="step-3-output-the-analysis-report"></a>
 
-Output a structured Markdown report covering:
-1. Timeline of key events from trace/EventLog/AnrManager/logcat
-2. Direct blocking point with supporting evidence
-3. Candidate root-cause chains ranked by confidence
-4. Evidence quality assessment (gaps, contradictions)
-5. Remediation suggestions
+### 第 3 步：输出分析报告
 
-Include the refreshed per-group `anr_reconstruction.md` and `anr_reconstruction.json` paths in the final delivery alongside `anr_analysis.md`.
+输出结构化 Markdown 报告，涵盖：
+1. 来自堆栈转储、EventLog、AnrManager 和 logcat 的关键事件时间线
+2. 直接阻塞点及其支撑证据
+3. 按置信度排序的候选根因链
+4. 证据质量评估（缺口、矛盾）
+5. 修复建议
 
-## Input Dispatch Timeout ANR specialization
+最终交付时，除 `anr_analysis.md` 外，还须提供各分组刷新后的 `anr_reconstruction.md` 和 `anr_reconstruction.json` 路径。
 
-Load and follow [the input-dispatch-timeout skill](skills/input-dispatch-timeout-anr-analysis/SKILL.md) when the user requests input-dispatch-timeout analysis / `input_dispatching_timeout`, or the same ANR shows a published event awaiting FINISHED, an outstanding connection waitQueue, or a channel `is not responding. Waited ...ms for ...` reason. Classify generic `Input dispatching timed out` first; a pure no-focused-window wait belongs to the separate skill below, not this ACK-timeout mechanism.
+<a id="input-dispatch-timeout-anr-specialization"></a>
 
-Use it additively after baseline extraction: correlate connection token/native seq, per-entry delivery/deadline, finish/FINISHED/cleanup, the actual expiry versus reason entry, and remaining-queue recovery. A Java finish return, handled=false, or one ACK does not prove the connection has recovered. Fill the four existing analysis slots, preserve conservative flags, and refresh the independent reconstruction before delivery. Load the gesture skill only when its own Launcher/Recents trigger is met.
+## 输入分发超时 ANR 专项分析
 
-## No Focused Window ANR specialization
+当用户请求输入分发超时分析或指定 `input_dispatching_timeout`，或同一 ANR 出现已发布但仍在等待 FINISHED 的事件、连接中尚未清空的 waitQueue，或通道的原因为 `is not responding. Waited ...ms for ...` 时，加载并遵循[输入分发超时技能](skills/input-dispatch-timeout-anr-analysis/SKILL.md)。对于泛化的 `Input dispatching timed out`，须先分类；纯粹的无焦点窗口等待属于下方的独立技能，不属于此 ACK 超时机制。
 
-Load and follow [the no-focused-window skill](skills/no-focused-window-anr-analysis/SKILL.md) before interpreting evidence when the user explicitly requests no-focused-window analysis / `no_focus_window`, or the same ANR's reason/logs show `does not have a focused window`, `no focused window`, `no focus window`, `no window has focus`, or a focus-dependent event waiting for a window while a focused application exists.
+在基线提取后以增量方式使用该技能：关联连接 token 与原生 seq、每个条目的投递与截止时间、finish 与 FINISHED 及清理过程、实际到期条目与原因中所指条目的区别，以及剩余队列的恢复情况。Java finish 返回、handled=false 或单个 ACK 均不能证明连接已恢复。填写现有四个分析槽位，保留保守标志，并在交付前刷新独立重建。只有满足手势技能自身的 Launcher/Recents 触发条件时才加载该技能。
 
-Use it additively after baseline extraction: distinguish focused application from actual native window focus, reconstruct target lookup / configured timeout / expiry recheck / reset, and verify WMS attribution and recovery. A generic input timeout, a focus change, or a delivered-event ACK timeout alone does not establish this branch. Preserve all baseline evidence and fill the four existing source/final slots, with synthesis under `#### AI Analysis — 最终 ANR 综合分析`.
+<a id="no-focused-window-anr-specialization"></a>
 
-If the same ANR also contains Launcher/Quickstep/Recents signals such as `recents_animation_input_consumer`, `AbsSwipeUpHandler`, or `finishRecentsAnimation`, also load [the gesture skill](skills/gesture-anr-analysis/SKILL.md) for the upstream chain; a no-focus timeout alone does not prove a gesture defect.
+## 无焦点窗口 ANR 专项分析
 
-### Quick reference: ANR type strategies
+当用户明确请求无焦点窗口分析或指定 `no_focus_window`，或同一 ANR 的原因或日志中出现 `does not have a focused window`、`no focused window`、`no focus window`、`no window has focus`，或已有焦点应用但依赖焦点的事件仍在等待窗口时，须在解释证据前加载并遵循[无焦点窗口技能](skills/no-focused-window-anr-analysis/SKILL.md)。
 
-| Type | Key signals |
+在基线提取后以增量方式使用该技能：区分焦点应用与实际原生窗口焦点，重建目标查找、配置的超时、到期复查和重置过程，并核验 WMS 归因及恢复情况。仅有泛化的输入超时、焦点变化或已投递事件的 ACK 超时，均不足以确定属于此分支。保留全部基线证据并填写现有四个来源分析及最终分析槽位，将综合结论写在 `#### AI Analysis — 最终 ANR 综合分析` 下。
+
+如果同一 ANR 还包含 Launcher/Quickstep/Recents 信号，例如 `recents_animation_input_consumer`、`AbsSwipeUpHandler` 或 `finishRecentsAnimation`，还须加载[手势技能](skills/gesture-anr-analysis/SKILL.md)以分析上游链路；仅有无焦点超时并不能证明存在手势缺陷。
+
+<a id="quick-reference-anr-type-strategies"></a>
+
+### 速查：ANR 类型策略
+
+| 类型 | 关键信号 |
 |------|-------------|
-| `input_dispatching_timeout` | InputDispatcher timeout, no focused window, main thread blocked on binder/fence/lock |
-| `no_focus_window` | Window focus loss, Activity not resumed, surface not ready |
-| `unknown` | Broader window (30s), generic signal patterns |
+| `input_dispatching_timeout` | InputDispatcher 超时、无焦点窗口、主线程阻塞于 Binder/同步栅栏/锁 |
+| `no_focus_window` | 窗口失去焦点、Activity 尚未恢复、表面尚未就绪 |
+| `unknown` | 更宽的时间窗口（30 秒）、通用信号模式 |
 
-### If the user provides no package name
+<a id="if-the-user-provides-no-package-name"></a>
 
-Run without `--package` and infer the package from the evidence (the `AnrManager` block or `am_anr` line will contain it).
+### 用户未提供包名时
 
-### ANR Domain Knowledge (wiki skills)
+运行时不传入 `--package`，并从证据中推断包名（`AnrManager` 块或 `am_anr` 行中会包含包名）。
 
-When deeper ANR domain expertise is needed during analysis, load the relevant skill from `skills/`:
+<a id="anr-domain-knowledge-wiki-skills"></a>
 
-| Analysis phase | Skill to load |
+### ANR 领域知识（知识库技能）
+
+分析过程中需要更深入的 ANR 领域知识时，从 `skills/` 加载相关技能：
+
+| 分析阶段 | 需加载的技能 |
 |---------------|---------------|
-| 1. Confirm ANR type and characteristics | `skills/anr-classification.md` |
-| 2. Understand triggering mechanism | `skills/anr-principle.md` |
-| 3. Follow standard analysis flow | `skills/anr-analysis.md` |
-| 4. Identify root cause from trace/log patterns | `skills/anr-root-cause.md` |
-| 5. Assess system load (CPU/memory/IO) | `skills/anr-load.md` |
-| 6. Look up external references | `skills/anr-reference.md` |
+| 1. 确认 ANR 类型与特征 | `skills/anr-classification.md` |
+| 2. 理解触发机制 | `skills/anr-principle.md` |
+| 3. 遵循标准分析流程 | `skills/anr-analysis.md` |
+| 4. 从堆栈转储或日志模式中识别根因 | `skills/anr-root-cause.md` |
+| 5. 评估系统负载（CPU、内存、IO） | `skills/anr-load.md` |
+| 6. 查阅外部参考资料 | `skills/anr-reference.md` |
 
-## Project layout
+<a id="project-layout"></a>
+
+## 项目结构
 
 ```
-anr_evidence/          # Core Python library (CLI via anr_evidence.cli / -m anr_evidence)
-scripts/               # Standalone entrypoint scripts
-tests/                 # Unit + integration tests (discoverable via unittest)
-docs/                  # Algorithm design docs + gap analysis
-wiki/                  # ANR domain reference material
+anr_evidence/          # Python 核心库（命令行入口：anr_evidence.cli / -m anr_evidence）
+scripts/               # 独立入口脚本
+tests/                 # 单元测试 + 集成测试（可通过 unittest 发现）
+docs/                  # 算法设计文档 + 差距分析
+wiki/                  # ANR 领域参考资料
 ```
 
-## Key commands
+<a id="key-commands"></a>
+
+## 常用命令
 
 ```bash
-# === Primary workflow: AI context generation ===
+# === 主要工作流：生成 AI 上下文 ===
 python3 scripts/anr_to_ai.py <input> [--package <pkg>] [--anr-type <type>]
 
-# === Deterministic pipeline (Phases 1-8) ===
+# === 确定性流水线（第 1 至 8 阶段） ===
 python3 -m anr_evidence tests/fixtures/nfw_01.json
 python3 -m anr_evidence --analyze tests/fixtures/nfw_01.json
 python3 -m anr_evidence --report tests/fixtures/nfw_01.json
 python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json
 
-# === Multi-Agent AI Analysis (requires API key) ===
+# === 多智能体 AI 分析（需要 API 密钥） ===
 python3 -c "
 from anr_evidence import run_ai_agent_analysis, ProviderConfig, ProviderKind, AgentConfig
 from anr_evidence import load_package_from_fixture
@@ -119,52 +143,58 @@ result = run_ai_agent_analysis(
 )
 "
 
-# === Standalone scripts ===
+# === 独立脚本 ===
 python3 scripts/anr_preprocessor.py tests/fixtures/nfw_01.json
 python3 scripts/anr_log_pattern_filter.py path/to/events.txt --tags docs/event-log-tags-reference.md
 python3 scripts/extract_bugreport.py path/to/bugreport.zip -o output_dir/
 python3 scripts/compare_replays.py path/to/run_a path/to/run_b
 python3 scripts/web_server.py --port 8080
 
-# === Replay ===
+# === 回放 ===
 python3 -m anr_evidence --replay samples/replay/manifest.json --replay-out /tmp/anr-replay
 python3 scripts/run_replay.py samples/replay/manifest.json --out-root samples/replay/runs --label nightly
 ```
 
-## API — use from Python (within agent session)
+<a id="api--use-from-python-within-agent-session"></a>
+
+## API：在 Python 中使用（智能体会话内）
 
 ```python
 from anr_evidence import (
-    # AI context
+    # AI 上下文
     build_ai_context, AiContextOptions, AiContextResult,
-    # Package loading
+    # 数据包加载
     load_package_from_archive, load_package_from_directory, load_package_from_fixture,
-    # Multi-Agent AI
+    # 多智能体 AI
     run_ai_agent_analysis, ProviderConfig, ProviderKind, AgentConfig,
-    # Evidence Slice Schema
+    # 证据切片模式
     EvidenceSlice, build_evidence_slices, annotate_slices_with_tags,
-    # Entity linkage
+    # 实体关联
     EntityMap, build_entity_map, entity_summary_for_ai,
-    # Weighting
+    # 权重
     ImportanceLevel, EVENT_LOG_TAG_WEIGHTS, filter_by_importance,
-    # Context flooding prevention
+    # 防止上下文过载
     TruncationConfig, truncate_evidence,
-    # Time normalization
+    # 时间规范化
     TimeNormalizedLine, compute_delta_t,
 )
 ```
 
-## Design rules
+<a id="design-rules"></a>
 
-- Baseline extraction is the hard guarantee — never remove baseline evidence
-- Type templates are additive only — never delete evidence sources
-- Unknown/ambiguous ANR type falls back safely to baseline extraction
-- Critical evidence retained > noise reduced
-- All analysis output is conservative: `finalJudgment = false`, `notRootCauseYet = true`, `requiresHumanConfirmation = true`
-- AnrManager lines are always CRITICAL — they contain the ANR diagnostic summary
-- Use the AnrManager block as a secondary anchor for logcat, cross-referencing with event_log's am_anr timestamp
+## 设计规则
 
-## Test
+- 基线提取是硬性保障：不得移除基线证据
+- 类型模板仅作增量补充：不得删除证据来源
+- ANR 类型未知或不明确时，安全回退到基线提取
+- 保留关键证据的优先级高于减少噪声
+- 所有分析输出均须保持保守：`finalJudgment = false`、`notRootCauseYet = true`、`requiresHumanConfirmation = true`
+- AnrManager 行始终为 CRITICAL 级别，因为其中包含 ANR 诊断摘要
+- 将 AnrManager 块用作 logcat 的次级锚点，并与 event_log 的 am_anr 时间戳交叉核对
+
+<a id="test"></a>
+
+## 测试
 
 ```bash
 python3 -m unittest discover -s tests -v

@@ -271,7 +271,7 @@ class AiContextTests(unittest.TestCase):
         guide = (ROOT / 'docs/anr-ai-analysis-guide.md').read_text(encoding='utf-8')
         self.assertIn('## 分析原则', guide)
         self.assertIn('## 四阶段分析顺序', guide)
-        self.assertIn('## Final ANR 固定输出', guide)
+        self.assertIn('## 最终 ANR 固定输出', guide)
         self.assertIn('### 死锁检测', guide)
         self.assertIn('CPU >90% processes', guide)
         self.assertIn('## Trace 证据分析', first_analysis)

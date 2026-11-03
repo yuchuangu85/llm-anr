@@ -1,6 +1,6 @@
 ---
 name: anr-load
-description: ANR trace 字段、线程状态、CPU、内存、IO、负载与监控信号分析。Use when interpreting traces.txt thread headers, ART/Java/Linux thread states, schedstat, utm/stm, lock owner, Binder/render waits, Load, CPU usage, iowait, kswapd, PSI memory, LMK, mmcqd/exe_cq, WatchDog, Looper delay, or ANR monitoring/auto-attribution signals.
+description: ANR trace 字段、线程状态、CPU、内存、IO、负载与监控信号分析。用于解读 traces.txt 线程头、ART/Java/Linux 线程状态、schedstat、utm/stm、持锁线程、Binder/渲染等待、负载、CPU 使用率、iowait、kswapd、PSI 内存压力、LMK、mmcqd/exe_cq、WatchDog、Looper 延迟或 ANR 监控/自动归因信号。
 ---
 
 # ANR 负载分析与监控
@@ -14,24 +14,24 @@ description: ANR trace 字段、线程状态、CPU、内存、IO、负载与监�
 | `prio` / `nice` | 调度优先级；nice 越低优先级越高 |
 | `tid` / `sysTid` | Java/ART 线程号与系统线程号；主线程 sysTid 通常等于 pid |
 | `group/sCount/dsCount/ucsCount` | 线程组、挂起次数、调试挂起次数；`dsCount` 不能单独定责 |
-| `obj/self` | Java 线程对象地址与 native thread 地址，用于人工比对 |
+| `obj/self` | Java 线程对象地址与原生线程地址，用于人工比对 |
 | `cgrp/sched/handle` | 调度组、调度策略/优先级、线程处理函数地址 |
-| `state` | Java/ART 状态；结合 Linux state 判断 Runnable、Sleeping、Blocked、Native |
+| `state` | Java/ART 状态；结合 Linux 状态判断可运行、睡眠、阻塞、原生执行状态 |
 | `utm` / `stm` | 用户态/内核态 CPU 时间；通常以 jiffies 计，需结合 `HZ` |
-| `schedstat` | 三元组 `runNs waitNs timeSlices`；可辅助判断 CPU 执行、等待调度或 dump 采样局限 |
+| `schedstat` | 三元组 `runNs waitNs timeSlices`；可辅助判断 CPU 执行、等待调度或转储采样局限 |
 | `core` | 最后运行 CPU 核；只作辅助，不作根因 |
-| `held mutexes` | ART/runtime mutex；`mutator lock` shared held 常见不等于业务锁 |
+| `held mutexes` | ART/运行时互斥锁；常见的共享持有 `mutator lock` 不等于持有业务锁 |
 | `waiting to lock` / `held by` | Java 锁竞争核心证据 |
 
 ### 1.1 线程状态映射
 
-| Java 语义 | ART/trace 状态 | Linux state | 分析要点 |
+| Java 语义 | ART/trace 状态 | Linux 状态 | 分析要点 |
 |---|---|---|---|
-| RUNNABLE | RUNNING/RUNNABLE/NATIVE | R/S | 可能是 CPU 执行、JNI/native 调用或在 native 中睡眠；必须看栈帧 |
-| BLOCKED | BLOCKED/MONITOR | S/D | 等 Java monitor/futex；沿 `held by thread` 找 owner |
+| RUNNABLE | RUNNING/RUNNABLE/NATIVE | R/S | 可能是 CPU 执行、JNI/原生调用或在原生代码中睡眠；必须看栈帧 |
+| BLOCKED | BLOCKED/MONITOR | S/D | 等 Java 监视器锁/futex；沿 `held by thread` 找持锁线程 |
 | WAITING | WAIT/VMWAIT | S | 等待 notify/VM 资源；找唤醒方或 GC/ClassLinker 旁证 |
-| TIMED_WAITING | TIMED_WAIT | S | sleep/wait(timeout)/join(timeout)；主线程 sleep 多为设计问题 |
-| SUSPENDED | SUSPENDED | 非普通调度态 | 可能 GC/debugger STW；需多线程同时暂停或 GC/debug log |
+| TIMED_WAITING | TIMED_WAIT | S | sleep/wait(timeout)/join(timeout)；主线程睡眠多为设计问题 |
+| SUSPENDED | SUSPENDED | 非普通调度态 | 可能是 GC/调试器导致的 STW；需多线程同时暂停或 GC/调试日志 |
 | TERMINATED | ZOMBIE | — | 通常忽略 |
 | UNKNOWN | UNKNOWN/缺失 | ? | 标记采样/解析缺口，不强行归因 |
 
@@ -39,46 +39,46 @@ description: ANR trace 字段、线程状态、CPU、内存、IO、负载与监�
 
 | 状态/堆栈 | 初步判断 | 下一步 |
 |---|---|---|
-| `Runnable` + 业务栈 | 业务计算/布局/循环或 CPU 竞争 | 看 schedstat、CPU hog、Slow dispatch |
+| `Runnable` + 业务栈 | 业务计算/布局/循环或 CPU 竞争 | 看 schedstat、CPU 大量占用、Slow dispatch |
 | `Blocked` | Java 锁竞争 | 沿 `held by tid` 找持锁线程 |
-| `Waiting/TimedWaiting` | wait/latch/sleep | 找唤醒方或 sleep 来源 |
+| `Waiting/TimedWaiting` | 等待/闭锁/睡眠 | 找唤醒方或睡眠来源 |
 | `BinderProxy.transactNative` / `waitForResponse` | Binder 同步等待 | 找 Binder 对端堆栈/服务端负载 |
-| `nativePollOnce` | Looper 空闲或等待消息 | 结合 ANR 类型；No Focus/系统侧常见，不能单独定根因 |
-| `futex` / syscall / IO | Native 阻塞 | 判断锁、IO、Surface、Vsync、内核等待 |
+| `nativePollOnce` | Looper 空闲或等待消息 | 结合 ANR 类型；无焦点窗口/系统侧常见，不能单独定根因 |
+| `futex` / 系统调用 / IO | 原生阻塞 | 判断锁、IO、Surface、Vsync、内核等待 |
 
 ## 2.1 Trace 自动分类证据门槛
 
 | 候选类型 | 必要证据 | 不能单靠什么下结论 |
 |---|---|---|
-| 主线程 CPU 执行超时 | main RUNNABLE/R + 业务/布局/循环栈 + Slow dispatch 或 CPU 时间窗口 | 单份 trace 的 RUNNABLE 快照 |
-| 调度延迟 | main runnable 但 `schedstat.waitNs >> runNs` + CPU TOTAL/Load 高或外部 top 进程 | schedstat 单独一项 |
-| 锁竞争 | main BLOCKED/MONITOR + `waiting to lock` + owner thread 栈 | 没有 owner 的锁对象 |
-| 死锁 | 稳定锁环 waiter→owner→...→waiter，最好跨 trace 一致 | 普通链式阻塞 |
-| Binder 阻塞 | `BinderProxy.transact`/`waitForResponse`/`talkWithDriver` + 对端进程/线程或 binder info | 只有客户端栈 |
-| IO/DB/SP | 主线程 `open/read/write/fsync/sqlite/QueuedWork` + iowait/IO 时间窗口或业务栈 | dump 后 iowait |
-| GC/STW | 多线程 SUSPENDED/VMWAIT + GC/ART log/PSI memory | 单线程 SUSPENDED |
-| Render/GPU | main doFrame/ThreadedRenderer + RenderThread/SF/fence/buffer 旁证 | 单条 `dequeueBuffer` |
+| 主线程 CPU 执行超时 | 主线程 RUNNABLE/R + 业务/布局/循环栈 + Slow dispatch 或 CPU 时间窗口 | 单份 trace 的 RUNNABLE 快照 |
+| 调度延迟 | 主线程可运行但 `schedstat.waitNs >> runNs` + CPU 总负载高或外部高占用进程 | schedstat 单独一项 |
+| 锁竞争 | 主线程 BLOCKED/MONITOR + `waiting to lock` + 持锁线程栈 | 没有持锁线程的锁对象 |
+| 死锁 | 稳定锁环：等待线程→持锁线程→...→等待线程，最好跨 trace 一致 | 普通链式阻塞 |
+| Binder 阻塞 | `BinderProxy.transact`/`waitForResponse`/`talkWithDriver` + 对端进程/线程或 Binder 信息 | 只有客户端栈 |
+| IO/DB/SP | 主线程 `open/read/write/fsync/sqlite/QueuedWork` + iowait/IO 时间窗口或业务栈 | 转储后 iowait |
+| GC/STW | 多线程 SUSPENDED/VMWAIT + GC/ART 日志/PSI 内存压力 | 单线程 SUSPENDED |
+| 渲染/GPU | 主线程 doFrame/ThreadedRenderer + RenderThread/SF/fence/缓冲区旁证 | 单条 `dequeueBuffer` |
 
 ## 3. CPU 负载
 
 1. 读取 `AnrManager: CPU usage from Xms to Yms ago` 的统计窗口；越靠近 ANR 前越可靠。
 2. **先看 `TOTAL`**：全机 CPU 接近或超过 95% 时，高 CPU 本身可能导致调度延迟；80%+ 可作为重要诱因；同时读取 `iowait` 判断是否 IO 等待拉高。
-3. **再看 Top 进程/线程**：若 ANR 进程自身 top 且 main/业务线程 runnable，偏应用侧 CPU 耗时；若其他进程/system_server top，偏外部抢占。
+3. **再看高占用进程/线程**：若 ANR 进程自身占用最高且主线程/业务线程可运行，偏应用侧 CPU 耗时；若其他进程/system_server 占用最高，偏外部抢占。
 4. **高负载进程必须联动内存证据**：
    - 目标包高负载：继续查 meminfo/am_meminfo/am_pss、Java/native heap、GC、LMK/OOM、PSI memory，判断是否应用内存泄漏、内存抖动或 OOM 放大导致。
    - 其它进程高负载：同样检查该进程内存/IO/GC/LMK 证据；若成立，作为外部系统压力或跨进程影响候选，而不是直接归因到目标应用。
    - 缺少内存证据时，不得直接下“内存泄漏”或“OOM”结论，只能列为证据缺口。
    - 在本工具生成的 cache 中，`Meminfo Target/High-Load Follow-up` 是 AnrManager Top CPU/IO 后的固定后续证据，必须紧跟 AnrManager 分析使用。
-5. 区分 CPU 使用率和 Load Average：Load 高但 CPU usage 不高时，可能包含不可中断 IO/等待。
+5. 区分 CPU 使用率和平均负载：负载高但 CPU 使用率不高时，可能包含不可中断 IO/等待。
 6. `schedstat` 中等待时间远大于运行时间，支持 CPU 抢占/调度延迟判断。
 
 ## 4. IO 负载
 
 | 信号 | 解释 |
 |---|---|
-| `iowait` 高 | CPU 等待 IO，线程可能看似 sleeping/native |
-| `mmcqd` / `mmc-cmdqd` / `exe_cq` Top | 存储队列压力，常见系统侧 IO 瓶颈 |
-| major fault 高 | 缺页读盘，可能受内存/IO 双重影响 |
+| `iowait` 高 | CPU 等待 IO，线程可能看似处于睡眠/原生执行状态 |
+| `mmcqd` / `mmc-cmdqd` / `exe_cq` 占用高 | 存储队列压力，常见系统侧 IO 瓶颈 |
+| 主缺页次数高 | 缺页读盘，可能受内存/IO 双重影响 |
 | 主线程 `read/write/fsync/open` | 应用侧主线程阻塞 IO，尤其 DB/SP/文件 |
 
 IO 结论必须和时间窗口匹配；dump 后的 IO 高不能直接解释 dump 前 ANR。
@@ -87,11 +87,11 @@ IO 结论必须和时间窗口匹配；dump 后的 IO 高不能直接解释 dump
 
 | 信号 | 解释 |
 |---|---|
-| `kswapd0` Top | 内核回收页，说明内存压力可能影响调度 |
+| `kswapd0` 占用高 | 内核回收页，说明内存压力可能影响调度 |
 | `/proc/pressure/memory` some/full 高 | 进程或全局因内存回收停顿 |
 | `lowmemorykiller` | 系统杀进程；adj 越低被杀说明越严重 |
-| Free/Available 极低、swap 活跃 | 可能引发启动慢、fork 慢、GC/缺页变多 |
-| 目标进程 heap 持续增长/GC 频繁 | 应用泄漏或内存抖动可能是上游诱因 |
+| 空闲/可用内存极低、交换活跃 | 可能引发启动慢、fork 慢、GC/缺页变多 |
+| 目标进程堆持续增长/GC 频繁 | 应用泄漏或内存抖动可能是上游诱因 |
 
 ## 6. Looper 与监控信号
 
@@ -102,19 +102,19 @@ IO 结论必须和时间窗口匹配；dump 后的 IO 高不能直接解释 dump
 
 ## 7. 抖音实践可复用经验
 
-- Barrier 导致主线程“假死”：关注 MessageQueue sync barrier、异步消息、Choreographer/Raster 调度。
+- 同步屏障导致主线程“假死”：关注 MessageQueue 同步屏障、异步消息、Choreographer/Raster 调度。
 - SharedPreferences 等待：关注 `QueuedWork`、`apply()` 异步写入、生命周期等待、锁持有。
 - 自动归因：先确定问题区间，再粗归因（CPU/IO/内存/锁/Binder），最后细归因到线程/方法/业务场景。
 
 ## 8. 负载结论模板
 
 ```text
-Load window: <CPU usage from ... ago>
-Total first: CPU TOTAL=<...>, iowait=<...>, Load=<...>
-Top consumers: <target package high?|other process high?>
-Memory follow-up: <target/other process meminfo|PSI|GC|LMK|OOM evidence or missing>
-Affected ANR path: <main/binder/worker was runnable|blocked|io>
-Conclusion: <root cause|amplifier|not enough evidence>
+负载窗口：<CPU 用量统计覆盖的起止时间>
+先看整体：CPU TOTAL=<...>, iowait=<...>, Load=<...>
+高负载进程：<目标包负载是否高？|其他进程负载是否高？>
+内存跟进：<目标/其他进程 meminfo|PSI|GC|LMK|OOM 证据或缺口>
+受影响的 ANR 路径：<主线程/Binder/工作线程处于可运行|阻塞|I/O 等待状态>
+结论：<根因|放大因素|证据不足>
 ```
 
 ## 回源阅读
