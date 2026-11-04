@@ -6,6 +6,10 @@ from copy import deepcopy
 from hashlib import sha1
 from typing import Any
 
+from .incident_scenario import build_incident_scenario
+from .input_anr import build_input_anr
+from .report_validation import CONSERVATIVE_FLAGS
+
 REQUIRED_FIELDS = (
     "metadata",
     "classification",
@@ -56,6 +60,19 @@ class RemediationError(ValueError):
 def generate_remediation_drafts(package: dict[str, Any]) -> dict[str, Any]:
     report = _validate_phase6_package(package)
     drafts = _build_remediation_drafts(report)
+    input_anr = report["inputAnr"] if "inputAnr" in report else build_input_anr(
+        report["classification"].get("detectedType"),
+        (report.get("anchors") or {}).get("primaryAnchor"),
+        [],
+    )
+    incident_scenario = report.get("incidentScenario")
+    if not incident_scenario:
+        incident_scenario = build_incident_scenario(
+            report["classification"].get("detectedType"),
+            (report.get("anchors") or {}).get("primaryAnchor"),
+            report.get("timeline") or [],
+            input_anr=input_anr,
+        )
     return {
         "metadata": {
             "packageId": report["metadata"]["packageId"],
@@ -65,9 +82,13 @@ def generate_remediation_drafts(package: dict[str, Any]) -> dict[str, Any]:
             "status": report["metadata"]["status"],
             "adviceMode": "gated-draft",
             "finalAdvice": False,
+            **CONSERVATIVE_FLAGS,
         },
         "classification": deepcopy(report["classification"]),
+        **{key: deepcopy(report[key]) for key in ("evidenceCatalog", "evidenceIdentity", "evidenceRevision") if key in report},
         "anchors": deepcopy(report["anchors"]),
+        "inputAnr": deepcopy(input_anr),
+        "incidentScenario": deepcopy(incident_scenario),
         "traceInsights": deepcopy(report.get("traceInsights", {})),
         "candidateChains": deepcopy(report.get("candidateChains", [])),
         "topConclusion": deepcopy(report.get("topConclusion")),

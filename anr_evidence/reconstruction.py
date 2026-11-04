@@ -12,9 +12,12 @@ from typing import Any
 
 from .am_anr import package_name_from_am_anr_line
 from .log_filter import TIMESTAMP_RE, iter_text_lines, parse_log_timestamp
-from .reconstruction_ai import attach_ai_analysis
+from .input_anr import build_input_anr
+from .incident_scenario import build_incident_scenario, render_incident_sections
+from .reconstruction_ai import INPUT_CLAIM_FIELDS, attach_ai_analysis
 from .time_norm import parse_record_timestamp as _record_time, record_clock_domain as _clock_domain
 from .trace_preprocessor import extract_trace_threads
+from .report_validation import analysis_digest, extract_analysis_slots, refreshed_analysis_revision
 
 SCHEMA_VERSION = "anr-reconstruction-v1"
 SOURCE_KEYS = (
@@ -249,11 +252,20 @@ def build_reconstruction(
         "inputIdentity": deepcopy(group.get("inputIdentity")),
         "mechanismSteps": mechanism_steps, "evidenceGaps": gaps, "warnings": warnings,
         "evidenceCompleteness": deepcopy(group.get("completeness", {})),
+        "rootCausePatternHints": deepcopy(group.get("rootCausePatternHints", [])),
+        "sourceHintIds": sorted({hint["id"] for hint in [
+            *group.get("trace", {}).get("traceHints", []),
+            *group.get("trace", {}).get("deadlockHints", []),
+            *(group.get("anrManager", {}).get("summary") or {}).get("derivedHints", []),
+        ] if isinstance(hint, dict) and isinstance(hint.get("id"), str)}),
         "processCompleteness": "partial" if events else "unknown",
         "finalJudgment": False, "notRootCauseYet": True, "requiresHumanConfirmation": True,
     }
+    report["inputAnr"] = build_input_anr(anr_type, anchor, events)
+    report["incidentScenario"] = build_incident_scenario(anr_type, anchor, events, input_anr=report["inputAnr"])
     if artifacts:
         report["workspaceEvidenceDigest"] = _workspace_digest(artifacts.get("anr_analysis.md", ""), artifacts.get("logcat.txt", ""))
+        report["workspaceAnalysisDigest"] = analysis_digest(extract_analysis_slots(artifacts.get("anr_analysis.md", ""))[0])
     return attach_ai_analysis(report, ai_analyses, ai_report)
 
 
@@ -421,11 +433,46 @@ def render_reconstruction_markdown(report: dict[str, Any]) -> str:
         excerpt = _event_excerpt(first)
         lines.extend([f"- 摘录首行定位：{_event_location(first, excerpt[0])}。", *_code_block("\n".join(_brief(line, 360) for line in excerpt)), ""])
 
+    scenario = report.get("incidentScenario") or build_incident_scenario(
+        report.get("anrType", "unknown"), report.get("anchor"), events, input_anr=report.get("inputAnr"),
+    )
+    lines.extend(render_incident_sections(scenario, report.get("inputAnr")))
+    for field, title in zip(INPUT_CLAIM_FIELDS, ("超时事件候选评估", "ANR 模型候选补充", "模拟操作候选补充")):
+        claims = [claim for claim in report.get("aiClaims", []) if claim.get("kind") == field]
+        if not claims:
+            continue
+        lines.extend([f"### {title}", "", "inferred / unverified；executed=false；引用校验不证明因果或复现成功。"])
+        for claim in claims[:4]:
+            lines.extend(_code_block(_brief(str(claim.get("summary") or "结构化候选详见 JSON。"), 300)))
+            lines.append(f"- 引用：{claim.get('resolvedEventIds', [])}；引用状态：{claim.get('referenceValidation', 'unverified')}。")
+            for key in ("reasonEvent", "earliestExpiredEntry", "preconditions", "expectedObservation", "expectedObservations", "captureChecks", "uncertainties", "missingParameters"):
+                if claim.get(key):
+                    lines.extend(_code_block(f"{key}: " + _brief(str(claim[key]), 300)))
+            for key in ("phases", "actions"):
+                items = claim.get(key)
+                if not isinstance(items, list):
+                    continue
+                for index, item in enumerate(items[:6], 1):
+                    if isinstance(item, dict):
+                        # Keep local uncertainty and action gates alongside the text.
+                        label = item.get("phase", index) if key == "phases" else item.get("step", index)
+                        text = item.get("summary") if key == "phases" else item.get("action")
+                        details = [f"{key} {label}（候选 / unverified）: " + _brief(str(text or "内容未知"), 240)]
+                        for name in ("certainty", "uncertainties", "preconditions", "missingParameters", "expectedObservation", "expectedObservations", "captureChecks"):
+                            if item.get(name):
+                                details.append(f"{name}=" + _brief(str(item[name]), 240))
+                        lines.extend(_code_block("\n".join(details)))
+                if len(items) > 6:
+                    lines.append(f"- 其余 {len(items) - 6} 项 {key} 见完整分析与 JSON。")
+        if len(claims) > 4:
+            lines.append(f"- 其余 {len(claims) - 4} 条候选见 JSON。")
+        lines.append("")
+
     lines.extend(["## 候选解释摘要", "", "inferred / unverified；references_resolved 只说明引用存在，不证明解释或因果。", ""])
     summary = _final_summary(report)
     if summary:
         lines.extend(_code_block("\n".join(summary)))
-    claims = report.get("aiClaims", [])
+    claims = [claim for claim in report.get("aiClaims", []) if claim.get("kind") not in INPUT_CLAIM_FIELDS]
     for number, claim in enumerate(claims[:3], 1):
         text = next((claim[key] for key in ("summary", "statement", "title", "rationale") if isinstance(claim.get(key), str) and claim[key].strip()), "仅含结构化字段，详见 JSON。")
         rationale = claim.get("rationale")
@@ -592,6 +639,13 @@ def refresh_reconstruction(input_path: str | Path, *, ai_report: dict[str, Any] 
         if report.get("workspaceEvidenceDigest") and report["workspaceEvidenceDigest"] != digest:
             raise ValueError(f"Extracted evidence changed in {directory}; re-run anr_to_ai.py to rebuild observed events before refreshing AI explanations.")
         report["workspaceEvidenceDigest"] = digest
+        report["workspaceAnalysisDigest"] = analysis_digest(extract_analysis_slots(text)[0])
+        previous_analysis_status = report.get("analysisRevision", {}).get("status")
+        report["analysisRevision"] = refreshed_analysis_revision(report, _read_existing_analyses_from_text(text))
+        if previous_analysis_status in {"stale", "unknown"} and report["analysisRevision"].get("status") == "unverified":
+            for key in ("warnings", "analysisWarnings"):
+                if key in report:
+                    report[key] = [item for item in report[key] if item.get("code") not in {"ai-evidence-revision-changed", "ai-evidence-revision-unknown"}]
         artifact_locations = _artifact_locations(artifacts)
         for event in report.get("events", []):
             for ref in event.get("evidenceRefs", []):
@@ -606,6 +660,10 @@ def refresh_reconstruction(input_path: str | Path, *, ai_report: dict[str, Any] 
                 raise ValueError(f"Duplicate AI report groupId: {report['groupId']}")
             current_ai = matches[0] if matches else None
         report = attach_ai_analysis(report, _read_existing_analyses_from_text(text), current_ai)
+        report["inputAnr"] = build_input_anr(report.get("anrType", "unknown"), report.get("anchor"), report.get("events", []))
+        report["incidentScenario"] = build_incident_scenario(
+            report.get("anrType", "unknown"), report.get("anchor"), report.get("events", []), input_anr=report["inputAnr"],
+        )
         outputs.append({"id": report["groupId"], "artifactPaths": write_reconstruction_artifacts(report, directory), "analysisSlots": _analysis_slot_statuses_from_text(text)})
     if index_path is not None:
         by_id = {item["id"]: item for item in outputs}
@@ -616,5 +674,10 @@ def refresh_reconstruction(input_path: str | Path, *, ai_report: dict[str, Any] 
             group.setdefault("artifactPaths", {}).update(update["artifactPaths"])
             group["analysisSlots"] = update["analysisSlots"]
             group["analysisComplete"] = all(status == "filled" for status in update["analysisSlots"].values())
+            group["deliveryReadiness"] = {"status": "blocked", "reason": "REPORT_REQUIRES_VALIDATION"}
+            group_report_path = index_path.parent / group["id"] / "anr_reconstruction.json"
+            group["analysisRevision"] = json.loads(group_report_path.read_text(encoding="utf-8")).get("analysisRevision", {})
+            if group["analysisRevision"].get("status") == "unverified":
+                group["analysisWarnings"] = []
         index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"groupCount": len(outputs), "groups": outputs}

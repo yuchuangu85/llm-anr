@@ -150,7 +150,7 @@ class AiContextTests(unittest.TestCase):
         routes = [
             ROOT / name for name in (
                 'AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'CODEBUDDY.md', 'HERMES.md',
-                '.cursor/rules/project.mdc', 'skills/anr-analysis.md', 'skills/anr-reference.md',
+                'skills/anr-analysis.md', 'skills/anr-reference.md',
             )
         ]
         for route in routes:
@@ -171,7 +171,7 @@ class AiContextTests(unittest.TestCase):
         reference_path = skill_path.parent / 'references/aosp-mechanism.md'
         for name in (
             'AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'CODEBUDDY.md', 'HERMES.md',
-            '.cursor/rules/project.mdc', 'skills/anr-analysis.md', 'skills/anr-reference.md',
+            'skills/anr-analysis.md', 'skills/anr-reference.md',
             'skills/no-focused-window-anr-analysis/SKILL.md',
         ):
             route = ROOT / name

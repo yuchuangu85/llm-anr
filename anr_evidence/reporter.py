@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
+
+from .incident_scenario import build_incident_scenario, render_incident_sections
+from .input_anr import build_input_anr
 
 PHASE3_REQUIRED_FIELDS = ("metadata", "classification", "anchors", "signalSummary", "timeline", "findings", "warnings")
 PHASE5_REQUIRED_FIELDS = ("metadata", "classification", "anchors", "candidateChains", "warnings")
@@ -42,6 +46,10 @@ def render_analysis_report(package: dict[str, Any]) -> str:
     candidate_conclusions = analysis.get("candidateConclusions", [])
     top_conclusion = analysis.get("topConclusion")
     remediation_drafts = analysis.get("remediationDrafts", [])
+    incident_scenario = deepcopy(analysis["incidentScenario"])
+    for field in ("anrModel", "simulationSteps", "missingParameters", "evidenceGaps"):
+        if incident_scenario.get(field) is None:
+            incident_scenario[field] = []
 
     lines.append("# ANR 辅助分析报告草稿")
     lines.append("")
@@ -64,6 +72,13 @@ def render_analysis_report(package: dict[str, Any]) -> str:
     if metadata.get("finalAdvice") is not None:
         lines.append(f"- Final Advice: `{metadata.get('finalAdvice')}`")
     lines.append("")
+
+    lines.extend(
+        render_incident_sections(
+            incident_scenario,
+            deepcopy(analysis.get("inputAnr")),
+        )
+    )
 
     lines.append("## 2. 范围声明")
     lines.append("")
@@ -288,6 +303,8 @@ def _coerce_report_input(package: dict[str, Any]) -> dict[str, Any]:
             "metadata": phase7["metadata"],
             "classification": package["classification"],
             "anchors": package["anchors"],
+            "inputAnr": deepcopy(phase7.get("inputAnr")),
+            "incidentScenario": _incident_scenario_for(phase7, phase7.get("inputAnr")),
             "signalSummary": package.get("signalSummary", {}),
             "timeline": package.get("timeline", []),
             "findings": package.get("findings", []),
@@ -309,6 +326,8 @@ def _coerce_report_input(package: dict[str, Any]) -> dict[str, Any]:
             "metadata": phase7["metadata"],
             "classification": package["classification"],
             "anchors": package["anchors"],
+            "inputAnr": deepcopy(phase7.get("inputAnr")),
+            "incidentScenario": _incident_scenario_for(phase7, phase7.get("inputAnr")),
             "signalSummary": {"traceInsights": package.get("traceInsights", {})},
             "timeline": [],
             "findings": [],
@@ -328,6 +347,8 @@ def _coerce_report_input(package: dict[str, Any]) -> dict[str, Any]:
             "metadata": phase7["metadata"],
             "classification": package["classification"],
             "anchors": package["anchors"],
+            "inputAnr": deepcopy(phase7.get("inputAnr")),
+            "incidentScenario": _incident_scenario_for(phase7, phase7.get("inputAnr")),
             "signalSummary": {"traceInsights": package.get("traceInsights", {})},
             "timeline": [],
             "findings": [],
@@ -340,10 +361,17 @@ def _coerce_report_input(package: dict[str, Any]) -> dict[str, Any]:
         }
     if phase == "phase7-remediation-draft":
         _assert_required(package, PHASE7_REQUIRED_FIELDS, "Phase 7 remediation draft")
+        input_anr = package["inputAnr"] if "inputAnr" in package else build_input_anr(
+            package["classification"].get("detectedType"),
+            (package.get("anchors") or {}).get("primaryAnchor"),
+            [],
+        )
         return {
             "metadata": package["metadata"],
             "classification": package["classification"],
             "anchors": package["anchors"],
+            "inputAnr": deepcopy(input_anr),
+            "incidentScenario": _incident_scenario_for(package, input_anr),
             "signalSummary": {"traceInsights": package.get("traceInsights", {})},
             "timeline": [],
             "findings": [],
@@ -355,6 +383,20 @@ def _coerce_report_input(package: dict[str, Any]) -> dict[str, Any]:
             "warnings": package.get("warnings", []),
         }
     raise ReportError("Report generator expects a Phase 3/5/6/7 package.")
+
+
+def _incident_scenario_for(package: dict[str, Any], input_anr: dict[str, Any] | None) -> dict[str, Any]:
+    scenario = package.get("incidentScenario")
+    if scenario:
+        return deepcopy(scenario)
+    return deepcopy(
+        build_incident_scenario(
+            package.get("classification", {}).get("detectedType"),
+            (package.get("anchors") or {}).get("primaryAnchor"),
+            package.get("timeline") or [],
+            input_anr=deepcopy(input_anr),
+        )
+    )
 
 
 def _assert_required(package: dict[str, Any], required: tuple[str, ...], label: str) -> None:

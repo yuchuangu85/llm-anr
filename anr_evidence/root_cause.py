@@ -6,6 +6,9 @@ from copy import deepcopy
 from hashlib import sha1
 from typing import Any
 
+from .incident_scenario import build_incident_scenario
+from .input_anr import build_input_anr
+
 REQUIRED_FIELDS = ("metadata", "classification", "anchors", "candidateChains", "warnings")
 
 CATEGORY_STATEMENTS = {
@@ -27,6 +30,19 @@ def generate_root_cause_report(package: dict[str, Any]) -> dict[str, Any]:
     draft = _validate_phase5_package(package)
     candidate_conclusions = _candidate_conclusions(draft)
     top_conclusion = candidate_conclusions[0] if candidate_conclusions else None
+    input_anr = draft["inputAnr"] if "inputAnr" in draft else build_input_anr(
+        draft["classification"].get("detectedType"),
+        (draft.get("anchors") or {}).get("primaryAnchor"),
+        [],
+    )
+    incident_scenario = draft.get("incidentScenario")
+    if not incident_scenario:
+        incident_scenario = build_incident_scenario(
+            draft["classification"].get("detectedType"),
+            (draft.get("anchors") or {}).get("primaryAnchor"),
+            draft.get("timeline") or [],
+            input_anr=input_anr,
+        )
     return {
         "metadata": {
             "packageId": draft["metadata"]["packageId"],
@@ -38,7 +54,10 @@ def generate_root_cause_report(package: dict[str, Any]) -> dict[str, Any]:
             "finalJudgment": False,
         },
         "classification": deepcopy(draft["classification"]),
+        **{key: deepcopy(draft[key]) for key in ("evidenceCatalog", "evidenceIdentity", "evidenceRevision") if key in draft},
         "anchors": deepcopy(draft["anchors"]),
+        "inputAnr": deepcopy(input_anr),
+        "incidentScenario": deepcopy(incident_scenario),
         "traceInsights": deepcopy(draft.get("traceInsights", {})),
         "candidateChains": deepcopy(draft.get("candidateChains", [])),
         "topConclusion": deepcopy(top_conclusion),

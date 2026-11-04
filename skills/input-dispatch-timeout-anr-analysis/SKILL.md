@@ -110,6 +110,22 @@ Dispatcher 检查时发现最早追踪的截止时间已到
 - **修复建议**：对已支持的阶段处理主线程阻塞、输入回调耗时、异步 finish 责任或通道/系统侧延迟；证据不足先补采同 seq 的 trace/dump/Perfetto。不能用调大超时时限或把 `handled` 强行设为 true 代替修复。
 - **JSON 与独立文档**：只引用当前分组实际存在的提示/事件 ID；未知字段用 `null`，保留 `finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`。刷新后的重建文档也必须将机制推断与观察分开，保留未知时间，不把教学模型的节点全部填成 observed。
 
+### Final ANR 的三个必填候选章节
+
+原 `final-anr` 内保留 `## 超时输入事件`、`## ANR 发生模型`、`## 模拟操作步骤`，不新增第五个槽位。所有 ANR 类型都要模型与模拟步骤；实际分类为非 input 时仅输入专项写“不适用（input 专项）”、`inputEventAssessments=[]`，两个公共章节及 `anrModel`、`simulationSteps` 仍须有候选内容或具体缺口与补证计划。按 `anr_strategy.py` 的广播/service/provider/job/watchdog 分型分析；unknown 列出分类、触发点缺口和补证计划，不猜成 input。
+
+- `## 超时输入事件`：分别描述 reason 描述事件与真正最早到期条目。逐项核对类型、`action`、`keyCode`、native seq、输入日志 `eventId`、device/source/display/window/channel，未知用 `null`；不能把队首等待时长当配置阈值，不能把 reason 队首当已证实的最早到期条目。无焦点分支是等待投递事件，不是 ACK 超时，应转入无焦点专项。
+- `## ANR 发生模型`：计时、阻塞/等待、通知与恢复分段描述。支撑日志为 `observed`、机制解释为 `inferred`、缺失环节为 `unknown`，整体模型为未验证候选；禁止固定 5 秒或用快照当作持续阻塞。清理原 seq 与剩余过期项检查分别举证，不凭单条 FINISHED 声称恢复。
+- `## 模拟操作步骤`：写明前置条件、编号动作、预期观察、采集核验、缺失参数，并标“候选未执行，不保证复现”。无证据不编造坐标、业务入口、设备配置或故障注入；参数不足时保留空动作并列待补项。不自动运行设备命令，不执行 adb/设备输入/注入；`replay` 仍为回归重跑，不是设备复现或真实回放。
+
+末尾 JSON 增加 `inputEventAssessments`、`anrModel`、`simulationSteps` 三个候选数组。每项含 `summary`、`supportingEventIds` 或 `evidenceRefs`、`uncertainties`，并按候选保留 `certainty=inferred`、`validation=unverified`、`executed=false`、`requiresHumanConfirmation=true`。引用仅用当前组真实重建 `eventId` 或唯一精确匹配的完整 `rawLine`；输入日志 `eventId` 不等于重建 ID。AI 引用匹配也不证明事实或因果。多智能体 manager 的提示不等于运行时校验保证，raw `integrated_report` 仍须核验。
+
+公共 runtime 的 `incidentScenario`（`anr-incident-scenario-v1`）覆盖所有 ANR 类型，含 `anrModel`、`simulationSteps`、`missingParameters`、`evidenceGaps` 与保守 flags，经 Phase 3 → 5 → 6 → 7 透传，`--report` / `--deliver` 和重建 Markdown 同步两个公共章节。input 专项 `inputAnr` 保留并复用模型/步骤，`inputAnr.reportedEvents` 保存原样 reason 与 `nativeSeq` / `reportedSeq` / `seqDomain` / window / connection 等身份；匿名 reason 仅为 `unverified` 候选。真正最早到期条目 `triggeringEvent` 未核验时保持 `null`，不要拿 reason 替代推算。
+
+`incidentScenario` 顶层保持 `certainty=inferred`、`validation=unverified`、`executed=false` 及保守 flags。非 input 的 `incidentScenario.anrModel` 顶层仍是候选；模板节点除精确 anchor ANR 上报外均为 `unknown`，关键词只给 `candidateObservationIds`，仅保留在 JSON，不升级 `observed` 或已观测时间线，不删除缺口。JobService 的 `jobFinished` 不等于 onStartJob/onStopJob 按时返回；用户发起任务 `setNotification` 是另一分支，应分别举证，不能套用 ACK 完成或固定超时。
+
+AI 三数组在重建 `aiClaims` 中独立保存；`referenceValidation` 只记录引用解析结果，`validation` 始终 `unverified`、`executed=false`，不覆盖派生数据或改变 `observed` 事件。构建及刷新旧 `anr-reconstruction-v1` sidecar 均派生 `incidentScenario`，input 仍有 `inputAnr`，不改四槽；manager 支持两种已有摘要，但 raw 输出仍未强制校验。
+
 ## 回源资料
 
 - [AOSP 机制、源码与模型边界](references/aosp-mechanism.md)

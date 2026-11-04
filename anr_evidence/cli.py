@@ -7,12 +7,14 @@ import json
 from pathlib import Path
 
 from .ai_context import AiContextOptions, build_ai_context_artifacts
-from .delivery import render_final_delivery
+from .delivery import DeliveryError, render_final_delivery
 from .extractor import ArchiveLoadError, load_package_from_archive, load_package_from_directory, load_package_from_fixture
 from .pipeline import payload_phase, run_until
 from .replay import run_replay_manifest
 from .reporter import render_analysis_report
 from .reconstruction import refresh_reconstruction
+from .acceptance import finalize_workspace_reports, validate_workspace_reports
+from .report_validation import strict_json_loads
 
 
 def main() -> int:
@@ -40,9 +42,30 @@ def main() -> int:
     parser.add_argument("--ai-report", type=Path, help="Optional AI JSON for --reconstruct; treated as unverified candidates.")
     parser.add_argument("--build-ess", action="store_true", help="Write evidence.jsonl with --build-ai-context.")
     parser.add_argument("--delta-t-normalized", action="store_true", help="Write time_normalized.json with --build-ai-context.")
+    parser.add_argument("--validate-report", action="store_true", help="Read-only acceptance checks for generated ANR workspaces.")
+    parser.add_argument("--finalize", action="store_true", help="Refresh, validate and publish per-ANR acceptance receipts.")
+    parser.add_argument("--review-record", type=Path, help="External issue-specific, version-bound review records JSON.")
     args = parser.parse_args()
 
     input_path = Path(args.input)
+    if args.validate_report or args.finalize:
+        if sum(bool(value) for value in (args.validate_report, args.finalize, args.reconstruct, args.build_ai_context, args.replay, args.normalize, args.analyze, args.hypothesize, args.report, args.root_cause, args.remediate, args.deliver)) != 1:
+            parser.error("--validate-report and --finalize cannot be combined with other operations")
+        if args.ai_report:
+            parser.error("--ai-report requires --reconstruct; it is not an acceptance authorization")
+        try:
+            reviews = strict_json_loads(args.review_record.read_text(encoding="utf-8")) if args.review_record else None
+            result = (finalize_workspace_reports if args.finalize else validate_workspace_reports)(input_path, review_records=reviews)
+        except (OSError, ValueError, TypeError) as exc:
+            result = {"deliverable": False, "error": {"code": "REPORT_ACCEPTANCE_FAILED", "message": str(exc)}, "groups": []}
+        rendered = json.dumps(result, indent=2, ensure_ascii=False)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if result.get("deliverable") else 2
+    if args.review_record:
+        parser.error("--review-record requires --validate-report or --finalize")
     if args.ai_report and not args.reconstruct:
         parser.error("--ai-report requires --reconstruct")
     if args.reconstruct:
@@ -82,16 +105,20 @@ def main() -> int:
                 ),
             )
         else:
-            result = _transform_payload(
-                payload,
-                normalize=args.normalize,
-                analyze=args.analyze,
-                hypothesize=args.hypothesize,
-                report=args.report,
-                root_cause=args.root_cause,
-                remediate=args.remediate,
-                deliver=args.deliver,
-            )
+            try:
+                result = _transform_payload(
+                    payload,
+                    normalize=args.normalize,
+                    analyze=args.analyze,
+                    hypothesize=args.hypothesize,
+                    report=args.report,
+                    root_cause=args.root_cause,
+                    remediate=args.remediate,
+                    deliver=args.deliver,
+                )
+            except DeliveryError as exc:
+                print(json.dumps({"deliverable": False, "error": {"code": exc.code, "message": str(exc)}, "deliveryReadiness": exc.acceptance}, ensure_ascii=False, indent=2))
+                return 2
 
     rendered = result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False)
     if args.output:

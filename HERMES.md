@@ -42,6 +42,37 @@ python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md
 
 传入上下文根目录会处理其中的所有分组；传入分组目录或分析文件则只处理一个分组。此刷新不会重新提取证据或改写 AI 槽位。可选参数 `--ai-report <JSON>` 仅将外部 AI 报告作为未经验证的候选解释加入：须核验其引用，不得将报告本身提升为已观测事实。
 
+<a id="report-acceptance-and-finalization"></a>
+
+### 统一验收与正式交付
+
+以下是统一验收的接口契约；实现进度与验证证据见 `docs/report-acceptance-design.md`，只有集成后实际行为与契约一致才能标为已交付，文档同步本身不代表功能已完成。
+
+`analysisComplete` 仍只表示四个槽位已填写，不代表结构、引用或交付验收通过。`deliveryReadiness` 由规则计算，只有四种状态，优先级依次为：
+
+- `blocked`：存在结构、身份、引用、过期支撑或产物不一致等硬错误，不能交付。
+- `needs_review`：机器检查通过，但具体问题仍缺少有效复核，不能交付。
+- `ready_with_limitations`：缺口已披露、相关断言已降级，可带限制交付。
+- `ready`：当前验收规则的必需检查通过，且无重大交付限制；不表示根因已确认。
+
+提取、草稿与独立重建仍允许槽位为 pending。四槽填完后，先刷新重建，再执行正式收尾；需要预检时使用只读验证：
+
+```bash
+# 只读预检，不刷新、不写回执或索引
+python3 -m anr_evidence --validate-report <context-root|group-directory|anr_analysis.md>
+# 显式刷新 + 验收 + 写入每组 acceptance.json 与索引就绪度
+python3 -m anr_evidence --finalize <context-root|group-directory|anr_analysis.md>
+# 两个命令均可追加 --review-record <JSON>
+```
+
+两个命令输出机器可读 JSON，逐组列出状态和问题；任一所选组未达到可交付状态或处理失败时返回非零退出码。`ready` 和 `ready_with_limitations` 属于可交付状态，批量部分成功须明确列出通过、受限、待复核及失败组，不能把部分成功说成全部完成。
+
+`--review-record <JSON>` 传入逐问题复核记录，绑定 `reviewer`、`scope`、`evidenceRevision`、`analysisDigest`。它只能处理相应的复核项，不能覆盖硬错误；模型自报通过或自填就绪字段不构成有效复核。缺 Trace 或根因未知不自动阻断：须写具体缺口与补证计划、降低相应断言，才可能为 `ready_with_limitations`；坏引用、过期证据仍支撑当前结论、产物不一致均硬阻断。
+
+`acceptance.json` 在 finalize 前可不存在；正式收尾按组写内容绑定的回执，索引仅聚合就绪度与路径。证据、分析或依赖产物被编辑后，旧回执失效，须重新验收；仅排版变化也需重验，但不因此直接判定根因解释过期。当前版本不裁定根因真值，不增加第五槽位或额外 Markdown。报告始终是候选，保留 `finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`，模拟保持 `executed=false`。
+
+工作区 API 为 `acceptance.py` 的 `validate_workspace_reports(path, *, review_records=None)` 和 `finalize_workspace_reports(path, *, review_records=None)`；共享纯校验内核 `validate_manager_report`、`validate_phase_report` 分别检查 manager 报告与确定性阶段报告，不要求内存报告具备工作区四槽或磁盘产物。`--deliver` 对确定性 Phase 7 执行交付门禁，`--report` 继续提供草稿；不能将草稿或重建成功当作正式验收通过。完整规则见 `docs/anr-ai-analysis-guide.md`。
+
 <a id="step-3-output-the-analysis-report"></a>
 
 ### 第 3 步：输出分析报告
@@ -53,7 +84,13 @@ python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md
 4. 证据质量评估（缺口、矛盾）
 5. 修复建议
 
-最终交付时，除 `anr_analysis.md` 外，还须提供各分组刷新后的 `anr_reconstruction.md` 和 `anr_reconstruction.json` 路径。
+最终交付时，除 `anr_analysis.md` 外，还须提供各分组刷新后的 `anr_reconstruction.md`、`anr_reconstruction.json`、正式 finalize 生成的 `acceptance.json` 路径及就绪状态；未通过组单独列出，草稿不得冒充正式交付。
+
+所有 ANR 类型（含 broadcast/service/provider/job/watchdog/unknown）的最终综合槽位和报告都必须包含 `## ANR 发生模型`、`## 模拟操作步骤`，有候选内容或具体缺口及补证计划，不得因非 input 写不适用或一律留空。仅 `## 超时输入事件` 是 input 专项：说明 reason 事件类型、action/keyCode、eventId/native seq、目标窗口/连接及证据，区分 reason 事件与真正最早到期条目；无焦点是等待投递，不是已发布未 ACK。非 input 该节可写不适用、`inputEventAssessments=[]`，unknown 列分类/触发点缺口，不猜成 input。
+
+公共 `incidentScenario`（`anr-incident-scenario-v1`）含 `anrModel`、`simulationSteps`、`missingParameters`、`evidenceGaps` 和保守 flags，经 Phase 3 → 5 → 6 → 7 透传，并随 `--report` / `--deliver`、重建构建/旧 v1 刷新同步交付；inputAnr 保留专项并复用模型。模型顶层为候选，非 input 模板节点除精确 anchor ANR 上报外均 unknown，关键词只给 `candidateObservationIds`，不升级 observed，保留缺口。JobService 的 jobFinished 不等于 onStartJob/onStopJob 按时返回；用户发起任务 setNotification 是另一分支，分别核验。
+
+模拟步骤含前置条件、编号动作、预期观察、采集核验和缺失参数，标记候选未执行、不保证复现，不虚构坐标、业务入口、固定超时或故障注入，不自动运行设备命令。JSON 的 `anrModel`、`simulationSteps` 所有类型都要候选/具体缺口；AI 三数组独立保存为 aiClaims，referenceValidation 只解析引用，validation=unverified、executed=false，不改变 observed；manager raw `integrated_report` 须另经 `validate_manager_report` 实际校验，不能仅凭提示或重建导入声称已验收，运行时接入须核验。`incidentScenario` 顶层 certainty=inferred、validation=unverified、executed=false；candidateObservationIds 仅保留在 JSON，不成为已观测时间线。四槽与 markers 不变，`replay` 仍只表示回归重跑。详见 `docs/anr-ai-analysis-guide.md`。
 
 <a id="input-dispatch-timeout-anr-specialization"></a>
 

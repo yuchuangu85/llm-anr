@@ -76,7 +76,8 @@
 5. Logcat/AnrManager 槽位引用日志文件时，必须读取同一工作区中的 `anr_ai_context/<anr-id>/logcat.txt`。
 6. 回复前必须把综合结论写回最终 ANR 综合分析槽位（`#### AI Analysis — 最终 ANR 综合分析`）。
 7. 填完四个槽位后，运行 `python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>` 刷新各组独立重建产物，不重新提取证据、不改写 AI 槽位。
-8. 最终输出结构化报告，包含时间线、直接阻塞点、排序后的候选根因链、证据质量和修复建议，并交付各组的 `anr_analysis.md` 与已刷新的 `anr_reconstruction.md`、`anr_reconstruction.json` 路径。
+8. 按[统一报告验收](#report-acceptance-and-finalization)运行 `--finalize` 显式刷新、验收并写逐组回执；只需预检时运行只读的 `--validate-report`，两者均支持 `--review-record <JSON>`。
+9. 最终输出结构化报告，包含时间线、直接阻塞点、排序后的候选根因链、证据质量和修复建议，并交付各组的 `anr_analysis.md`、已刷新的 `anr_reconstruction.md` / `anr_reconstruction.json`、`acceptance.json` 路径及就绪状态；未通过组单独列出，不把部分成功当成全部交付。
 
 ## 快速开始：生成 AI 分析工作区
 
@@ -110,6 +111,7 @@ python3 -m anr_evidence --build-ai-context <bugreport_dir_or_archive_or_fixture>
 - `anr_analysis.md` 是人工/AI 工作区：分析指令、过滤证据摘要、分来源分析槽位和最终综合槽位都在同一个文件中。
 - `logcat.txt` 保存当前单个 ANR 组过滤后的 logcat 行。
 - `anr_reconstruction.md` 和 `anr_reconstruction.json` 是独立的证据驱动过程重建产物，默认基于日志生成，AI 槽位为空也不阻止输出。每个 ANR 组独立保留 `<group-id>/anr_reconstruction.md`，不生成跨组汇总的重建 Markdown。`index.json` 通过各组的 `artifactPaths.reconstruction` 和 `artifactPaths.reconstructionJson` 暴露路径；原四个分析槽位和 `logcat.txt` 保持不变。
+- `<group-id>/acceptance.json` 仅在显式 finalize 时生成，在此之前可不存在；它是内容绑定的验收回执，不是额外 Markdown 或第五个分析槽位。
 - 顶层旧式 `cache.md`、`ai_prompt.md` 和 `summary.json` 不再是主流程产物；生成产物时会清理陈旧文件。
 
 重建区分 `observed`（日志观察）、`inferred`（机制或 AI 假设）和 `unknown`（缺口）：
@@ -148,6 +150,37 @@ python3 scripts/anr_to_ai.py <input> --build-ess --delta-t-normalized
 
 证据边界与最终交付要求见[分析指南](docs/anr-ai-analysis-guide.md)。
 
+<a id="report-acceptance-and-finalization"></a>
+
+## 统一报告验收
+
+统一验收已接入默认工作区、Manager 和 Phase 7 候选交付。实现清单与验证证据见 [report-acceptance-design.md](docs/report-acceptance-design.md)；通过交付验收不等于根因已确认。
+
+`analysisComplete` 仍只表示四槽已填，不代表可交付。规则计算 `deliveryReadiness`，优先级从高到低为：
+
+- `blocked`：结构、身份、引用、过期支撑或产物不一致等硬错误，不可交付。
+- `needs_review`：机器检查通过，但具体问题缺少有效复核，不可交付。
+- `ready_with_limitations`：缺口已披露、相关断言已降级，可带限制交付。
+- `ready`：当前规则的必需检查通过，无重大交付限制；不证明根因真值。
+
+四槽填完并刷新重建后，再执行正式收尾；草稿提取和重建仍允许 pending：
+
+```bash
+# 只读检查现有工作区，不刷新、不写回执或索引
+python3 -m anr_evidence --validate-report <context-root|group-directory|anr_analysis.md>
+# 显式刷新 + 验收 + 写每组 acceptance.json 与索引就绪度
+python3 -m anr_evidence --finalize <context-root|group-directory|anr_analysis.md>
+# 两个命令均可追加 --review-record <JSON>
+```
+
+两个入口输出机器可读 JSON，明确逐组状态与问题；任一所选组不可交付或处理失败时退出码非零。`ready` 与 `ready_with_limitations` 均可交付，但受限组须披露限制；批量部分成功不能掩盖待复核、阻断或失败组。finalize 不改写四槽，也不重新提取证据。
+
+`--review-record <JSON>` 向验证器或 finalizer 传入逐问题复核记录，绑定 `reviewer`、`scope`、`evidenceRevision`、`analysisDigest`；只能处理相应复核项，不能覆盖硬错误或接受模型自报通过。缺 Trace、根因未知不自动阻断：须明确缺口、补证计划并降低相关断言，才可能 `ready_with_limitations`。坏引用、过期证据仍支撑当前结论、产物不一致均硬阻断。
+
+每组回执绑定当前证据、分析与依赖产物内容；任一被编辑后旧回执失效，须重新验收。仅排版变化也需重验，但不因此直接判定解释过期。`index.json` 只聚合就绪度与路径，不裁定根因真值。正式交付提供匹配当前内容的回执，而不是只看文件是否存在；不增加第五槽位或额外 Markdown。
+
+`acceptance.py` 提供包 API `validate_workspace_reports(path, *, review_records=None)`、`finalize_workspace_reports(path, *, review_records=None)`；纯校验内核 `validate_manager_report`、`validate_phase_report` 分别适配 manager 报告和确定性阶段报告，不要求内存报告具有工作区四槽或磁盘产物。确定性 `--deliver` 对 Phase 7 执行交付门禁，`--report` 草稿仍可访问。所有结果仍是候选，保留 `finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`，模拟 `executed=false`。详见[验收指南](docs/anr-ai-analysis-guide.md#report-acceptance-and-finalization)。
+
 ## 四阶段 AI 分析契约
 
 每个 `anr_analysis.md` 固定包含四个分析槽位，必须按顺序填写：
@@ -163,6 +196,14 @@ python3 scripts/anr_to_ai.py <input> --build-ess --delta-t-normalized
 - 最终 ANR 综合分析只能在 Trace、EventLog 和 Logcat/AnrManager 槽位完成后进行。
 - 综合结论必须写回同一个 `anr_analysis.md`，不能只留在聊天中。
 - 最终 Markdown 应包含：综合分析结论、时间线、Trace 证据分析、EventLog 证据分析、Logcat/AnrManager 证据分析、直接阻塞点、候选根因链、证据质量、修复建议，以及位于末尾的 JSON 围栏代码块。
+- 所有 ANR 类型的 `#### AI Analysis — 最终 ANR 综合分析` 槽位均须填写 `## ANR 发生模型`、`## 模拟操作步骤`，仍在原 `final-anr` 内，不新增第五个槽位。两个公共章节和 `anrModel`、`simulationSteps` 须有候选内容或具体缺口与补证计划，不能因非 input 写不适用或一律留空。仅 `## 超时输入事件` 是 input 专项，非 input 可在该节写不适用、`inputEventAssessments=[]`。unknown 列分类/触发点缺口，不猜成 input。
+- 超时输入事件区分 reason 描述事件与真正最早到期条目，列明类型、action/keyCode/native seq/eventId/device/source/display/window/channel，未知用 `null`。无焦点是等待投递事件，不是已发送未 ACK。发生模型区分 observed 支撑、inferred 机制与 unknown 缺口，分开计时、阻塞/等待、通知和恢复；禁止固定 5 秒或把快照当作持续阻塞。
+- 模拟步骤包含前置条件、编号动作、预期观察、采集核验、缺失参数，明确“候选未执行，不保证复现”。不编造坐标、业务入口、设备配置或故障注入，不自动运行设备命令；`replay` 仍为回归重跑。
+- JSON 新增候选数组 `inputEventAssessments`、`anrModel`、`simulationSteps`；元素统一含 `summary`、`supportingEventIds` 或 `evidenceRefs`、`uncertainties`，保留 `certainty=inferred`、`validation=unverified`、`executed=false`、`requiresHumanConfirmation=true`。AI 引用不升级为事实；manager raw `integrated_report` 须经 `validate_manager_report` 实际校验，提示约束不保证响应合规，运行时接入须另行核验。完整结构见[分析指南](docs/anr-ai-analysis-guide.md#final-anr-固定输出)。
+- 公共派生 `incidentScenario`（`anr-incident-scenario-v1`）适用于所有类型，含 `anrModel`、`simulationSteps`、`missingParameters`、`evidenceGaps` 和保守 flags。按 `anr_strategy.py` 分型生成模型/计划，经 Phase 3 → 5 → 6 → 7 透传，`--report` / `--deliver` 和重建 Markdown 同步两个公共章节；不新增固定超时或真实故障注入。
+- `incidentScenario` 顶层保持 `certainty=inferred`、`validation=unverified`、`executed=false`。非 input 模型顶层仍为候选，模板节点除精确 anchor ANR 上报外均为 `unknown`；关键词只形成 `candidateObservationIds`，仅保留在 JSON，不升级 `observed` 或已观测时间线，保留缺口。JobService 的 `jobFinished` 不等于 onStartJob/onStopJob 按时返回，用户发起任务 `setNotification` 是另一分支，须分别核验。
+- input 专项 `inputAnr` 保留并复用模型/步骤；`reportedEvents` 保存原样 reason 与 `nativeSeq` / `reportedSeq` / `seqDomain` / window / connection 身份，匿名 reason 为 `unverified` 候选；真正最早到期条目 `triggeringEvent` 未核验时保持 `null`。AI 三数组独立保存在重建 `aiClaims`，`referenceValidation` 仅表示引用解析结果，`validation` 始终 `unverified`、`executed=false`，不覆盖派生数据或改变 `observed` 事件。
+- 构建及刷新旧 `anr-reconstruction-v1` sidecar 均派生 `incidentScenario`，input 仍有 `inputAnr`，不改四槽。manager prompt 接收两种已有摘要；重建导入校验与 manager raw 输出验收的边界不同，前者不代替 `validate_manager_report`。
 - JSON 默认保持以下保守字段：
   - `finalJudgment = false`
   - `notRootCauseYet = true`
@@ -223,11 +264,14 @@ python3 -m anr_evidence --root-cause tests/fixtures/nfw_01.json
 # 第 7 阶段：受门控约束的修复草案
 python3 -m anr_evidence --remediate tests/fixtures/nfw_01.json
 
-# 第 8 阶段：最终交付 Markdown 模板
+# 草稿 Markdown：不要求正式交付验收通过
+python3 -m anr_evidence --report tests/fixtures/nfw_01.json
+
+# 第 8 阶段：对 Phase 7 包验收后输出候选交付 Markdown
 python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json
 ```
 
-所有确定性阶段都保持候选语义：输出证据、缺口和假设，不做不可逆的最终定责。
+所有确定性阶段都保持候选语义：输出证据、缺口和假设，不做不可逆的最终定责。`--deliver` 使用 `validate_phase_report` 检查 Phase 7 包，不要求 Markdown 工作区四槽或回执；工作区正式收尾则使用 `--finalize`。`--report` 成功不代表 `--deliver` 门禁通过。
 
 ## 分来源 CLI 工具
 
@@ -305,6 +349,15 @@ index = build_ai_context_artifacts(
     AiContextOptions(out_dir="anr_ai_context", package_name="com.example.app"),
 )
 print(index["artifactPaths"]["index"])
+```
+
+验证或正式收尾已有工作区（前者只读，后者会刷新并写回执和索引）：
+
+```python
+from anr_evidence import finalize_workspace_reports, validate_workspace_reports
+
+validation = validate_workspace_reports("anr_ai_context", review_records=None)
+acceptance = finalize_workspace_reports("anr_ai_context", review_records=None)
 ```
 
 多智能体 AI 分析入口（需要配置提供方/API 密钥）：
@@ -393,5 +446,7 @@ python3 scripts/anr_to_ai.py bugreport.zip
 ### 只生成确定性报告，不使用 AI
 
 ```bash
-python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json > delivery.md
+python3 -m anr_evidence --report tests/fixtures/nfw_01.json > draft.md
+# 需要正式交付时走 Phase 7 验收门禁；失败不能当作成功交付
+python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json
 ```

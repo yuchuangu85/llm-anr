@@ -6,8 +6,11 @@ from copy import deepcopy
 from hashlib import sha1
 from typing import Any
 
+from .incident_scenario import build_incident_scenario
+from .input_anr import build_input_anr
 from .log_filter import parse_log_timestamp, timestamp_to_raw
 from .trace_preprocessor import TRACE_SECTION_HEADER_RE, split_trace_sections
+from .report_validation import phase_evidence_binding
 
 REQUIRED_FIELDS = ("metadata", "classification", "anchors", "sourceSummaries", "normalizedRecords", "warnings")
 
@@ -19,6 +22,17 @@ class AnalysisError(ValueError):
 def analyze_normalized_package(package: dict[str, Any]) -> dict[str, Any]:
     normalized = _validate_phase2_package(package)
     timeline = _build_timeline(normalized)
+    input_anr = build_input_anr(
+        normalized["classification"].get("detectedType"),
+        (normalized.get("anchors") or {}).get("primaryAnchor"),
+        timeline,
+    )
+    incident_scenario = build_incident_scenario(
+        normalized["classification"].get("detectedType"),
+        (normalized.get("anchors") or {}).get("primaryAnchor"),
+        timeline,
+        input_anr=input_anr,
+    )
     signal_summary = _build_signal_summary(normalized)
     findings = _build_findings(normalized, signal_summary, timeline)
     return {
@@ -30,7 +44,10 @@ def analyze_normalized_package(package: dict[str, Any]) -> dict[str, Any]:
             "status": normalized["metadata"]["status"],
         },
         "classification": deepcopy(normalized["classification"]),
+        **phase_evidence_binding(normalized),
         "anchors": deepcopy(normalized["anchors"]),
+        "inputAnr": deepcopy(input_anr),
+        "incidentScenario": deepcopy(incident_scenario),
         "signalSummary": signal_summary,
         "timeline": timeline,
         "findings": findings,

@@ -10,10 +10,21 @@ description: ANR 知识库总索引与技能路由。用于选择合适的 ANR �
 ## 固定 AI 分析工作流
 
 1. **过滤日志**：对目录、ZIP、TAR 或测试样例先运行 `python3 scripts/anr_to_ai.py <input> [--package <pkg>] [--anr-type <type>]`，生成 `anr_ai_context/<anr-id>/anr_analysis.md`。
-2. **Trace AI 分析**：使用 [anr-trace-analysis.md](anr-trace-analysis.md) 填写 `#### AI Analysis — Trace`。
-3. **EventLog AI 分析**：使用 [anr-eventlog-analysis.md](anr-eventlog-analysis.md) 填写 `#### AI Analysis — EventLog`。
-4. **Logcat AI 分析**：使用 [anr-logcat-analysis.md](anr-logcat-analysis.md) 填写 `#### AI Analysis — Logcat/AnrManager`，同时覆盖 AnrManager 与 Meminfo 后续证据。
-5. **最终 ANR AI 分析**：使用 [anr-analysis.md](anr-analysis.md) 填写 `#### AI Analysis — Final ANR`，整合前三段输出最终报告与末尾 JSON；综合结论必须写回 `anr_analysis.md`，不得只在聊天回复中输出。
+2. **Trace AI 分析**：使用 [anr-trace-analysis.md](anr-trace-analysis.md) 填写 `#### AI Analysis — Trace 堆栈`。
+3. **EventLog AI 分析**：使用 [anr-eventlog-analysis.md](anr-eventlog-analysis.md) 填写 `#### AI Analysis — EventLog 事件日志`。
+4. **Logcat AI 分析**：使用 [anr-logcat-analysis.md](anr-logcat-analysis.md) 填写 `#### AI Analysis — Logcat / AnrManager`，同时覆盖 AnrManager 与 Meminfo 后续证据。
+5. **最终 ANR AI 分析**：使用 [anr-analysis.md](anr-analysis.md) 填写 `#### AI Analysis — 最终 ANR 综合分析`，整合前三段输出最终报告与末尾 JSON；综合结论必须写回 `anr_analysis.md`，不得只在聊天回复中输出。所有类型均填写“ANR 发生模型”“模拟操作步骤”，保留原 `final-anr` marker，不增加第五槽位或额外 Markdown。
+6. **刷新重建**：四槽填完后运行 `python3 scripts/reconstruct_anr.py <context-root|group-directory|anr_analysis.md>`，刷新当前组的独立重建，不改写 AI 槽位。
+7. **只读预检**：运行 `python3 -m anr_evidence --validate-report <context-root|group-directory|anr_analysis.md>`；只校验现有内容，不刷新、不写回执或索引。
+8. **正式收尾**：运行 `python3 -m anr_evidence --finalize <context-root|group-directory|anr_analysis.md>`，显式刷新、验收、写每组 `acceptance.json` 与索引就绪度。两个验收入口均可追加 `--review-record <JSON>`；交付逐组分析、重建 Markdown/JSON、回执路径及限制，未通过组单列。
+
+统一验收按[分析指南](../docs/anr-ai-analysis-guide.md#report-acceptance-and-finalization)的接口契约执行；实现与验证状态见 [report-acceptance-design.md](../docs/report-acceptance-design.md)，不能因文档同步便标为已交付。
+
+`analysisComplete` 仍只代表四槽已填；规则计算的 `deliveryReadiness` 为 `blocked`、`needs_review`、`ready_with_limitations`、`ready`，优先级依此排列。前两者不可交付，后两者可交付但后者也不证明根因真值；两个 CLI 输出机器 JSON，任一所选组不可交付或处理失败时返回非零，批量部分成功必须明确逐组结果。
+
+复核记录须针对具体问题，绑定 `reviewer`、`scope`、`evidenceRevision`、`analysisDigest`，不能用模型自报通过替代，也不能覆盖坏引用、过期支撑或产物不一致等硬错误。缺 Trace 或根因未知可在明确缺口、补证计划与降级断言后成为 `ready_with_limitations`。草稿提取与重建允许 pending；`acceptance.json` 在 finalize 前可不存在，正式回执绑定组与内容，编辑证据、分析或依赖产物后须重验。
+
+`acceptance.py` 提供 `validate_workspace_reports(path, *, review_records=None)`、`finalize_workspace_reports(path, *, review_records=None)`；纯校验内核为 `validate_manager_report`、`validate_phase_report`。确定性 `--deliver` 门禁针对 Phase 7，`--report` 仍可生成草稿。所有路径保持候选语义：`finalJudgment=false`、`notRootCauseYet=true`、`requiresHumanConfirmation=true`，模拟 `executed=false`；验收不构成最终定责或设备执行证明。
 
 ## 技能选择
 

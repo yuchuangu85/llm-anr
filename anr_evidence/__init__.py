@@ -69,6 +69,8 @@ from .reporter import render_analysis_report
 from .root_cause import generate_root_cause_report
 from .time_norm import TimeNormalizedLine, compute_delta_t, compute_delta_t_for_group
 from .reconstruction import build_reconstruction, render_reconstruction_markdown, refresh_reconstruction
+from .acceptance import finalize_workspace_reports, validate_workspace_reports
+from .report_validation import validate_manager_report, validate_phase_report, validate_workspace_content
 from .trace_preprocessor import consolidate_deadlock_across_traces, preprocess_trace_content
 from .weighting import (
     EVENT_LOG_TAG_WEIGHTS,
@@ -119,6 +121,11 @@ __all__ = [
     "build_reconstruction",
     "render_reconstruction_markdown",
     "refresh_reconstruction",
+    "validate_workspace_reports",
+    "finalize_workspace_reports",
+    "validate_workspace_content",
+    "validate_manager_report",
+    "validate_phase_report",
     # anr_strategy
     "ANR_TYPE_STRATEGIES",
     "AnrTypeStrategy",

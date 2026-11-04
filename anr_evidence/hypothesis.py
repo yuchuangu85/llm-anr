@@ -6,6 +6,9 @@ from copy import deepcopy
 from hashlib import sha1
 from typing import Any
 
+from .incident_scenario import build_incident_scenario
+from .input_anr import build_input_anr
+
 REQUIRED_FIELDS = ("metadata", "classification", "anchors", "signalSummary", "timeline", "findings", "warnings")
 
 CATEGORY_TITLES = {
@@ -33,6 +36,19 @@ class HypothesisError(ValueError):
 def generate_causal_draft(package: dict[str, Any]) -> dict[str, Any]:
     analysis = _validate_phase3_package(package)
     chains = _build_candidate_chains(analysis)
+    input_anr = analysis["inputAnr"] if "inputAnr" in analysis else build_input_anr(
+        analysis["classification"].get("detectedType"),
+        (analysis.get("anchors") or {}).get("primaryAnchor"),
+        [],
+    )
+    incident_scenario = analysis.get("incidentScenario")
+    if not incident_scenario:
+        incident_scenario = build_incident_scenario(
+            analysis["classification"].get("detectedType"),
+            (analysis.get("anchors") or {}).get("primaryAnchor"),
+            analysis.get("timeline") or [],
+            input_anr=input_anr,
+        )
     return {
         "metadata": {
             "packageId": analysis["metadata"]["packageId"],
@@ -42,7 +58,10 @@ def generate_causal_draft(package: dict[str, Any]) -> dict[str, Any]:
             "status": analysis["metadata"]["status"],
         },
         "classification": deepcopy(analysis["classification"]),
+        **{key: deepcopy(analysis[key]) for key in ("evidenceCatalog", "evidenceIdentity", "evidenceRevision") if key in analysis},
         "anchors": deepcopy(analysis["anchors"]),
+        "inputAnr": deepcopy(input_anr),
+        "incidentScenario": deepcopy(incident_scenario),
         "traceInsights": deepcopy(analysis.get("signalSummary", {}).get("traceInsights", {})),
         "candidateChains": chains,
         "warnings": deepcopy(analysis.get("warnings", [])),

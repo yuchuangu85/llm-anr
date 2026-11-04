@@ -8,7 +8,8 @@ import json
 import re
 
 
-_CLAIM_FIELDS = ("candidateChains", "candidateConclusions", "events")
+INPUT_CLAIM_FIELDS = ("inputEventAssessments", "anrModel", "simulationSteps")
+_CLAIM_FIELDS = ("candidateChains", "candidateConclusions", "events", *INPUT_CLAIM_FIELDS)
 _REFERENCE_FIELDS = ("evidenceRefs", "evidence", "supportingEventIds")
 _CONSERVATIVE_FLAGS = {
     "finalJudgment": False,
@@ -186,6 +187,12 @@ def _add_report(
                 "validationNote": _VALIDATION_NOTE,
                 "resolvedEventIds": resolved_ids,
             })
+            if field in INPUT_CLAIM_FIELDS:
+                claim.update({
+                    "referenceValidation": validation,
+                    "validation": "unverified",
+                    "executed": False,
+                })
             claims.append(claim)
 
 

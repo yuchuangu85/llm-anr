@@ -37,8 +37,68 @@ from .trace_preprocessor import preprocess_trace_content
 from .evidence_slice import build_ess_from_ai_context_result, write_ess_jsonl
 from .time_norm import compute_delta_t_for_group
 from .reconstruction import build_reconstruction, index_source_locations, write_reconstruction_artifacts
+from .report_validation import FINAL_REPORT_SECTIONS, analysis_digest, markdown_records
 
 ANRMANAGER_PRE_CONTEXT_SECONDS = 12
+
+ANR_REPORT_REQUIREMENTS = """所有 ANR 类型均须填写“ANR 发生模型”和“模拟操作步骤”，包括 broadcast/service/provider/job/watchdog/unknown。两节必须有候选内容或具体缺口及补证计划，不能因非 input 写不适用，也不能令 anrModel、simulationSteps 一律为空数组。仅“超时输入事件”是 input 专项；非 input 在该节写“不适用（input 专项）”，inputEventAssessments=[]。保留原四槽，不新增第五个槽位；unknown 列出分类/触发点缺口和补证计划，不猜成 input。
+- 超时输入事件：区分 reason 描述事件与真正最早到期条目；分别列事件类型、action、keyCode、native seq、eventId、device、source、display、window、channel。未知字段用 null，不能把 reason 队首事件等同于真正最早到期条目，也不能把 Java 序号、日志 eventId、重建 eventId、窗口 token 与原生 seq 混用。无焦点分支是等待投递事件，不是 ACK 超时；未发布事件的 native seq/channel 可未知或不适用。
+- ANR 发生模型（所有类型）：分别描述计时起点/有效阈值/截止或触发条件、阻塞或等待区间、通知/最终归因，以及清理/恢复。按 anr_strategy.py 分型：broadcast 检查 BroadcastQueue、onReceive、goAsync/finishReceiver；service 检查执行超时、前后台和生命周期回调；provider 区分 publish 冷启动与 query/CRUD Binder 链；job 检查 onStartJob/onStopJob；watchdog 检查 system_server 的 Handler/monitor；unknown 先列分类与触发点缺口，不套 input。支撑日志为 observed，机制解释为 inferred，缺失节点为 unknown；整体模型是候选，不把教学节点填成 observed。禁止假定固定 5 秒或其他固定超时、倒推未观测起点、跨时钟硬算时长或将快照当作持续阻塞；finish 返回、handled=false、单个 FINISHED 都不能证明连接恢复。
+- 模拟操作步骤（所有类型）：按当前 ANR 类型提出有前置条件、编号动作、预期观察、采集核验、缺失参数的人工核验计划；候选未执行，不保证复现。无证据不编造坐标、业务入口、设备/窗口配置或故障注入；参数不足时 actions 可为空，但 simulationSteps 须描述具体缺口和补证计划，不能补造可执行步骤。不自动运行设备命令，不执行 adb/设备输入/故障注入；replay 仍仅表示回归重跑，不是设备操作或事故真实回放。
+- 公共派生 incidentScenario（anr-incident-scenario-v1）对所有类型包含 anrModel、simulationSteps、missingParameters、evidenceGaps，顶层 certainty=inferred、validation=unverified、executed=false 及保守 flags；inputAnr 保留 input 专项身份并复用模型。已有派生摘要只作证据受限参考，不是新增观测，不能替代实际来源核验。
+- 非 input 的 incidentScenario.anrModel 顶层是候选；模板节点除精确 anchor ANR 上报以外均为 unknown。关键词只生成 candidateObservationIds，仅保留在 JSON，不升级 observed，不把候选节点写成已观测的 Markdown 时间线，也不证明计时已开始或完成；已有 evidenceGaps 必须保留。AI 候选模型/步骤仍为 inferred / unverified，不能把来源关键词改写为已观测机制。
+- JobService：jobFinished 不等于 onStartJob/onStopJob 按时返回；必须分别核验回调返回、异步任务完成与对应超时路径。用户发起任务的 setNotification 是另一分支，不用 jobFinished、回调返回或普通 JobService 超时替代其证据；任务类型和配置未知时列缺口，不虚构触发条件。
+- JSON 尾部新增 inputEventAssessments、anrModel、simulationSteps 三个候选数组，每个元素包含 summary、supportingEventIds 或 evidenceRefs、uncertainties；模型和步骤（事件评估也按候选处理）固定 certainty=inferred、validation=unverified、executed=false、requiresHumanConfirmation=true。
+- supportingEventIds 只引用当前组重建的真实 eventId（不是输入日志 eventId）；evidenceRefs 使用当前组唯一精确匹配的完整 rawLine。没有可用引用时留空并列 uncertainties，不伪造 ID。AI 引用存在不代表事实或因果成立，不升级为事实或 observed；模型内部可引用 observed 支撑，但候选本身仍为 inferred / unverified。
+- AI 三数组独立保存在重建 aiClaims，不覆盖 incidentScenario/inputAnr 或修改 observed 事件；referenceValidation 只有引用解析结果，validation 始终 unverified、executed=false，引用解析成功不等于内容或因果已验证。
+- 顶层保留 finalJudgment=false、notRootCauseYet=true、requiresHumanConfirmation=true；所有示例占位符须替换，未知字段保持 null。"""
+
+ANR_CANDIDATE_FIELDS = """  "inputEventAssessments": [
+    {
+      "summary": "<reason 描述事件与真正最早到期条目的区别；无焦点为等待投递事件>",
+      "reasonEvent": {"type": null, "action": null, "keyCode": null, "nativeSeq": null, "eventId": null, "deviceId": null, "source": null, "displayId": null, "window": null, "channel": null},
+      "earliestExpiredEntry": null,
+      "supportingEventIds": [],
+      "uncertainties": ["<身份、分支或最早到期条目的缺口>"],
+      "certainty": "inferred",
+      "validation": "unverified",
+      "executed": false,
+      "requiresHumanConfirmation": true
+    }
+  ],
+  "anrModel": [
+    {
+      "summary": "<按当前 ANR 类型给出候选模型；证据不足则列分类/触发点等具体缺口>",
+      "phases": [
+        {"phase": "timing", "summary": "<起点、有效阈值与触发条件待核验>", "certainty": "unknown", "candidateObservationIds": []},
+        {"phase": "blocking", "summary": "<等待/阻塞待核验；快照不证明持续时长>", "certainty": "unknown", "candidateObservationIds": []},
+        {"phase": "notification", "summary": "<通知与归因待核验；不把关键词当机制证据>", "certainty": "unknown", "candidateObservationIds": []},
+        {"phase": "recovery", "summary": "<清理与恢复分别核验>", "certainty": "unknown", "candidateObservationIds": []}
+      ],
+      "supportingEventIds": [],
+      "uncertainties": ["<缺失节点、时钟或因果关系>"],
+      "certainty": "inferred",
+      "validation": "unverified",
+      "executed": false,
+      "requiresHumanConfirmation": true
+    }
+  ],
+  "simulationSteps": [
+    {
+      "summary": "<按当前 ANR 类型给出人工核验计划或具体补证计划，不保证复现>",
+      "preconditions": [],
+      "actions": [{"step": 1, "action": "<仅填写证据支持且参数已知的动作；否则留空 actions>"}],
+      "expectedObservations": [],
+      "captureChecks": [],
+      "missingParameters": ["<缺失的版本、触发入口、组件身份、时序或配置；不得补造>"],
+      "evidenceRefs": [],
+      "uncertainties": ["<尚未执行及待核验的参数/机制>"],
+      "certainty": "inferred",
+      "validation": "unverified",
+      "executed": false,
+      "requiresHumanConfirmation": true
+    }
+  ],"""
 
 
 @dataclass(frozen=True)
@@ -223,6 +283,7 @@ def build_ai_context_artifacts(package: dict[str, Any], options: AiContextOption
             "rootCausePatternHintDetails": group.get("rootCausePatternHintDetails", []),
             "analysisSlots": analysis_slots,
             "analysisComplete": all(status == "filled" for status in analysis_slots.values()),
+            "deliveryReadiness": {"status": "blocked", "reason": "REPORT_REQUIRES_VALIDATION"},
             "warningCount": _group_warning_count(group),
             "artifactPaths": artifact_paths,
             "anrManager": {
@@ -437,6 +498,7 @@ def _preserved_analysis_revision(group: dict[str, Any], previous: dict[str, Any]
     baseline = revision.get("evidenceRevision") if isinstance(revision, dict) else previous.get("evidenceRevision")
     current = group["evidenceRevision"]
     group["analysisRevision"] = {"evidenceRevision": baseline, "status": "unverified"}
+    group["analysisRevision"]["analysisDigest"] = analysis_digest(analyses)
     if baseline != current:
         group["analysisRevision"]["status"] = "stale" if baseline else "unknown"
         group["analysisWarnings"] = [{
@@ -1121,6 +1183,7 @@ def _read_existing_analyses_from_text(text: str) -> dict[str, str]:
             "_Pending AI analysis" in body
             or "待 AI 分析填写" in body
             or "_请用" in body  # New template format markers
+            or "_用 3-5 条 bullet 写明：ANR 类型、直接阻塞点、最可信根因链、降级/不支持方向。_" in body
             or "_列出" in body
             or "_评估" in body
             or _get_analysis_slot_template(slot_id).strip() in body
@@ -1305,7 +1368,7 @@ def _render_cache_markdown(
                 "anr-analysis",
                 [
                     "仅在 Trace、EventLog、Logcat/AnrManager 三段专项分析完成后填写。",
-                    "综合分析必须写回本槽位；按固定步骤输出 综合分析结论、Timeline、Direct blocking point、Candidate root-cause chains、Evidence quality、Remediation suggestions 和 fenced JSON tail。",
+                    "综合分析必须写回本槽位；按固定步骤输出综合结论、时间线、证据、阻塞点、候选链、超时输入事件、发生模型、模拟步骤、质量、建议和 fenced JSON tail。",
                 ],
             )
     return "\n".join(lines).rstrip()
@@ -1482,6 +1545,17 @@ _判断直接阻塞点，并说明对应证据；如有死锁检测 hint 命中�
 ## 候选根因链
 _给出候选根因链路，按置信度排序。每条链路包含：触发类型 → 直接阻塞点 → 上游诱因 → 责任边界 → 证据强度。_
 
+## 超时输入事件
+_分别填写 reason 描述事件与真正最早到期条目；无焦点只描述等待投递事件。非 input 写不适用。_
+
+## ANR 发生模型
+_所有 ANR 类型必填：按当前分型区分 observed 支撑、inferred 机制与 unknown 缺口，描述计时/触发、阻塞/等待、通知、恢复；缺证时列具体缺口，不能因非 input 写不适用。_
+
+## 模拟操作步骤
+_所有 ANR 类型必填：给出前置条件、编号动作、预期观察、采集核验和缺失参数；缺证时给具体补证计划。候选未执行、不保证复现，不能因非 input 写不适用。_
+
+""" + ANR_REPORT_REQUIREMENTS + """
+
 ## 证据质量
 _标注证据强弱、矛盾点、缺失信息、fallback/过滤问题。_
 
@@ -1492,7 +1566,7 @@ _输出详细结论和下一步排查建议。_
 _追加 fenced JSON 代码块，包含 anrType、primaryRootCauseHintId、candidateChains 等字段。_
 ```json
 {
-  "anrType": "input_dispatching_timeout | no_focus_window | unknown",
+  "anrType": "input_dispatching_timeout | no_focus_window | broadcast_timeout | service_timeout | content_provider_timeout | job_scheduler_timeout | system_watchdog_swt | unknown",
   "primaryRootCauseHintId": "DEADLOCK_CYCLE | MAIN_BINDER_WAIT_REPLY | null",
   "primaryRootCauseDescription": "<≤80字概述>",
   "supportingHintIds": [],
@@ -1501,6 +1575,7 @@ _追加 fenced JSON 代码块，包含 anrType、primaryRootCauseHintId、candid
   "candidateChains": [
     {"rank": 1, "confidence": "strong", "summary": "...", "evidence": []}
   ],
+""" + ANR_CANDIDATE_FIELDS + """
   "remediationSuggestions": [],
   "evidenceGaps": [],
   "finalJudgment": false,
@@ -1510,7 +1585,13 @@ _追加 fenced JSON 代码块，包含 anrType、primaryRootCauseHintId、candid
 ```"""
     }
 
-    return templates.get(slot_id, "_待 AI 分析填写。请替换为本段专项结论、关键证据、缺口和置信度。_")
+    template = templates.get(slot_id, "_待 AI 分析填写。请替换为本段专项结论、关键证据、缺口和置信度。_")
+    if slot_id == "final-anr":
+        records, _, _ = markdown_records(template)
+        headings = [(record, record["text"][3:]) for record in records if record["text"].startswith("## ")]
+        bodies = {title: template[record["end"]:(headings[index + 1][0]["start"] if index + 1 < len(headings) else len(template))].strip() for index, (record, title) in enumerate(headings)}
+        template = "\n\n".join(f"## {title}\n{bodies[title]}" for title in (*FINAL_REPORT_SECTIONS, "结构化 JSON 尾部"))
+    return template
 
 
 def _append_deadlock_section(
@@ -1862,14 +1943,19 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "5. `## Logcat 与 AnrManager 证据分析`：按 Logcat 与 AnrManager 分析要求 展开 WMS/Input/AM/AnrManager。",
         "6. `## 直接阻塞点`：判断直接阻塞点，并说明对应证据；如有 死锁检测 hint 命中，请优先采纳并引用 hint id。",
         "7. `## 候选根因链`：给出候选根因链路，按置信度排序。",
-        "8. `## 证据质量`：标注证据强弱、矛盾点、缺失信息、fallback/过滤问题。",
-        "9. `## 修复建议`：输出详细结论和下一步排查建议。",
+        "8. `## 超时输入事件`：区分 reason 描述事件与真正最早到期条目；无焦点是等待投递事件。",
+        "9. `## ANR 发生模型`：所有 ANR 类型均给出分型候选模型或具体缺口；区分计时/触发、阻塞/等待、通知、恢复及 observed/inferred/unknown。",
+        "10. `## 模拟操作步骤`：所有 ANR 类型均给出候选未执行的人工核验/补证计划，不保证复现。",
+        "11. `## 证据质量`：标注证据强弱、矛盾点、缺失信息、fallback/过滤问题。",
+        "12. `## 修复建议`：输出详细结论和下一步排查建议。",
+        "",
+        ANR_REPORT_REQUIREMENTS,
         "",
         "## 必需输出 — 结构化 JSON 尾部",
         "在自由文本结论之后，**追加一段独立的 fenced JSON 代码块**（语言标 `json`），便于自动评分。结构如下：",
         "```json",
         "{",
-        '  "anrType": "input_dispatching_timeout | no_focus_window | broadcast_timeout | service_timeout | provider_timeout | unknown",',
+        '  "anrType": "input_dispatching_timeout | no_focus_window | broadcast_timeout | service_timeout | content_provider_timeout | job_scheduler_timeout | system_watchdog_swt | unknown",',
         '  "primaryRootCauseHintId": "DEADLOCK_CYCLE | MAIN_BINDER_WAIT_REPLY | ... | null",',
         '  "primaryRootCauseDescription": "<≤80字概述>",',
         '  "supportingHintIds": ["..."],',
@@ -1883,6 +1969,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         '  "candidateChains": [',
         '    {"rank": 1, "confidence": "critical|strong|weak", "summary": "...", "evidence": ["hint:DEADLOCK_CYCLE", "logcat:Slow binder transaction", "..."]}',
         '  ],',
+        ANR_CANDIDATE_FIELDS,
         '  "remediationSuggestions": ["..."],',
         '  "evidenceGaps": ["..."],',
         '  "finalJudgment": false,',
@@ -1895,7 +1982,7 @@ def _render_ai_prompt(cache_md: str, groups: list[dict[str, Any]], strategy: Anr
         "- `primaryRootCauseHintId` 必须引用 `### Deadlock Detection` 或 `### Trace Hints` 或 `### AnrManager 摘要` 中真实出现过的 hint id；若证据不足请置为 `null`。",
         "- `supportingHintIds` 列表中的元素必须出现在本上下文中。",
         "- `candidateChains[*].confidence` 必须按照本上下文标注（critical/strong/weak），如果你下调了某 hint 的可信度请显式说明。",
-        "- `finalJudgment / notRootCauseYet / requiresHumanConfirmation` 三个字段保持上述默认值（保守策略），除非证据极其充分。",
+        "- `finalJudgment / notRootCauseYet / requiresHumanConfirmation` 三个字段必须保持上述默认值（保守策略）。",
         "",
         "## 完整性摘要",
         *completeness_summary,
