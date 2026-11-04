@@ -39,6 +39,7 @@
    - 以 `am_anr` 为 ΔT=0，列出 ANR 前窗口的生命周期、焦点、输入、进程和状态机变化。
 3. `#### AI Analysis — Logcat / AnrManager`
    - 读取同目录的 `logcat.txt`，说明触发日志、窗口/焦点/Surface 序列、转储生命周期、负载、PSI 和 Meminfo。
+   - 过滤规则与 EventLog 对照见 [Logcat 过滤配置参考](logcat-tags-reference.md)；普通关键词窗口、AnrManager 完整块与原始前置上下文不能混为同一种过滤规则。
 4. `#### AI Analysis — 最终 ANR 综合分析`
    - 跨源汇总并按下方固定标题输出最终报告和 JSON 尾部。
 

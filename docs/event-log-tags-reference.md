@@ -2,6 +2,8 @@
 
 本文档汇总了用于过滤 EventLog trace 的所有关键标签。该主列表由 `anr_log_pattern_filter.py` 脚本使用，用于在 12 秒 ANR 窗口内识别相关日志。
 
+普通 Logcat 的对应诊断信息、类型策略和 AnrManager 保留规则参见 [Logcat 过滤配置参考](logcat-tags-reference.md)。两份文档的标签不能直接互换。
+
 ## 1. 概述
 为识别 ANR 发生前的相关系统事件，过滤器会追踪与 ActivityManager (AM)、WindowManager (WM)、电源管理以及输入分发器相关的特定标签。
 

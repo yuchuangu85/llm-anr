@@ -231,6 +231,8 @@ python3 -m anr_evidence --deliver tests/fixtures/nfw_01.json
 
 单独过滤某类日志时，可使用以下工具做调试、复用或校验：
 
+标签及保留规则参见 [EventLog 过滤配置参考](docs/event-log-tags-reference.md)和 [Logcat 过滤配置参考](docs/logcat-tags-reference.md)。Logcat 文档区分实际默认规则、类型增量和人工补充定位项，不是自动加载的配置。
+
 ```bash
 python3 scripts/anr_trace_filter.py <trace_file_or_package>
 python3 scripts/anr_event_log_filter.py <event_log_file>
